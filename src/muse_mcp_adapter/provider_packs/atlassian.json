@@ -1,0 +1,20 @@
+{
+  "id": "atlassian",
+  "displayName": "Atlassian Remote MCP Server",
+  "documentationUrl": "https://atlassian.github.io/atlassian-mcp-server/",
+  "endpoint": "https://mcp.atlassian.com/v2/mcp",
+  "profiles": {},
+  "authModes": ["oauth_pkce", "api_token"],
+  "requiredOptions": [],
+  "allowedOptions": [],
+  "defaultOptions": {},
+  "safety": {
+    "classificationMode": "explicit_customer_policy",
+    "leastPrivilegeScopes": true,
+    "approvalForWrites": true
+  },
+  "conformance": {
+    "requiredPrimitiveTypes": ["tool"],
+    "discoveryRequired": true
+  }
+}

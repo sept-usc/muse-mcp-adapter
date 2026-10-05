@@ -1,0 +1,24 @@
+{
+  "id": "supabase",
+  "displayName": "Supabase",
+  "documentationUrl": "https://supabase.com/docs/guides/ai-tools/mcp",
+  "endpoint": "https://mcp.supabase.com/mcp",
+  "profiles": {},
+  "authModes": ["oauth_pkce", "bearer_token"],
+  "requiredOptions": ["project_ref"],
+  "allowedOptions": ["project_ref", "read_only", "features"],
+  "defaultOptions": {
+    "read_only": "true"
+  },
+  "safety": {
+    "classificationMode": "explicit_customer_policy",
+    "projectScopingRequired": true,
+    "readOnlyByDefault": true,
+    "approvalForWrites": true,
+    "elicitationsEnabled": true
+  },
+  "conformance": {
+    "requiredPrimitiveTypes": ["tool"],
+    "discoveryRequired": true
+  }
+}

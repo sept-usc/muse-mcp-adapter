@@ -1,0 +1,22 @@
+{
+  "id": "linear",
+  "displayName": "Linear",
+  "documentationUrl": "https://linear.app/docs/mcp",
+  "endpoint": "https://mcp.linear.app/mcp",
+  "profiles": {
+    "read_only": "https://mcp.linear.app/mcp/readonly"
+  },
+  "authModes": ["oauth_pkce", "bearer_token"],
+  "requiredOptions": [],
+  "allowedOptions": [],
+  "defaultOptions": {},
+  "safety": {
+    "classificationMode": "explicit_customer_policy",
+    "recommendedProfile": "read_only",
+    "approvalForWrites": true
+  },
+  "conformance": {
+    "requiredPrimitiveTypes": ["tool"],
+    "discoveryRequired": true
+  }
+}
