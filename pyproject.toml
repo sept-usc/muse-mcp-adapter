@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muse-mcp-adapter"
+version = "0.1.0"
+description = "Customer-owned gateway between Muse Custom Connectors and MCP servers"
+requires-python = ">=3.12"
+dependencies = [
+  "anyio",
+  "cryptography",
+  "httpx",
+  "jsonschema",
+  "mcp>=1.25,<2",
+  "pydantic",
+  "starlette",
+  "uvicorn",
+]
+
+[project.scripts]
+muse-mcp-adapter = "muse_mcp_adapter.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "httpx2",
+  "pyright",
+  "pytest",
+  "pytest-cov",
+  "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+muse_mcp_adapter = ["provider_packs/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
