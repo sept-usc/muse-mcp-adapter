@@ -111,6 +111,7 @@ These are starting points, not a claim that everything a provider offers is safe
 
 - [Usage guide](docs/usage.md): configuration, policy reference, API, and operations
 - [Security model](docs/security.md): controls and guarantees
+- [Validation guide](docs/validation.md): how parity with a direct MCP connection is tested, and the [Atlas validation server](docs/validation-server.md)
 - [System design](docs/design.md)
 - [Control plane](docs/control-plane.md) and [data plane](docs/data-plane.md)
 
