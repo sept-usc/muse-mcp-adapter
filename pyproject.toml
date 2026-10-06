@@ -38,9 +38,13 @@ where = ["src"]
 muse_mcp_adapter = ["provider_packs/*.json"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "examples"]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
+markers = [
+  "validation: product validation suite driven by the Atlas MCP server",
+  "performance: timing measurements (not run by default)",
+]
 
 [tool.ruff]
 line-length = 100
@@ -51,6 +55,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pyright]
 include = ["src", "tests"]
+extraPaths = ["src", "examples"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
