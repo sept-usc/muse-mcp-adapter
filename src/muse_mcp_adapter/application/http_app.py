@@ -46,6 +46,7 @@ from ..domain.models import OperationRecord
 from .runtime import AdapterRuntime, Principal, payload_object
 
 MAX_INGRESS_BYTES = 1024 * 1024
+MAX_JSON_DEPTH = 64
 
 
 class WebAuthorization(Protocol):
@@ -189,9 +190,30 @@ async def _arguments(request: Request) -> Mapping[str, object]:
         return {}
     try:
         value: object = json.loads(body)
-    except ValueError as error:
+    except (ValueError, RecursionError) as error:
         raise RequestValidationError("Request body must be valid JSON") from error
+    if _nesting(value) > MAX_JSON_DEPTH:
+        raise RequestValidationError("Request body is nested too deeply")
     return payload_object(value, "Request body")
+
+
+def _nesting(value: object) -> int:
+    """The deepest level of arrays and objects, measured without recursion."""
+    deepest = 0
+    pending: list[tuple[object, int]] = [(value, 0)]
+    while pending:
+        item, level = pending.pop()
+        if isinstance(item, dict):
+            children = list(cast(dict[str, object], item).values())
+        elif isinstance(item, list):
+            children = list(cast(list[object], item))
+        else:
+            continue
+        deepest = max(deepest, level + 1)
+        if deepest > MAX_JSON_DEPTH:
+            return deepest
+        pending.extend((child, level + 1) for child in children)
+    return deepest
 
 
 def _request_id(request: Request) -> str | None:
