@@ -14,6 +14,7 @@ from mcp import ClientSession, types
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import LATEST_PROTOCOL_VERSION
 from pydantic import AnyUrl
 
@@ -141,7 +142,7 @@ class _PinnedAsyncTransport(httpx.AsyncBaseTransport):
             request.method,
             request.url.copy_with(host=address),
             headers=headers,
-            content=request.stream,
+            stream=request.stream,
             extensions=extensions,
         )
         return await self._inner.handle_async_request(pinned)
@@ -264,8 +265,10 @@ class McpSdkClient:
         discovery_credential: ResolvedCredential | None = None,
     ) -> None:
         self._sessions = session_factory or StreamableHttpSessionFactory()
+        # Servers answer an initialize request with the newest revision they support, so
+        # accept every revision the SDK can speak unless the deployment narrows the list.
         self._supported_versions = supported_protocol_versions or frozenset(
-            {LATEST_PROTOCOL_VERSION}
+            SUPPORTED_PROTOCOL_VERSIONS
         )
         self._discovery_credential = discovery_credential
 

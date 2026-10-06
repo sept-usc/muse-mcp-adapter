@@ -37,6 +37,11 @@ class EndpointSecurityPolicy:
     allowed_hosts: frozenset[str] | None = None
     resolver: Resolver = system_resolver
 
+    @classmethod
+    def local_development(cls) -> EndpointSecurityPolicy:
+        """Explicit opt-in for plain-HTTP and loopback/private MCP servers during development."""
+        return cls(require_tls=False, allow_private_networks=True)
+
     def validate(self, endpoint: str, *, resolve: bool = True) -> None:
         try:
             parsed = urlsplit(endpoint)
