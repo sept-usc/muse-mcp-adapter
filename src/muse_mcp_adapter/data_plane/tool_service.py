@@ -24,6 +24,7 @@ from ..domain.errors import (
     OperationInProgressError,
     OperationNotFoundError,
     PublishedPolicyError,
+    ReauthorizationRequiredError,
     RequestValidationError,
     ServerDisabledError,
     UnknownOutcomeError,
@@ -47,6 +48,7 @@ from .tool_client import (
     McpCancelled,
     McpInputRequired,
     McpPreDispatchError,
+    McpReauthorizationRequired,
     McpToolClient,
     McpToolExecutionFailure,
     McpUnknownOutcome,
@@ -61,6 +63,7 @@ FAILED = "FAILED"
 UNKNOWN = "UNKNOWN"
 CANCELLED = "CANCELLED"
 
+DEFAULT_RESULT_CONTENT_TYPES = ("application/json", "text/plain")
 MAX_ARGUMENT_BYTES = 1024 * 1024
 MAX_PROGRESS_EVENTS = 200
 MAX_PROGRESS_MESSAGE_CHARS = 500
@@ -374,9 +377,7 @@ class ToolDataPlaneService:
                 status=APPROVAL_REQUIRED,
                 updated_at=now,
             )
-        raise ApprovalRequiredError(
-            reason, operation_id=operation_id, action_digest=action_digest
-        )
+        raise ApprovalRequiredError(reason, operation_id=operation_id, action_digest=action_digest)
 
     def _resume_existing(
         self,
@@ -482,17 +483,24 @@ class ToolDataPlaneService:
                         credential=credential,
                         idempotency_key=request.idempotency_key,
                         timeout_seconds=policy.timeout_seconds,
-                        progress_callback=lambda progress, total, message: (
-                            self._record_progress(
-                                operation_id,
-                                progress=progress,
-                                total=total,
-                                message=message,
-                            )
+                        progress_callback=lambda progress, total, message: self._record_progress(
+                            operation_id,
+                            progress=progress,
+                            total=total,
+                            message=message,
                         ),
                         elicitation_answer=elicitation_answer,
                         cancellation=cancellation,
                     )
+            except McpReauthorizationRequired as error:
+                dispatched = False
+                self._fail(
+                    operation_id,
+                    code=ReauthorizationRequiredError.code,
+                    message=str(error),
+                    retryable=True,
+                )
+                raise ReauthorizationRequiredError(str(error)) from error
             except McpPreDispatchError as error:
                 dispatched = False
                 self._fail(
@@ -607,9 +615,7 @@ class ToolDataPlaneService:
                 ) from None
             raise
 
-    def _mark_unknown(
-        self, operation_id: str, *, is_read: bool, code: str, message: str
-    ) -> None:
+    def _mark_unknown(self, operation_id: str, *, is_read: bool, code: str, message: str) -> None:
         if is_read:
             self._fail(operation_id, code=code, message=message, retryable=True)
             return
@@ -698,10 +704,7 @@ class ToolDataPlaneService:
         total: float | None,
         message: str | None,
     ) -> None:
-        if (
-            self._repository.count_operation_events(operation_id, "progress")
-            >= MAX_PROGRESS_EVENTS
-        ):
+        if self._repository.count_operation_events(operation_id, "progress") >= MAX_PROGRESS_EVENTS:
             return
         data: dict[str, object] = {"progress": progress}
         if total is not None:
@@ -775,7 +778,7 @@ def _parse_policy(operation: PublishedPrimitive) -> _ToolPolicy:
         raise PublishedPolicyError("Published timeoutSeconds is invalid")
     if not _is_int(max_bytes) or cast(int, max_bytes) < 1:
         raise PublishedPolicyError("Published maxResultBytes is invalid")
-    declared = operation.definition.get("resultContentTypes", ())
+    declared = operation.definition.get("resultContentTypes", DEFAULT_RESULT_CONTENT_TYPES)
     if not _is_str_sequence(declared):
         raise PublishedPolicyError("Published resultContentTypes is invalid")
     allowed = frozenset(cast(Sequence[str], declared))
@@ -821,9 +824,7 @@ def _validate_schema(*, schema: object, instance: object, label: str) -> None:
         validator = _compiled_validator(canonical_json(cast(dict[str, Any], schema_value)))
         validator.validate(instance_value)
     except SchemaError as error:
-        raise DownstreamContentError(
-            f"Published {label.lower()} schema is invalid"
-        ) from error
+        raise DownstreamContentError(f"Published {label.lower()} schema is invalid") from error
     except ValidationError as error:
         path = ".".join(str(item) for item in error.absolute_path) or "$"
         raise RequestValidationError(
@@ -969,9 +970,7 @@ def _normalize_tool_block(
                 text=resource.text,
                 mime_type=resource.mime_type,
                 uri=resource.uri,
-                annotations=cast(
-                    Mapping[str, object], freeze_json(resource.annotations or {})
-                ),
+                annotations=cast(Mapping[str, object], freeze_json(resource.annotations or {})),
             ),
             len(resource.text.encode()),
         )

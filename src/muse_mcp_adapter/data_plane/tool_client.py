@@ -33,6 +33,10 @@ class McpPreDispatchError(RuntimeError):
     """The request provably never reached the downstream tool; retrying is safe."""
 
 
+class McpReauthorizationRequired(McpPreDispatchError):
+    """The linked account's tokens are missing or cannot be refreshed; the owner must log in."""
+
+
 class McpUnknownOutcome(RuntimeError):
     """The request may have reached the downstream server, but its result is unknown."""
 

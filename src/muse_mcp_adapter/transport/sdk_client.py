@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,10 +23,15 @@ from ..data_plane.tool_client import (
     McpCancelled,
     McpInputRequired,
     McpPreDispatchError,
+    McpReauthorizationRequired,
     McpToolExecutionFailure,
     McpUnknownOutcome,
 )
-from ..domain.errors import InvalidStateError, UnsafeEndpointError
+from ..domain.errors import (
+    InvalidStateError,
+    ReauthorizationRequiredError,
+    UnsafeEndpointError,
+)
 from ..domain.models import (
     DiscoverySnapshot,
     McpContentBlock,
@@ -127,9 +132,7 @@ class _PinnedAsyncTransport(httpx.AsyncBaseTransport):
         target = self._targets.get(key)
         if target is None:
             origin = f"{request.url.scheme}://{host}:{port}"
-            target = await anyio.to_thread.run_sync(
-                self._policy.resolve_endpoint, origin
-            )
+            target = await anyio.to_thread.run_sync(self._policy.resolve_endpoint, origin)
             self._targets[key] = target
         address = target.addresses[0]
         headers = request.headers.copy()
@@ -157,8 +160,7 @@ class StreamableHttpSessionFactory:
     def __init__(
         self,
         *,
-        auth_factory: Callable[[str, ResolvedCredential | None], httpx.Auth | None]
-        | None = None,
+        auth_factory: Callable[[str, ResolvedCredential | None], httpx.Auth | None] | None = None,
         timeout_seconds: float = 30.0,
         endpoint_policy: EndpointSecurityPolicy | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -180,41 +182,42 @@ class StreamableHttpSessionFactory:
         elicitation_callback: ElicitationCallback | None = None,
     ) -> AsyncGenerator[ConnectedSession]:
         # Resolve once, validate all returned addresses, and pin the transport to the checked IP.
-        target = await anyio.to_thread.run_sync(
-            self._endpoint_policy.resolve_endpoint, endpoint
-        )
+        target = await anyio.to_thread.run_sync(self._endpoint_policy.resolve_endpoint, endpoint)
         auth = self._auth_factory(endpoint, credential) if self._auth_factory else None
         headers: dict[str, str] = {}
         if credential is not None and auth is None and credential.access_token:
             headers["Authorization"] = f"Bearer {credential.access_token}"
         lifespan = (
-            self._lifespan_factory()
-            if self._lifespan_factory is not None
-            else _empty_lifespan()
+            self._lifespan_factory() if self._lifespan_factory is not None else _empty_lifespan()
         )
         transport = self._transport
         if transport is None:
             transport = _PinnedAsyncTransport(
                 httpx.AsyncHTTPTransport(), self._endpoint_policy, endpoint, target
             )
-        async with lifespan, httpx.AsyncClient(
-            auth=auth,
-            headers=headers,
-            timeout=self._timeout_seconds,
-            follow_redirects=False,
-            transport=transport,
-            event_hooks={"response": [_response_limit_hook(self._max_response_bytes)]},
-        ) as http_client, streamable_http_client(
-            endpoint,
-            http_client=http_client,
-            terminate_on_close=True,
-        ) as (read_stream, write_stream, _), ClientSession(
-            read_stream,
-            write_stream,
-            # Bound every request: an aborted or stalled response must fail, not wait forever.
-            read_timeout_seconds=timedelta(seconds=self._timeout_seconds),
-            elicitation_callback=cast(Any, elicitation_callback),
-        ) as session:
+        async with (
+            lifespan,
+            httpx.AsyncClient(
+                auth=auth,
+                headers=headers,
+                timeout=self._timeout_seconds,
+                follow_redirects=False,
+                transport=transport,
+                event_hooks={"response": [_response_limit_hook(self._max_response_bytes)]},
+            ) as http_client,
+            streamable_http_client(
+                endpoint,
+                http_client=http_client,
+                terminate_on_close=True,
+            ) as (read_stream, write_stream, _),
+            ClientSession(
+                read_stream,
+                write_stream,
+                # Bound every request: an aborted or stalled response must fail, not wait forever.
+                read_timeout_seconds=timedelta(seconds=self._timeout_seconds),
+                elicitation_callback=cast(Any, elicitation_callback),
+            ) as session,
+        ):
             initialized = await session.initialize()
             yield ConnectedSession(
                 session,
@@ -273,7 +276,7 @@ class McpSdkClient:
         self._discovery_credential = discovery_credential
 
     def discover(self, server: ServerRegistration) -> DiscoverySnapshot:
-        return anyio.run(partial(self._discover, server))
+        return _run(partial(self._discover, server))
 
     def read_resource(
         self,
@@ -282,7 +285,7 @@ class McpSdkClient:
         uri: str,
         credential: ResolvedCredential,
     ) -> McpResourceResult:
-        return anyio.run(partial(self._read_resource, endpoint, uri, credential))
+        return _run(partial(self._read_resource, endpoint, uri, credential))
 
     def get_prompt(
         self,
@@ -292,9 +295,7 @@ class McpSdkClient:
         arguments: Mapping[str, str],
         credential: ResolvedCredential,
     ) -> McpPromptResult:
-        return anyio.run(
-            partial(self._get_prompt, endpoint, name, dict(arguments), credential)
-        )
+        return _run(partial(self._get_prompt, endpoint, name, dict(arguments), credential))
 
     def call_tool(
         self,
@@ -331,7 +332,13 @@ class McpSdkClient:
             if isinstance(raised, KeyboardInterrupt | SystemExit):
                 raise
             error = _unwrap(raised)
-            if isinstance(error, McpCancelled | McpInputRequired | McpToolExecutionFailure):
+            if isinstance(
+                error,
+                McpCancelled
+                | McpInputRequired
+                | McpToolExecutionFailure
+                | McpReauthorizationRequired,
+            ):
                 raise error from None
             if not state.dispatched:
                 raise McpPreDispatchError(
@@ -343,22 +350,16 @@ class McpSdkClient:
                 ) from error
             if isinstance(error, TimeoutError):
                 raise McpUnknownOutcome("MCP tool call timed out after dispatch") from error
-            raise McpUnknownOutcome(
-                "MCP transport ended before a result was received"
-            ) from error
+            raise McpUnknownOutcome("MCP transport ended before a result was received") from error
 
     async def _discover(self, server: ServerRegistration) -> DiscoverySnapshot:
-        async with self._sessions.connect(
-            server.endpoint, self._discovery_credential
-        ) as connected:
+        async with self._sessions.connect(server.endpoint, self._discovery_credential) as connected:
             session = connected.session
             protocol_version = connected.protocol_version
             self._ensure_protocol(protocol_version)
             tools = await _all_pages(session.list_tools, "tools")
             resources = await _all_pages(session.list_resources, "resources")
-            templates = await _all_pages(
-                session.list_resource_templates, "resourceTemplates"
-            )
+            templates = await _all_pages(session.list_resource_templates, "resourceTemplates")
             prompts = await _all_pages(session.list_prompts, "prompts")
             primitives = tuple(
                 [_tool_primitive(item) for item in tools]
@@ -373,8 +374,7 @@ class McpSdkClient:
                 "prompts": bool(prompts),
             }
             server_info: dict[str, object] = dict(
-                connected.server_info
-                or {"name": server.display_name, "version": "unknown"}
+                connected.server_info or {"name": server.display_name, "version": "unknown"}
             )
             discovered_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
             payload = {
@@ -506,12 +506,33 @@ class McpSdkClient:
             )
 
 
+def _run[T](function: Callable[[], Awaitable[T]]) -> T:
+    """Run an async client call, surfacing the meaningful error from SDK task groups."""
+    try:
+        return anyio.run(function)
+    except BaseException as raised:
+        if isinstance(raised, KeyboardInterrupt | SystemExit):
+            raise
+        leaf = _unwrap(raised)
+        if isinstance(leaf, McpReauthorizationRequired):
+            raise ReauthorizationRequiredError(str(leaf)) from None
+        if isinstance(leaf, UnsafeEndpointError):
+            raise leaf from None
+        raise
+
+
 def _unwrap(error: BaseException) -> BaseException:
     """Return the most informative leaf of an exception group."""
     if isinstance(error, BaseExceptionGroup):
         leaves = [_unwrap(item) for item in cast(Any, error).exceptions]
         for leaf in leaves:
-            if isinstance(leaf, McpInputRequired | McpToolExecutionFailure | UnsafeEndpointError):
+            if isinstance(
+                leaf,
+                McpInputRequired
+                | McpToolExecutionFailure
+                | McpReauthorizationRequired
+                | UnsafeEndpointError,
+            ):
                 return leaf
         for leaf in leaves:
             if isinstance(leaf, McpError):
@@ -578,9 +599,7 @@ def _tool_primitive(tool: types.Tool) -> Mapping[str, object]:
     if tool.outputSchema is not None:
         value["outputSchema"] = tool.outputSchema
     if tool.annotations is not None:
-        value["annotations"] = tool.annotations.model_dump(
-            by_alias=True, exclude_none=True
-        )
+        value["annotations"] = tool.annotations.model_dump(by_alias=True, exclude_none=True)
     return value
 
 
@@ -615,8 +634,7 @@ def _prompt_primitive(prompt: types.Prompt) -> Mapping[str, object]:
         "type": "prompt",
         "name": prompt.name,
         "arguments": [
-            item.model_dump(by_alias=True, exclude_none=True)
-            for item in (prompt.arguments or [])
+            item.model_dump(by_alias=True, exclude_none=True) for item in (prompt.arguments or [])
         ],
     }
     if prompt.description is not None:
@@ -662,7 +680,5 @@ def _content_block(item: Any) -> McpContentBlock:
 
 
 def _error_text(result: types.CallToolResult) -> str:
-    text = "\n".join(
-        item.text for item in result.content if isinstance(item, types.TextContent)
-    )
+    text = "\n".join(item.text for item in result.content if isinstance(item, types.TextContent))
     return text or "The MCP server reported a tool error"

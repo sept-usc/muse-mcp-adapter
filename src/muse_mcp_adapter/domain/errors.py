@@ -120,3 +120,11 @@ class InputRequiredError(DataPlaneError):
 
 class RequestTooLargeError(DataPlaneError):
     code = "REQUEST_TOO_LARGE"
+
+
+class ReauthorizationRequiredError(DataPlaneError):
+    code = "REAUTHORIZATION_REQUIRED"
+
+    def __init__(self, message: str, *, authorization_url: str | None = None) -> None:
+        self.authorization_url = authorization_url
+        super().__init__(message)
