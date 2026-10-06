@@ -115,9 +115,16 @@ class McpResourceResult:
 
 @dataclass(frozen=True, slots=True)
 class McpContentBlock:
+    """One MCP content block: text, image, audio, resource link, or embedded resource."""
+
     block_type: str
     text: str | None = None
     resource: McpResourceContent | None = None
+    data: str | None = None  # base64, for image and audio
+    mime_type: str | None = None
+    uri: str | None = None  # for resource links
+    name: str | None = None
+    annotations: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,11 +150,13 @@ class McpToolResult:
 
 @dataclass(frozen=True, slots=True)
 class NormalizedContent:
-    kind: str
+    kind: str  # text | image | audio | resource | resource_link | artifact
     text: str
     mime_type: str
     uri: str | None
     annotations: Mapping[str, object]
+    data: str | None = None  # base64 for binary content (image, audio, binary resources)
+    name: str | None = None  # for resource links
 
 
 @dataclass(frozen=True, slots=True)

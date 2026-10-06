@@ -29,6 +29,7 @@ from ..domain.models import (
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from ..policy.validate_policy import FORBIDDEN_URI_SCHEMES
+from .content import normalize_block, normalize_resource
 from .mcp_client import McpReadClient
 
 _TEMPLATE_FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -85,9 +86,7 @@ class ReadDataPlaneService:
             local_identity_id=request.local_identity_id,
             connection_id=request.connection_id,
             server_id=request.server_id,
-            required_scopes=frozenset(
-                _string_sequence(operation.policy.get("requiredScopes", ()))
-            ),
+            required_scopes=frozenset(_string_sequence(operation.policy.get("requiredScopes", ()))),
         )
 
         if operation.primitive_type in ("resource", "resource_template"):
@@ -178,15 +177,11 @@ def _validate_request_envelope(request: DataPlaneRequest) -> None:
         raise RequestValidationError("Missing request fields: " + ", ".join(missing))
 
 
-def _resource_uri(
-    operation: PublishedPrimitive, arguments: Mapping[str, object]
-) -> str:
+def _resource_uri(operation: PublishedPrimitive, arguments: Mapping[str, object]) -> str:
     if operation.primitive_type == "resource":
         if arguments:
             raise RequestValidationError("Static resource operations do not accept arguments")
-        uri = _required_string(
-            operation.definition, "uri", "Published resource URI is missing"
-        )
+        uri = _required_string(operation.definition, "uri", "Published resource URI is missing")
         _check_resolved_uri(uri, operation.policy.get("resource"))
         return uri
 
@@ -349,9 +344,7 @@ def _normalize_prompt_result(
 ) -> tuple[NormalizedMessage, ...]:
     prompt_policy = _mapping(operation.policy.get("prompt"), "Prompt policy is missing")
     allowed_roles = set(_string_sequence(prompt_policy.get("allowedRoles")))
-    allowed_mime_types = set(
-        _string_sequence(prompt_policy.get("allowedEmbeddedMimeTypes"))
-    )
+    allowed_mime_types = set(_string_sequence(prompt_policy.get("allowedEmbeddedMimeTypes")))
     max_bytes = _positive_int(prompt_policy.get("maxBytes"), "Prompt maxBytes is invalid")
     messages: list[NormalizedMessage] = []
     total_bytes = 0
@@ -373,42 +366,13 @@ def _normalize_prompt_result(
 def _normalize_prompt_block(
     block: McpContentBlock, allowed_mime_types: set[str]
 ) -> tuple[NormalizedContent, int]:
-    if block.block_type == "text" and block.text is not None:
-        return (
-            NormalizedContent(
-                kind="text",
-                text=block.text,
-                mime_type="text/plain",
-                uri=None,
-                annotations=cast(Mapping[str, object], freeze_json({})),
-            ),
-            len(block.text.encode()),
-        )
-    if block.block_type == "resource" and block.resource is not None:
-        return _normalize_resource_content(block.resource, allowed_mime_types)
-    raise DownstreamContentError(f"Unsupported prompt content block {block.block_type}")
+    return normalize_block(block, allowed_mime_types, noun="Prompt")
 
 
 def _normalize_resource_content(
     content: McpResourceContent, allowed_mime_types: set[str]
 ) -> tuple[NormalizedContent, int]:
-    if content.mime_type not in allowed_mime_types:
-        raise DownstreamContentError(f"Content MIME type {content.mime_type} is not allowed")
-    if content.blob is not None:
-        raise DownstreamContentError("Binary content is not supported by the Phase 3 data plane")
-    if content.text is None:
-        raise DownstreamContentError("Content has neither supported text nor structured data")
-    annotations = content.annotations or {}
-    return (
-        NormalizedContent(
-            kind="resource",
-            text=content.text,
-            mime_type=content.mime_type,
-            uri=content.uri,
-            annotations=cast(Mapping[str, object], freeze_json(annotations)),
-        ),
-        len(content.text.encode()),
-    )
+    return normalize_resource(content, allowed_mime_types, noun="Content")
 
 
 def _provenance(

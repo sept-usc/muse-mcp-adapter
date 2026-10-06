@@ -58,7 +58,6 @@ def build_http_application(
         approval_verifier=approval_verifier,
         clock=clock,
         cancellation_registry=cancellations,
-        artifact_store=artifacts,
     )
     lifecycle = OperationLifecycleService(
         repository, clock=clock, cancellation_registry=cancellations

@@ -41,9 +41,7 @@ def response_from_dict(value: Mapping[str, object]) -> DataPlaneResponse:
     structured = (
         cast(
             Mapping[str, object],
-            freeze_json(
-                _mapping(structured_value, "Stored structured content is invalid")
-            ),
+            freeze_json(_mapping(structured_value, "Stored structured content is invalid")),
         )
         if structured_value is not None
         else None
@@ -59,9 +57,7 @@ def response_from_dict(value: Mapping[str, object]) -> DataPlaneResponse:
             NormalizedMessage(
                 role=_string(message, "role"),
                 content=tuple(
-                    _content_from_dict(
-                        _mapping(item, "Stored message content is invalid")
-                    )
+                    _content_from_dict(_mapping(item, "Stored message content is invalid"))
                     for item in _sequence(
                         message.get("content"), "Stored message content is invalid"
                     )
@@ -87,9 +83,11 @@ def _content_to_dict(content: NormalizedContent) -> dict[str, object]:
     return {
         "kind": content.kind,
         "text": content.text,
-        "mimeType": content.mime_type,
+        "mimeType": content.mime_type or None,
         "uri": content.uri,
         "annotations": thaw_json(content.annotations),
+        "data": content.data,
+        "name": content.name,
     }
 
 
@@ -98,9 +96,11 @@ def _content_from_dict(value: Mapping[str, object]) -> NormalizedContent:
     return NormalizedContent(
         kind=_string(value, "kind"),
         text=_string(value, "text"),
-        mime_type=_string(value, "mimeType"),
+        mime_type=_optional_string(value.get("mimeType")) or "",
         uri=_optional_string(value.get("uri")),
         annotations=cast(Mapping[str, object], freeze_json(annotations)),
+        data=_optional_string(value.get("data")),
+        name=_optional_string(value.get("name")),
     )
 
 

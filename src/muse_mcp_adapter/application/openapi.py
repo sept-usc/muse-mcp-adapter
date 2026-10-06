@@ -99,7 +99,7 @@ def _operation(primitive: PublishedPrimitive, components: dict[str, object]) -> 
         "summary": _summary(primitive),
         "description": _description(primitive),
         "x-muse-classification": classification,
-        "responses": _responses(primitive),
+        "responses": _responses(primitive, components),
     }
     if classification != "read":
         operation["x-requires-confirmation"] = True
@@ -136,7 +136,18 @@ def _description(primitive: PublishedPrimitive) -> str:
         ),
     }
     note = notes.get(primitive.classification, "")
-    return f"{base}\n\n{note}".strip()
+    target = _source_note(primitive)
+    return "\n\n".join(part for part in (base, target, note) if part)
+
+
+def _source_note(primitive: PublishedPrimitive) -> str:
+    """Say which MCP resource an operation reads, so nothing about its identity is lost."""
+    kind = primitive.primitive_type
+    if kind == "resource":
+        return f"Reads the resource {primitive.definition.get('uri')}."
+    if kind == "resource_template":
+        return f"Reads resources matching {primitive.definition.get('uriTemplate')}."
+    return ""
 
 
 def _summary(primitive: PublishedPrimitive) -> str:
@@ -147,12 +158,31 @@ def _summary(primitive: PublishedPrimitive) -> str:
     return primitive.mcp_name
 
 
-def _responses(primitive: PublishedPrimitive) -> dict[str, object]:
-    del primitive
+def _responses(
+    primitive: PublishedPrimitive, components: dict[str, object]
+) -> dict[str, object]:
+    result_schema: dict[str, object] = {"$ref": "#/components/schemas/Result"}
+    output = primitive.definition.get("outputSchema")
+    if primitive.primitive_type == "tool" and output is not None:
+        # The server declared the shape of its structured result: pass that promise on.
+        result_schema = {
+            "allOf": [
+                {"$ref": "#/components/schemas/Result"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "structuredContent": _localize(
+                            thaw_json(output), f"{primitive.public_operation_id}__out", components
+                        )
+                    },
+                    "required": ["structuredContent"],
+                },
+            ]
+        }
     responses: dict[str, object] = {
         "200": {
             "description": "The operation completed.",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Result"}}},
+            "content": {"application/json": {"schema": result_schema}},
         }
     }
     for status, description in _ERROR_RESPONSES.items():
@@ -384,14 +414,24 @@ def _resume_operation() -> dict[str, object]:
 
 _CONTENT_SCHEMA: dict[str, object] = {
     "type": "object",
+    "description": (
+        "One piece of content. kind is text, image, audio, resource (embedded), or "
+        "resource_link. Binary content (images, audio, binary resources) is base64 in `data`; "
+        "text is in `text`."
+    ),
     "properties": {
-        "kind": {"type": "string"},
+        "kind": {
+            "type": "string",
+            "enum": ["text", "image", "audio", "resource", "resource_link"],
+        },
         "text": {"type": "string"},
-        "mimeType": {"type": "string"},
+        "data": {"type": ["string", "null"], "contentEncoding": "base64"},
+        "mimeType": {"type": ["string", "null"]},
         "uri": {"type": ["string", "null"]},
+        "name": {"type": ["string", "null"]},
         "annotations": {"type": "object"},
     },
-    "required": ["kind", "text", "mimeType"],
+    "required": ["kind", "text"],
 }
 
 _RESULT_SCHEMA: dict[str, object] = {

@@ -23,6 +23,7 @@ from ..domain.errors import (
 from ..domain.models import (
     DataPlaneRequest,
     DataPlaneResponse,
+    OperationEvent,
     OperationRecord,
 )
 from ..operations.artifacts import FileArtifactStore
@@ -35,6 +36,7 @@ from ..operations.runtime_controls import (
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from .openapi import compile_openapi
 
+MAX_EVENTS_SHOWN = 400
 _IDEMPOTENCY_KEY = re.compile(r"^[\x21-\x7e]{1,200}$")
 
 
@@ -210,6 +212,11 @@ class AdapterRuntime:
 
     def operation(self, principal: Principal, operation_id: str) -> OperationRecord:
         return self._owned_operation(principal, operation_id)
+
+    def events(self, principal: Principal, operation_id: str) -> tuple[OperationEvent, ...]:
+        """Progress, log and lifecycle events of one of the caller's own operations."""
+        self._owned_operation(principal, operation_id)
+        return self._repository.list_operation_events(operation_id)[:MAX_EVENTS_SHOWN]
 
     def cancel(self, principal: Principal, operation_id: str, *, reason: str) -> OperationRecord:
         operation = self._owned_operation(principal, operation_id)

@@ -19,6 +19,7 @@ from mcp.types import LATEST_PROTOCOL_VERSION
 from pydantic import AnyUrl
 
 from ..catalog.canonical import digest, freeze_json
+from ..data_plane.content import DEFAULT_TOOL_RESULT_TYPES
 from ..data_plane.tool_client import (
     McpCancelled,
     McpInputRequired,
@@ -47,6 +48,7 @@ from .security import EndpointSecurityPolicy, ResolvedEndpoint
 
 ProgressCallback = Callable[[float, float | None, str | None], None]
 ElicitationCallback = Callable[[Any, Any], Any]
+LogCallback = Callable[[str, str], None]
 
 IDEMPOTENCY_META_KEY = "io.muse.mcp-adapter/idempotencyKey"
 DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -68,6 +70,7 @@ class SessionFactory(Protocol):
         endpoint: str,
         credential: ResolvedCredential | None,
         elicitation_callback: ElicitationCallback | None = None,
+        logging_callback: Any = None,
     ) -> AbstractAsyncContextManager[ConnectedSession]: ...
 
 
@@ -180,6 +183,7 @@ class StreamableHttpSessionFactory:
         endpoint: str,
         credential: ResolvedCredential | None,
         elicitation_callback: ElicitationCallback | None = None,
+        logging_callback: Any = None,
     ) -> AsyncGenerator[ConnectedSession]:
         # Resolve once, validate all returned addresses, and pin the transport to the checked IP.
         target = await anyio.to_thread.run_sync(self._endpoint_policy.resolve_endpoint, endpoint)
@@ -216,6 +220,7 @@ class StreamableHttpSessionFactory:
                 # Bound every request: an aborted or stalled response must fail, not wait forever.
                 read_timeout_seconds=timedelta(seconds=self._timeout_seconds),
                 elicitation_callback=cast(Any, elicitation_callback),
+                logging_callback=logging_callback,
             ) as session,
         ):
             initialized = await session.initialize()
@@ -244,8 +249,9 @@ class InMemorySessionFactory:
         endpoint: str,
         credential: ResolvedCredential | None,
         elicitation_callback: ElicitationCallback | None = None,
+        logging_callback: Any = None,
     ) -> AbstractAsyncContextManager[ConnectedSession]:
-        del endpoint, credential
+        del endpoint, credential, logging_callback
         return _in_memory_connection(self._server, elicitation_callback)
 
 
@@ -309,6 +315,7 @@ class McpSdkClient:
         progress_callback: ProgressCallback | None = None,
         elicitation_answer: Mapping[str, object] | None = None,
         cancellation: Event | None = None,
+        log_callback: LogCallback | None = None,
     ) -> McpToolResult:
         metadata = {IDEMPOTENCY_META_KEY: idempotency_key} if idempotency_key else None
         state = _DispatchState()
@@ -326,6 +333,7 @@ class McpSdkClient:
                     state,
                     dict(elicitation_answer) if elicitation_answer is not None else None,
                     cancellation,
+                    log_callback,
                 )
             )
         except BaseException as raised:
@@ -442,7 +450,12 @@ class McpSdkClient:
         state: _DispatchState,
         elicitation_answer: dict[str, object] | None,
         cancellation: Event | None,
+        log_callback: LogCallback | None,
     ) -> McpToolResult:
+        async def on_log(params: types.LoggingMessageNotificationParams) -> None:
+            if log_callback is not None:
+                log_callback(str(params.level), str(params.data))
+
         async def progress(progress: float, total: float | None, message: str | None) -> None:
             if callback is not None:
                 callback(progress, total, message)
@@ -462,7 +475,7 @@ class McpSdkClient:
             await anyio.to_thread.run_sync(cancellation.wait, abandon_on_cancel=True)
             scope.cancel()
 
-        async with self._sessions.connect(endpoint, credential, elicit) as connected:
+        async with self._sessions.connect(endpoint, credential, elicit, on_log) as connected:
             session = connected.session
             self._ensure_protocol(connected.protocol_version)
             timeout = timedelta(seconds=timeout_seconds) if timeout_seconds else None
@@ -587,7 +600,7 @@ def _tool_primitive(tool: types.Tool) -> Mapping[str, object]:
         "type": "tool",
         "name": tool.name,
         "inputSchema": tool.inputSchema,
-        "resultContentTypes": ["application/json", "text/plain"],
+        "resultContentTypes": list(DEFAULT_TOOL_RESULT_TYPES),
         "lifecycleModes": (
             ["synchronous", "task"] if task_support in ("optional", "required") else ["synchronous"]
         ),
@@ -661,20 +674,43 @@ def _resource_content(
     )
 
 
+def _annotations(item: Any) -> Mapping[str, object] | None:
+    annotations = getattr(item, "annotations", None)
+    if annotations is None:
+        return None
+    return cast(Mapping[str, object], annotations.model_dump(by_alias=True, exclude_none=True))
+
+
 def _content_block(item: Any) -> McpContentBlock:
+    """Map one MCP content block, keeping every standard type."""
     if isinstance(item, types.TextContent):
-        return McpContentBlock(block_type="text", text=item.text)
-    if isinstance(item, types.EmbeddedResource):
-        annotations = (
-            cast(
-                Mapping[str, object],
-                item.annotations.model_dump(by_alias=True, exclude_none=True),
-            )
-            if item.annotations is not None
-            else None
-        )
+        return McpContentBlock(block_type="text", text=item.text, annotations=_annotations(item))
+    if isinstance(item, types.ImageContent):
         return McpContentBlock(
-            block_type="resource", resource=_resource_content(item.resource, annotations)
+            block_type="image",
+            data=item.data,
+            mime_type=item.mimeType,
+            annotations=_annotations(item),
+        )
+    if isinstance(item, types.AudioContent):
+        return McpContentBlock(
+            block_type="audio",
+            data=item.data,
+            mime_type=item.mimeType,
+            annotations=_annotations(item),
+        )
+    if isinstance(item, types.ResourceLink):
+        return McpContentBlock(
+            block_type="resource_link",
+            uri=str(item.uri),
+            name=item.name,
+            mime_type=item.mimeType,
+            annotations=_annotations(item),
+        )
+    if isinstance(item, types.EmbeddedResource):
+        return McpContentBlock(
+            block_type="resource",
+            resource=_resource_content(item.resource, _annotations(item)),
         )
     return McpContentBlock(block_type=type(item).__name__)
 

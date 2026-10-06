@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from ..catalog.canonical import thaw_json
 from ..data_plane.serde import response_to_dict
 from ..domain.errors import (
     ApprovalRequiredError,
@@ -111,7 +112,13 @@ def create_http_app(
         principal = principal_of(request)
         operation_id = request.path_params["operation_id"]
         result = await anyio.to_thread.run_sync(lambda: runtime.operation(principal, operation_id))
-        return JSONResponse(_operation_dict(result))
+        events = await anyio.to_thread.run_sync(lambda: runtime.events(principal, operation_id))
+        body = _operation_dict(result)
+        body["events"] = [
+            {"type": item.event_type, "at": item.occurred_at, "data": thaw_json(item.data)}
+            for item in events
+        ]
+        return JSONResponse(body)
 
     async def artifact(request: Request) -> Response:
         principal = principal_of(request)

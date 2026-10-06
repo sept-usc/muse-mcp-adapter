@@ -51,10 +51,11 @@ class ConformanceToolClient(McpToolClient):
         progress_callback: Callable[[float, float | None, str | None], None] | None = None,
         elicitation_answer: Mapping[str, object] | None = None,
         cancellation: Event | None = None,
+        log_callback: Callable[[str, str], None] | None = None,
     ) -> McpToolResult:
         del endpoint
         del timeout_seconds
-        del elicitation_answer
+        del elicitation_answer, log_callback
         self.calls.append(
             RecordedToolCall(
                 name=name,

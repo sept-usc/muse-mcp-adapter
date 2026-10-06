@@ -33,16 +33,15 @@ from ..domain.errors import (
 from ..domain.models import (
     DataPlaneRequest,
     DataPlaneResponse,
-    McpContentBlock,
     McpToolResult,
     NormalizedContent,
     OperationRecord,
     PublishedPrimitive,
 )
-from ..operations.artifacts import FileArtifactStore
 from ..operations.cancellation import CancellationRegistry
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from .approval import ApprovalVerifier
+from .content import DEFAULT_TOOL_RESULT_TYPES, mime_allowed, narrow_types, normalize_block
 from .serde import response_from_dict, response_to_dict
 from .tool_client import (
     McpCancelled,
@@ -63,7 +62,6 @@ FAILED = "FAILED"
 UNKNOWN = "UNKNOWN"
 CANCELLED = "CANCELLED"
 
-DEFAULT_RESULT_CONTENT_TYPES = ("application/json", "text/plain")
 MAX_ARGUMENT_BYTES = 1024 * 1024
 MAX_PROGRESS_EVENTS = 200
 MAX_PROGRESS_MESSAGE_CHARS = 500
@@ -97,7 +95,6 @@ class ToolDataPlaneService:
         clock: Callable[[], str],
         operation_id_factory: Callable[[], str] | None = None,
         cancellation_registry: CancellationRegistry | None = None,
-        artifact_store: FileArtifactStore | None = None,
     ) -> None:
         self._repository = repository
         self._credential_resolver = credential_resolver
@@ -106,7 +103,6 @@ class ToolDataPlaneService:
         self._clock = clock
         self._operation_id_factory = operation_id_factory or (lambda: str(uuid4()))
         self._cancellations = cancellation_registry or CancellationRegistry()
-        self._artifact_store = artifact_store
 
     def execute(self, request: DataPlaneRequest) -> DataPlaneResponse:
         _validate_request(request)
@@ -490,6 +486,9 @@ class ToolDataPlaneService:
                             message=message,
                         ),
                         elicitation_answer=elicitation_answer,
+                        log_callback=lambda level, message: self._record_log(
+                            operation_id, level=level, message=message
+                        ),
                         cancellation=cancellation,
                     )
             except McpReauthorizationRequired as error:
@@ -573,7 +572,6 @@ class ToolDataPlaneService:
                     operation_id=operation_id,
                     catalog_version=operation_record.catalog_version,
                     result=result,
-                    artifact_store=self._artifact_store,
                 )
             except DownstreamContentError as error:
                 # The tool already ran: for a write the side effect may have been applied.
@@ -688,7 +686,7 @@ class ToolDataPlaneService:
             else 0
         )
         for content in response.contents:
-            if content.mime_type not in policy.result_content_types:
+            if not mime_allowed(content.mime_type, policy.result_content_types):
                 raise RequestValidationError(
                     f"Reconciled content type {content.mime_type} is not allowed"
                 )
@@ -716,6 +714,17 @@ class ToolDataPlaneService:
             event_type="progress",
             occurred_at=self._clock(),
             data=data,
+        )
+
+    def _record_log(self, operation_id: str, *, level: str, message: str) -> None:
+        """Keep the server's log notifications so the caller can read them with the operation."""
+        if self._repository.count_operation_events(operation_id, "log") >= MAX_PROGRESS_EVENTS:
+            return
+        self._repository.append_operation_event(
+            operation_id,
+            event_type="log",
+            occurred_at=self._clock(),
+            data={"level": level[:20], "message": message[:MAX_PROGRESS_MESSAGE_CHARS]},
         )
 
     def _fail(
@@ -778,7 +787,7 @@ def _parse_policy(operation: PublishedPrimitive) -> _ToolPolicy:
         raise PublishedPolicyError("Published timeoutSeconds is invalid")
     if not _is_int(max_bytes) or cast(int, max_bytes) < 1:
         raise PublishedPolicyError("Published maxResultBytes is invalid")
-    declared = operation.definition.get("resultContentTypes", DEFAULT_RESULT_CONTENT_TYPES)
+    declared = operation.definition.get("resultContentTypes", DEFAULT_TOOL_RESULT_TYPES)
     if not _is_str_sequence(declared):
         raise PublishedPolicyError("Published resultContentTypes is invalid")
     allowed = frozenset(cast(Sequence[str], declared))
@@ -786,7 +795,7 @@ def _parse_policy(operation: PublishedPrimitive) -> _ToolPolicy:
     if narrowed is not None:
         if not _is_str_sequence(narrowed):
             raise PublishedPolicyError("Published allowedResultContentTypes is invalid")
-        allowed = allowed & frozenset(cast(Sequence[str], narrowed))
+        allowed = narrow_types(allowed, cast(Sequence[str], narrowed))
     return _ToolPolicy(
         required_scopes=frozenset(cast(Sequence[str], scopes)),
         timeout_seconds=cast(int, timeout),
@@ -840,7 +849,6 @@ def _normalize_tool_result(
     operation_id: str,
     catalog_version: str,
     result: McpToolResult,
-    artifact_store: FileArtifactStore | None,
 ) -> DataPlaneResponse:
     output_schema = operation.definition.get("outputSchema")
     if output_schema is not None:
@@ -865,13 +873,7 @@ def _normalize_tool_result(
         raise DownstreamContentError("Tool structured content is not valid JSON") from error
     contents: list[NormalizedContent] = []
     for block in result.content:
-        content, size = _normalize_tool_block(
-            block,
-            policy.result_content_types,
-            remaining_bytes=policy.max_result_bytes - total_bytes,
-            artifact_store=artifact_store,
-            operation_id=operation_id,
-        )
+        content, size = normalize_block(block, policy.result_content_types, noun="Tool")
         total_bytes += size
         if total_bytes > policy.max_result_bytes:
             raise DownstreamContentError("Tool result exceeds the published size limit")
@@ -907,74 +909,6 @@ def _normalize_tool_result(
         structured_content=structured,
         contents=tuple(contents),
     )
-
-
-def _normalize_tool_block(
-    block: McpContentBlock,
-    allowed_types: frozenset[str],
-    *,
-    remaining_bytes: int,
-    artifact_store: FileArtifactStore | None,
-    operation_id: str,
-) -> tuple[NormalizedContent, int]:
-    if block.block_type == "text" and block.text is not None:
-        if "text/plain" not in allowed_types:
-            raise DownstreamContentError("Tool text content is not allowed")
-        return (
-            NormalizedContent(
-                kind="text",
-                text=block.text,
-                mime_type="text/plain",
-                uri=None,
-                annotations=cast(Mapping[str, object], freeze_json({})),
-            ),
-            len(block.text.encode()),
-        )
-    if block.block_type == "resource" and block.resource is not None:
-        resource = block.resource
-        if resource.mime_type not in allowed_types:
-            raise DownstreamContentError(
-                f"Tool resource MIME type {resource.mime_type} is not allowed"
-            )
-        if resource.blob is not None:
-            if len(resource.blob) > remaining_bytes:
-                raise DownstreamContentError("Tool result exceeds the published size limit")
-            if artifact_store is None:
-                raise DownstreamContentError(
-                    "Tool binary resource content requires artifact storage"
-                )
-            artifact = artifact_store.put(
-                operation_id=operation_id,
-                file_name="mcp-resource.bin",
-                media_type=resource.mime_type,
-                content=resource.blob,
-            )
-            return (
-                NormalizedContent(
-                    kind="artifact",
-                    text=artifact.artifact_id,
-                    mime_type=resource.mime_type,
-                    uri=f"artifact://{artifact.artifact_id}",
-                    annotations=cast(
-                        Mapping[str, object],
-                        freeze_json({"contentDigest": artifact.content_digest}),
-                    ),
-                ),
-                len(resource.blob),
-            )
-        if resource.text is None:
-            raise DownstreamContentError("Tool resource content is empty")
-        return (
-            NormalizedContent(
-                kind="resource",
-                text=resource.text,
-                mime_type=resource.mime_type,
-                uri=resource.uri,
-                annotations=cast(Mapping[str, object], freeze_json(resource.annotations or {})),
-            ),
-            len(resource.text.encode()),
-        )
-    raise DownstreamContentError(f"Unsupported tool content block {block.block_type}")
 
 
 def _required_string(value: Mapping[str, object], key: str) -> str:

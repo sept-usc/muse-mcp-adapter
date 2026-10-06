@@ -134,6 +134,7 @@ class _Scripted(ConformanceToolClient):
         progress_callback: Callable[[float, float | None, str | None], None] | None = None,
         elicitation_answer: Mapping[str, object] | None = None,
         cancellation: Event | None = None,
+        log_callback: Callable[[str, str], None] | None = None,
     ) -> McpToolResult:
         self.answers.append(elicitation_answer)
         self.progress_hook(progress_callback)
@@ -149,6 +150,7 @@ class _Scripted(ConformanceToolClient):
             progress_callback=progress_callback,
             elicitation_answer=elicitation_answer,
             cancellation=cancellation,
+            log_callback=log_callback,
         )
 
     def progress_hook(

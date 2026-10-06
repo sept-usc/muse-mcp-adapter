@@ -18,6 +18,7 @@ class McpToolClient(Protocol):
         progress_callback: Callable[[float, float | None, str | None], None] | None = None,
         elicitation_answer: Mapping[str, object] | None = None,
         cancellation: Event | None = None,
+        log_callback: Callable[[str, str], None] | None = None,
     ) -> McpToolResult: ...
 
 
