@@ -35,16 +35,19 @@ The trade-off is one more service to run and secure. For a single simple, stable
 
 ## How it works
 
-| Step | Who | What happens |
-| --- | --- | --- |
-| 1. Register | Administrator | Add an MCP server by its exact endpoint (optionally using a provider pack). |
-| 2. Discover | Administrator | The adapter connects and records what the server offers: tools, resources, resource templates, prompts. |
-| 3. Review and publish | Administrator | You write a policy choosing which primitives to expose, how each is classified, and its limits. The adapter compiles an immutable, versioned catalog. |
-| 4. Activate | Administrator | Make a catalog version live, or roll back to the previous one. |
-| 5. Serve | Operator | Run the HTTP service. Muse calls only operations in the active catalog. |
-| 6. Monitor | Administrator | Check drift against the live server, review audit logs, and republish when a change is acceptable. |
+| Step | What happens |
+| --- | --- |
+| 1. Register | Add an MCP server by its exact endpoint (optionally using a provider pack). |
+| 2. Discover | The adapter connects and records what the server offers: tools, resources, resource templates, prompts. |
+| 3. Review and publish | `policy-template` drafts a default-deny policy. You choose which primitives to expose, how each is classified, and its limits, and the adapter compiles an immutable, versioned catalog. |
+| 4. Activate | Make a catalog version live, or roll back to the previous one. |
+| 5. Link | `link` creates a connection for Muse: a public connector URL, a bearer token, and a one-time connection code. It prints what to tell Muse. |
+| 6. Serve | Run the HTTP service. Muse calls only operations in the active catalog. |
+| 7. Monitor | Check drift against the live server, review audit logs, and republish when a change is acceptable. |
 
-At runtime every request is authenticated, checked against the active catalog and your policy, validated against the published schema, executed against the MCP server with the right credential, validated again on the way back, and recorded in the audit log.
+At runtime every request is authenticated, checked against the active catalog and your policy, validated against the published schema, executed against the MCP server with your credential, validated again on the way back, and recorded in the audit log.
+
+You set Muse up from its chat: ask it to create a connector from the connector URL. Muse reads the public API description, then either signs in (you enter the connection code on the page it opens) or asks for the bearer token. Writes are confirmed by Muse with you before it calls them.
 
 ## Quick start
 
@@ -55,51 +58,36 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
-Register a server, discover it, publish a reviewed policy, and activate it:
+Register a server, discover it, review and publish a policy, then activate it:
 
 ```bash
-adapter=".venv/bin/muse-mcp-adapter --database adapter.db"
+adapter=".venv/bin/muse-mcp-adapter --database adapter.db --config serve.json"
 
 $adapter server-register --server-id project-system --display-name "Project System" \
   --endpoint https://mcp.example.com/mcp --auth-profile bearer_token
-
 $adapter discover-remote --server-id project-system --token-env PROJECT_SYSTEM_TOKEN
+
+$adapter policy-template --server-id project-system --expose-reads > policies.json
+# edit policies.json: nothing is exposed until "allowed" is true, and writes start switched off
 $adapter publish  --server-id project-system --catalog-version 1.0.0 --policies policies.json
 $adapter activate --server-id project-system --catalog-version 1.0.0
 ```
 
-A policy states exactly what is exposed. This one allows one read tool and one write tool:
-
-```json
-[
-  {
-    "primitiveKey": "tool:find_issue",
-    "allowed": true,
-    "publicOperationId": "find_issue",
-    "classification": "read",
-    "requiredScopes": ["issues:read"],
-    "maxResultBytes": 262144
-  },
-  {
-    "primitiveKey": "tool:create_issue",
-    "allowed": true,
-    "publicOperationId": "create_issue",
-    "classification": "write",
-    "requiredScopes": ["issues:write"],
-    "maxResultBytes": 262144
-  }
-]
-```
-
-Start the service and point Muse at it:
+Create the connection Muse will use, then start the service:
 
 ```bash
-$adapter serve --config serve.json
+$adapter link --server-id project-system --label "My Muse" \
+  --credential env_token --token-env PROJECT_SYSTEM_TOKEN
+$adapter serve
 ```
 
-Muse then uses the contract served at `/openapi.json?serverId=project-system`, and calls operations at `/v1/operations/{publicOperationId}` with a bearer token that identifies the caller. Everything else, including the full policy reference, the `serve` configuration, and the API, is in the [usage guide](docs/usage.md).
+`link` prints the connector URL, a bearer token, a connection code, and the sentence to tell Muse. The token and code are shown once. `serve.json` names the public URL Muse can reach (see the [usage guide](docs/usage.md)).
 
-Day to day, an administrator checks for upstream changes with `drift`, inspects state with `status`, and reverts a bad release with `rollback`.
+For a provider that signs users in with OAuth, use `--credential oauth` instead. `link` then also prints a one-time sign-in link to open in your browser; the adapter stores the resulting tokens encrypted and refreshes them itself.
+
+Want to try it without Muse or a real provider? The [usage guide](docs/usage.md#try-it-locally) walks through a sample MCP server and a script that behaves like Muse.
+
+Day to day, check for upstream changes with `drift`, inspect state with `status`, list connections with `links`, and revert a bad release with `rollback`.
 
 ## Reference provider packs
 
@@ -115,7 +103,7 @@ These are starting points, not a claim that everything a provider offers is safe
 
 ## Scope
 
-**Supported:** remote MCP servers over Streamable HTTP; tools, resources, resource templates, and prompts; authentication to MCP servers with bearer or service tokens; text and structured JSON results.
+**Supported:** remote MCP servers over Streamable HTTP; tools, resources, resource templates, and prompts; authentication to MCP servers with a static token, no authentication, or OAuth; text and structured JSON results.
 
 **Not included:** local `stdio` servers, MCP Apps rendering, a hosted marketplace, billing, or multi-customer tenancy. Each deployment belongs to one customer.
 
