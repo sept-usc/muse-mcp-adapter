@@ -58,6 +58,7 @@ class AtlasState:
             self.drops: Counter[str] = Counter()
             self.profile = "v1"
             self.clock = 0
+            self.redirect_to: str | None = None
 
     # --- ledger ------------------------------------------------------------------------
 
@@ -122,6 +123,7 @@ class AtlasState:
         with self._lock:
             return {
                 "profile": self.profile,
+                "redirectTo": self.redirect_to,
                 "calls": dict(self.calls),
                 "effects": len(self.effects),
                 "issues": {key: asdict(issue) for key, issue in self.issues.items()},

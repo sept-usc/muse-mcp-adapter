@@ -109,6 +109,12 @@ def _register_control_routes(
         server.set_profile((await request.json())["profile"])
         return JSONResponse({"profile": state.profile})
 
+    @mcp.custom_route("/_control/redirect", methods=["POST"])
+    async def redirect(request: Request) -> Response:
+        target = (await request.json()).get("to")
+        state.redirect_to = target
+        return JSONResponse({"redirectTo": target})
+
     @mcp.custom_route("/_control/oauth/expire", methods=["POST"])
     async def expire(_: Request) -> Response:
         if provider is None:

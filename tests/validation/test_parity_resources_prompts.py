@@ -3,6 +3,7 @@
 
 import base64
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 from mcp import types
@@ -22,6 +23,10 @@ pytestmark = pytest.mark.validation
 
 def _verdict(identical: bool, otherwise: Verdict = Verdict.UNSUPPORTED) -> Verdict:
     return Verdict.SAME if identical else otherwise
+
+
+def _translated(carried: bool) -> Verdict:
+    return Verdict.TRANSLATED if carried else Verdict.UNSUPPORTED
 
 
 def _direct_read(atlas: AtlasHandle, uri: str) -> list[dict[str, Any]]:
@@ -54,7 +59,7 @@ def test_resources_list_every_resource_is_reachable_with_its_uri(
     record(
         "resources/list",
         "resources",
-        _verdict(not missing and not undescribed, Verdict.TRANSLATED),
+        _translated(not missing and not undescribed),
         f"{len(resources)} resources with URI, name, type",
         f"{len(resources) - len(missing)} operations naming their URI",
         "There is no list call: each resource is an operation whose description states its URI",
@@ -146,7 +151,7 @@ def test_resources_templates_list_and_read(
     record(
         "resources/templates/list",
         "resources",
-        _verdict(fields == expected, Verdict.TRANSLATED),
+        _translated(fields == expected),
         "uriTemplate variables",
         f"request fields {fields}",
         "Each template is an operation whose body holds the template variables",
@@ -167,24 +172,47 @@ def test_resources_templates_list_and_read(
     assert via == direct
 
 
-@pytest.mark.parametrize("value", ["plain", "with space", "unicode-é", "a/b", "../x", "%2e%2e"])
+@pytest.mark.parametrize(
+    ("value", "refused"),
+    [
+        ("plain", False),
+        ("with space", False),
+        ("unicode-é", False),
+        ("a/b", False),
+        ("../x", False),
+        ("%2e%2e", False),
+        ("..", True),
+        ("x\x00y", True),
+    ],
+)
 def test_resources_template_values_never_escape_their_slot(
-    atlas: AtlasHandle, conn: ConnectorHandle, record: Recorder, value: str
+    atlas: AtlasHandle, conn: ConnectorHandle, record: Recorder, value: str, refused: bool
 ) -> None:
     response = conn.call("file", {"path": value})
     assert response.status_code < 500
-    if response.status_code == 200:
-        text = response.json()["contents"][0]["text"]
-        # whatever the server received is the value as ONE path segment, never a traversal
-        assert text.startswith("path=") and "/../" not in text
+    if refused:
+        record(
+            f"resources/read: template value {value!r}",
+            "resources",
+            Verdict.POLICY,
+            "server would receive it",
+            f"HTTP {response.status_code}",
+            "Dot segments and control characters are never put into a URI",
+        )
+        assert response.status_code == 400
+        return
+    # What an MCP client sends for the same value: one percent-encoded path segment.
+    direct = atlas.direct().read(f"files://{quote(value, safe='')}").contents[0]
+    assert isinstance(direct, types.TextResourceContents)
+    via = response.json()["contents"][0]["text"]
     record(
         f"resources/read: template value {value!r}",
         "resources",
-        Verdict.POLICY,
-        "server receives the value verbatim",
-        f"HTTP {response.status_code}",
-        "The adapter encodes each value as one segment and refuses dot segments",
+        _verdict(via == direct.text),
+        direct.text,
+        via,
     )
+    assert via == direct.text and "/../" not in via
 
 
 def test_resources_subscriptions_are_not_available_through_rest(
@@ -240,7 +268,7 @@ def test_prompts_list_arguments_and_requirements(
     record(
         "prompts/list",
         "prompts",
-        _verdict(not mismatched, Verdict.UNSUPPORTED),
+        _verdict(not mismatched),
         f"{len(prompts)} prompts with arguments",
         f"{len(mismatched)} differ",
         standard="prompts-list",

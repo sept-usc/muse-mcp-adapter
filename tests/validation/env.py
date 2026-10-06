@@ -59,8 +59,8 @@ class AtlasHandle:
 
 
 @contextmanager
-def atlas_server(**options: Any) -> Generator[AtlasHandle]:
-    port = free_port()
+def atlas_server(*, port: int | None = None, **options: Any) -> Generator[AtlasHandle]:
+    port = port or free_port()
     settings = AtlasOptions(port=port, **options)
     app = build_app(settings)
     with run_asgi(app.asgi, port):
@@ -69,13 +69,15 @@ def atlas_server(**options: Any) -> Generator[AtlasHandle]:
 
 @dataclass
 class ConnectorHandle:
-    http: TestClient
+    http: Any
     repository: SqliteControlPlaneRepository
     connections: ConnectionService
     link: LinkedConnection
     spec: dict[str, Any]
     snapshot: DiscoverySnapshot
     policies: list[dict[str, Any]]
+    database: Path
+    atlas: AtlasHandle
 
     @property
     def slug(self) -> str:
@@ -122,7 +124,10 @@ def connector(
     *,
     adjust: Callable[[list[dict[str, Any]]], None] | None = None,
     rate_limit: int = 100_000,
+    per_server_concurrency: int = 8,
     publish_version: str = "1.0.0",
+    live: bool = False,
+    token_override: str | None = None,
 ) -> Generator[ConnectorHandle]:
     """Publish a policy exposing everything Atlas offers and link a connection to it."""
     database = tmp_path / "adapter.db"
@@ -163,9 +168,71 @@ def connector(
             allow_insecure_http=True,
             allow_private_networks=True,
             rate_limit=rate_limit,
+            per_server_concurrency=per_server_concurrency,
         )
-        env = {TOKEN_ENV: handle.options.bearer_token}
+        env = {TOKEN_ENV: token_override or handle.options.bearer_token}
+        if token_override == "":
+            env = {}
         app = build_application(repository, config, env, database=database)
+        if live:
+            port = free_port()
+            config = ServeConfig(
+                public_url=f"http://127.0.0.1:{port}",
+                allow_insecure_http=True,
+                allow_private_networks=True,
+                rate_limit=rate_limit,
+                per_server_concurrency=per_server_concurrency,
+            )
+            app = build_application(repository, config, env, database=database)
+            with run_asgi(app, port), httpx.Client(base_url=config.public_url, timeout=60) as real:
+                spec = real.get(f"/c/{link.record.slug}/openapi.json").json()
+                yield ConnectorHandle(
+                    real,
+                    repository,
+                    connections,
+                    link,
+                    spec,
+                    snapshot,
+                    policies,
+                    database,
+                    handle,
+                )
+            return
         with TestClient(app, base_url="http://127.0.0.1:8123") as http:
             spec = http.get(f"/c/{link.record.slug}/openapi.json").json()
-            yield ConnectorHandle(http, repository, connections, link, spec, snapshot, policies)
+            yield ConnectorHandle(
+                http, repository, connections, link, spec, snapshot, policies, database, handle
+            )
+
+
+def _service(connector_handle: ConnectorHandle) -> ControlPlaneService:
+    return ControlPlaneService(connector_handle.repository, endpoint_policy=LOCAL)
+
+
+def rediscover(connector_handle: ConnectorHandle) -> DiscoverySnapshot:
+    """Run discovery again, as an owner does when checking for changes upstream."""
+    client = McpSdkClient(
+        StreamableHttpSessionFactory(endpoint_policy=LOCAL),
+        discovery_credential=_discovery_credential(connector_handle.atlas),
+    )
+    return _service(connector_handle).discover("atlas", client)
+
+
+def drift(connector_handle: ConnectorHandle) -> set[tuple[str, str, str]]:
+    """The drift events as (primitive, severity, reason)."""
+    return {
+        (event.primitive_key, event.severity, event.reason)
+        for event in _service(connector_handle).get_drift("atlas")
+    }
+
+
+def publish(
+    connector_handle: ConnectorHandle, version: str, policies: list[dict[str, Any]]
+) -> None:
+    service = _service(connector_handle)
+    service.publish_catalog(server_id="atlas", catalog_version=version, policies=policies)
+    service.activate_catalog("atlas", version)
+
+
+def rollback(connector_handle: ConnectorHandle) -> None:
+    _service(connector_handle).rollback_catalog("atlas")

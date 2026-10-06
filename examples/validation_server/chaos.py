@@ -27,6 +27,9 @@ class ChaosMiddleware:
             await self.app(scope, receive, send)
             return
         body = await _read_body(receive)
+        if self._state.redirect_to:
+            await _redirect(send, self._state.redirect_to)
+            return
         tool = _tool_name(body)
         replay = _replay(body, receive)
         if tool and self._state.should_drop(tool, after_effect=False):
@@ -91,3 +94,14 @@ async def _abort(send: Send) -> None:
     )
     await send({"type": "http.response.body", "body": b"event: mess", "more_body": True})
     raise ConnectionResetError("Atlas injected a dropped connection")
+
+
+async def _redirect(send: Send, target: str) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 307,
+            "headers": [(b"location", target.encode()), (b"content-length", b"0")],
+        }
+    )
+    await send({"type": "http.response.body", "body": b""})

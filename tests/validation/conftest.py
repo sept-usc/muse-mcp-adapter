@@ -71,3 +71,10 @@ def conn(
 ) -> Generator[ConnectorHandle]:
     with connector(tmp_path_factory.mktemp("parity"), atlas) as handle:
         yield handle
+
+
+@pytest.fixture
+def world(tmp_path: Path) -> Generator[tuple[AtlasHandle, ConnectorHandle]]:
+    """A fresh Atlas and connector for tests that change state."""
+    with atlas_server() as handle, connector(tmp_path, handle) as linked:
+        yield handle, linked

@@ -18,6 +18,11 @@ def _verdict(identical: bool, otherwise: Verdict = Verdict.UNSUPPORTED) -> Verdi
     return Verdict.SAME if identical else otherwise
 
 
+def _translated(carried: bool) -> Verdict:
+    """The same information arrives through the REST equivalent of the MCP feature."""
+    return Verdict.TRANSLATED if carried else Verdict.UNSUPPORTED
+
+
 def test_tools_list_covers_every_tool(
     atlas: AtlasHandle, conn: ConnectorHandle, record: Recorder
 ) -> None:
@@ -88,7 +93,7 @@ def test_tools_list_descriptions_are_preserved(
     record(
         "tools/list: descriptions",
         AREA,
-        _verdict(not missing, Verdict.UNSUPPORTED),
+        _translated(not missing),
         "tool description",
         "description plus a classification note",
     )
@@ -229,7 +234,7 @@ def test_call_error_is_reported_as_an_error_with_the_same_message(
     record(
         "tools/call: tool error",
         AREA,
-        _verdict(carried, Verdict.UNSUPPORTED),
+        _translated(carried),
         "isError=true with the message",
         f"HTTP 502 {response.json()['error']} with the message",
         "A tool error becomes an HTTP error",
@@ -281,7 +286,7 @@ def test_call_progress_notifications(
     record(
         "tools/call: progress",
         AREA,
-        _verdict(seen == expected, Verdict.UNSUPPORTED),
+        _translated(seen == expected),
         expected,
         seen or "not visible to the caller",
         "Delivered with the operation's status, not as a live stream",
@@ -302,7 +307,7 @@ def test_call_log_notifications(
     record(
         "tools/call: logging",
         AREA,
-        _verdict(logged == expected, Verdict.UNSUPPORTED),
+        _translated(logged == expected),
         expected,
         logged or "not visible to the caller",
         "Delivered with the operation's status, not as a live stream",
@@ -346,7 +351,7 @@ def test_call_elicitation_is_translated_to_input_required_and_resume(
     record(
         "tools/call: elicitation",
         AREA,
-        _verdict(via == expected, Verdict.UNSUPPORTED),
+        _translated(via == expected),
         "the server asks mid-call, the client answers",
         "409 INPUT_REQUIRED, then resume",
         "The question reaches the caller as a response, and the answer comes in a second call",
