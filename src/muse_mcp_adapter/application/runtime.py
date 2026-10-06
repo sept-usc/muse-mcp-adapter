@@ -89,6 +89,10 @@ class AdapterRuntime:
         self._reauthorization_link = reauthorization_link
 
     @property
+    def public_url(self) -> str:
+        return self._public_url
+
+    @property
     def metrics(self) -> AdapterMetrics:
         return self._metrics
 

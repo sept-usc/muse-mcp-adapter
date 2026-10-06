@@ -160,7 +160,10 @@ CREATE TABLE IF NOT EXISTS connections (
     credential_ref TEXT NOT NULL,
     scopes_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    revoked_at TEXT
+    revoked_at TEXT,
+    link_code_hash TEXT,
+    link_code_salt TEXT,
+    link_code_expires_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS login_nonces (
@@ -168,7 +171,65 @@ CREATE TABLE IF NOT EXISTS login_nonces (
     connection_id TEXT NOT NULL REFERENCES connections(connection_id),
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
+    used_at TEXT,
+    continue_to TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES connections(connection_id),
+    client_name TEXT NOT NULL,
+    redirect_uris_json TEXT NOT NULL,
+    auth_method TEXT NOT NULL CHECK (
+        auth_method IN ('none', 'client_secret_post', 'client_secret_basic')
+    ),
+    secret_hash TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oauth_auth_requests (
+    request_hash TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES connections(connection_id),
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    redirect_uri TEXT NOT NULL,
+    state TEXT,
+    code_challenge TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    cookie_hash TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_codes (
+    code_hash TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES connections(connection_id),
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    family_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
     used_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+    connection_id TEXT NOT NULL REFERENCES connections(connection_id),
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    scope TEXT NOT NULL,
+    family_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_attempts (
+    connection_id TEXT NOT NULL REFERENCES connections(connection_id),
+    attempted_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -237,6 +298,18 @@ class SqliteControlPlaneRepository:
             }
             if "signature" not in columns:
                 self._connection.execute("ALTER TABLE published_catalogs ADD COLUMN signature TEXT")
+            for table, column in (
+                ("connections", "link_code_hash"),
+                ("connections", "link_code_salt"),
+                ("connections", "link_code_expires_at"),
+                ("login_nonces", "continue_to"),
+            ):
+                present = {
+                    str(row["name"])
+                    for row in self._connection.execute(f"PRAGMA table_info({table})")
+                }
+                if column not in present:
+                    self._connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
 
     def _sign(self, payload: str) -> str | None:
         if self._integrity_key is None:
@@ -780,6 +853,15 @@ class SqliteControlPlaneRepository:
         rows = self._connection.execute("SELECT * FROM runtime_audit ORDER BY event_id").fetchall()
         return tuple(dict(row) for row in rows)
 
+    def run[T](self, operation: Callable[[sqlite3.Connection], T]) -> T:
+        """Run storage code under the repository lock in one transaction.
+
+        Used by stores that keep their own tables (such as the OAuth server) without exposing
+        the connection itself.
+        """
+        with self._connection:
+            return operation(self._connection)
+
     def create_connection(self, connection: ConnectionRecord) -> ConnectionRecord:
         try:
             with self._connection:
@@ -787,8 +869,9 @@ class SqliteControlPlaneRepository:
                     """
                     INSERT INTO connections (
                         connection_id, slug, token_hash, identity_id, server_id, label,
-                        credential_kind, credential_ref, scopes_json, created_at, revoked_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        credential_kind, credential_ref, scopes_json, created_at, revoked_at,
+                        link_code_hash, link_code_salt, link_code_expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         connection.connection_id,
@@ -802,6 +885,9 @@ class SqliteControlPlaneRepository:
                         _json(list(connection.scopes)),
                         connection.created_at,
                         connection.revoked_at,
+                        connection.link_code_hash,
+                        connection.link_code_salt,
+                        connection.link_code_expires_at,
                     ),
                 )
         except sqlite3.IntegrityError as error:
@@ -850,6 +936,17 @@ class SqliteControlPlaneRepository:
             raise InvalidStateError(f"Connection {connection_id} is revoked")
         return self.get_connection(connection_id)
 
+    def set_connection_link_code(
+        self, connection_id: str, code_hash: str, salt: str, expires_at: str
+    ) -> ConnectionRecord:
+        with self._connection:
+            self._connection.execute(
+                "UPDATE connections SET link_code_hash = ?, link_code_salt = ?, "
+                "link_code_expires_at = ? WHERE connection_id = ? AND revoked_at IS NULL",
+                (code_hash, salt, expires_at, connection_id),
+            )
+        return self.get_connection(connection_id)
+
     def set_connection_scopes(self, connection_id: str, scopes: Sequence[str]) -> ConnectionRecord:
         with self._connection:
             self._connection.execute(
@@ -859,16 +956,22 @@ class SqliteControlPlaneRepository:
         return self.get_connection(connection_id)
 
     def create_login_nonce(
-        self, nonce_hash: str, connection_id: str, created_at: str, expires_at: str
+        self,
+        nonce_hash: str,
+        connection_id: str,
+        created_at: str,
+        expires_at: str,
+        continue_to: str | None = None,
     ) -> None:
         with self._connection:
             self._connection.execute(
-                "INSERT INTO login_nonces (nonce_hash, connection_id, created_at, expires_at) "
-                "VALUES (?, ?, ?, ?)",
-                (nonce_hash, connection_id, created_at, expires_at),
+                "INSERT INTO login_nonces "
+                "(nonce_hash, connection_id, created_at, expires_at, continue_to) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (nonce_hash, connection_id, created_at, expires_at, continue_to),
             )
 
-    def consume_login_nonce(self, nonce_hash: str, now: str) -> str:
+    def consume_login_nonce(self, nonce_hash: str, now: str) -> tuple[str, str | None]:
         """Atomically spend a one-time login link; returns the connection it belongs to."""
         with self._connection:
             cursor = self._connection.execute(
@@ -879,9 +982,10 @@ class SqliteControlPlaneRepository:
             if cursor.rowcount != 1:
                 raise EntityNotFoundError("This sign-in link is invalid, expired, or already used")
             row = self._connection.execute(
-                "SELECT connection_id FROM login_nonces WHERE nonce_hash = ?", (nonce_hash,)
+                "SELECT connection_id, continue_to FROM login_nonces WHERE nonce_hash = ?",
+                (nonce_hash,),
             ).fetchone()
-        return cast(str, row["connection_id"])
+        return cast(str, row["connection_id"]), cast(str | None, row["continue_to"])
 
     def _one_connection(self, column: str, value: str) -> ConnectionRecord:
         row = self._connection.execute(
@@ -969,6 +1073,9 @@ def _connection_from_row(row: sqlite3.Row) -> ConnectionRecord:
         scopes=tuple(cast(list[str], scopes)),
         created_at=cast(str, row["created_at"]),
         revoked_at=cast(str | None, row["revoked_at"]),
+        link_code_hash=cast(str | None, row["link_code_hash"]),
+        link_code_salt=cast(str | None, row["link_code_salt"]),
+        link_code_expires_at=cast(str | None, row["link_code_expires_at"]),
     )
 
 

@@ -22,6 +22,7 @@ from ..operations.runtime_controls import (
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from .http_app import WebAuthorization, create_http_app
+from .muse_oauth import MuseAuthorizationServer
 from .oauth_web import OAuthWebFlow
 from .runtime import AdapterRuntime
 
@@ -62,9 +63,10 @@ def build_http_application(
     lifecycle = OperationLifecycleService(
         repository, clock=clock, cancellation_registry=cancellations
     )
+    connections = ConnectionService(repository, clock=clock)
     runtime = AdapterRuntime(
         repository=repository,
-        connections=ConnectionService(repository, clock=clock),
+        connections=connections,
         read_service=reads,
         tool_service=tools,
         lifecycle=lifecycle,
@@ -77,5 +79,15 @@ def build_http_application(
         idempotency_window_seconds=idempotency_window_seconds,
         reauthorization_link=oauth_flow.login_link if oauth_flow is not None else None,
     )
-    web: WebAuthorization | None = oauth_flow
+    web: list[WebAuthorization] = [
+        MuseAuthorizationServer(
+            repository=repository,
+            connections=connections,
+            public_url=public_url,
+            clock=clock,
+            web_flow=oauth_flow,
+        )
+    ]
+    if oauth_flow is not None:
+        web.append(oauth_flow)
     return create_http_app(runtime=runtime, web_authorization=web)

@@ -203,8 +203,14 @@ def _execute(
         connector_url = _connector_url(config.public_url, record)
         result = _connection_dict(record, config.public_url)
         result["token"] = linked.token
-        result["tokenNote"] = "Shown once. Store it only in Muse's credential prompt."
-        result["museInstructions"] = _muse_instructions(record.label, connector_url, linked.token)
+        result["connectionCode"] = linked.link_code
+        result["connectionCodeExpiresAt"] = linked.link_code_expires_at
+        result["secretsNote"] = (
+            "The token and connection code are shown once. Give them only to Muse."
+        )
+        result["museInstructions"] = _muse_instructions(
+            record.label, connector_url, linked.token, linked.link_code
+        )
         if record.credential_kind == "oauth":
             result["loginUrl"] = _flow(repository, config, args).login_link(record.connection_id)
             result["loginNote"] = "Open this one-time link in your browser to sign in."
@@ -225,10 +231,24 @@ def _execute(
         rotated = connections.rotate_token(args.connection_id, actor=actor)
         result = _connection_dict(rotated.record, config.public_url)
         result["token"] = rotated.token
+        result["connectionCode"] = rotated.link_code
+        result["connectionCodeExpiresAt"] = rotated.link_code_expires_at
         result["museInstructions"] = _muse_instructions(
-            rotated.record.label, _connector_url(config.public_url, rotated.record), rotated.token
+            rotated.record.label,
+            _connector_url(config.public_url, rotated.record),
+            rotated.token,
+            rotated.link_code,
         )
         return result
+
+    if args.command == "link-code":
+        code, expires = connections.issue_link_code(args.connection_id, actor=actor)
+        return {
+            "connectionId": args.connection_id,
+            "connectionCode": code,
+            "connectionCodeExpiresAt": expires,
+            "note": "Enter this code on the page Muse opens when you sign in to the connector.",
+        }
 
     if args.command == "login":
         record = repository.get_connection(args.connection_id)
@@ -313,11 +333,18 @@ def _connector_url(public_url: str, record: ConnectionRecord) -> str:
     return f"{public_url.rstrip('/')}/c/{record.slug}/openapi.json"
 
 
-def _muse_instructions(label: str, connector_url: str, token: str) -> str:
+def _muse_instructions(
+    label: str, connector_url: str, token: str, connection_code: str | None
+) -> str:
+    sign_in = (
+        f"If Muse offers to sign in, choose that: enter the connection code {connection_code} "
+        "on the page that opens. "
+        if connection_code
+        else ""
+    )
     return (
-        f'Tell Muse: "Create a connector called {label} from the API spec at {connector_url}. '
-        'It uses bearer-token authentication." When Muse asks for the token, give it: '
-        f"{token}"
+        f'Tell Muse: "Create a connector called {label} from the API spec at {connector_url}." '
+        f"{sign_in}If Muse asks for a bearer token instead, give it: {token}"
     )
 
 
@@ -405,8 +432,15 @@ def _parser() -> argparse.ArgumentParser:
     unlink = commands.add_parser("unlink", help="Revoke a connection")
     unlink.add_argument("--connection-id", required=True)
 
-    rotate = commands.add_parser("rotate-token", help="Issue a new token for a connection")
+    rotate = commands.add_parser(
+        "rotate-token", help="Issue a new token and code, ending every session for a connection"
+    )
     rotate.add_argument("--connection-id", required=True)
+
+    code = commands.add_parser(
+        "link-code", help="Issue a new connection code for signing in from Muse"
+    )
+    code.add_argument("--connection-id", required=True)
 
     login = commands.add_parser("login", help="Get a sign-in link for an OAuth connection")
     login.add_argument("--connection-id", required=True)

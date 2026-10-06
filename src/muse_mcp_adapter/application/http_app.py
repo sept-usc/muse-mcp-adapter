@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
@@ -54,7 +54,7 @@ class WebAuthorization(Protocol):
 def create_http_app(
     *,
     runtime: AdapterRuntime,
-    web_authorization: WebAuthorization | None = None,
+    web_authorization: Sequence[WebAuthorization] = (),
     stale_after_seconds: int = 300,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Starlette:
@@ -121,7 +121,7 @@ def create_http_app(
         )
         return Response(content, media_type=media_type)
 
-    async def error_handler(_: Request, error: Exception) -> Response:
+    async def error_handler(request: Request, error: Exception) -> Response:
         payload: dict[str, object] = {
             "error": getattr(error, "code", type(error).__name__),
             "message": str(error),
@@ -134,7 +134,18 @@ def create_http_app(
             payload["schema"] = error.schema
         if isinstance(error, ReauthorizationRequiredError) and error.authorization_url:
             payload["authorizationUrl"] = error.authorization_url
-        return JSONResponse(payload, status_code=_status(error))
+        headers: dict[str, str] = {}
+        if isinstance(error, AuthenticationError):
+            # Lets an OAuth-capable client discover how to sign in (RFC 9728).
+            challenge = 'Bearer realm="muse-mcp-adapter"'
+            slug = request.path_params.get("slug")
+            if slug:
+                challenge += (
+                    f', resource_metadata="{runtime.public_url}'
+                    f'/.well-known/oauth-protected-resource/c/{slug}"'
+                )
+            headers["WWW-Authenticate"] = challenge
+        return JSONResponse(payload, status_code=_status(error), headers=headers)
 
     routes = [
         Route("/health", health, methods=["GET"]),
@@ -144,8 +155,8 @@ def create_http_app(
         Route("/c/{slug}/executions/{operation_id}/resume", resume, methods=["POST"]),
         Route("/c/{slug}/artifacts/{artifact_id}", artifact, methods=["GET"]),
     ]
-    if web_authorization is not None:
-        routes.extend(web_authorization.routes())
+    for extra in web_authorization:
+        routes.extend(extra.routes())
     return Starlette(
         routes=routes,
         exception_handlers={

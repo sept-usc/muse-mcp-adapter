@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import secrets
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ..domain.errors import AuthenticationError, EntityNotFoundError, InvalidStateError
 from ..domain.models import ConnectionRecord
+from ..persistence.oauth_store import OAuthServerStore
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 
 TOKEN_PREFIX = "mcpa_"
+ACCESS_TOKEN_PREFIX = "mcpa_at_"
+LINK_CODE_TTL_SECONDS = 24 * 3600
+_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I to avoid misreading
 CREDENTIAL_KINDS = ("none", "env_token", "oauth")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -22,6 +27,8 @@ class LinkedConnection:
 
     record: ConnectionRecord
     token: str
+    link_code: str | None = None
+    link_code_expires_at: str | None = None
 
 
 def hash_token(token: str) -> str:
@@ -44,8 +51,11 @@ class ConnectionService:
         token_factory: Callable[[], str] | None = None,
         slug_factory: Callable[[], str] | None = None,
         id_factory: Callable[[], str] | None = None,
+        link_code_factory: Callable[[], str] | None = None,
     ) -> None:
         self._repository = repository
+        self._oauth = OAuthServerStore(repository)
+        self._link_code_factory = link_code_factory or _new_link_code
         self._clock = clock or _utc_now
         self._token_factory = token_factory or (lambda: TOKEN_PREFIX + secrets.token_urlsafe(32))
         self._slug_factory = slug_factory or (lambda: secrets.token_urlsafe(16))
@@ -95,12 +105,51 @@ class ConnectionService:
             )
         )
         self._audit(actor, "connection.link", record)
-        return LinkedConnection(record, token)
+        code, expires = self.issue_link_code(record.connection_id, actor=actor)
+        return LinkedConnection(record, token, code, expires)
+
+    def issue_link_code(
+        self,
+        connection_id: str,
+        *,
+        ttl_seconds: int = LINK_CODE_TTL_SECONDS,
+        actor: str = "local-administrator",
+    ) -> tuple[str, str]:
+        """Create the code the owner types when Muse opens its sign-in page.
+
+        It proves the person at that page is the owner, so a stranger who learns the connector
+        URL cannot link their own Muse to it. It is shown once and expires.
+        """
+        code = self._link_code_factory()
+        salt = secrets.token_hex(16)
+        expires = (_parse(self._clock()) + timedelta(seconds=ttl_seconds)).isoformat()
+        expires = expires.replace("+00:00", "Z")
+        record = self._repository.set_connection_link_code(
+            connection_id, _hash_code(code, salt), salt, expires
+        )
+        self._audit(actor, "connection.link_code", record)
+        return code, expires
+
+    def verify_link_code(self, connection_id: str, presented: str) -> bool:
+        record = self._repository.get_connection(connection_id)
+        if (
+            record.revoked_at is not None
+            or record.link_code_hash is None
+            or record.link_code_salt is None
+            or record.link_code_expires_at is None
+            or record.link_code_expires_at <= self._clock()
+        ):
+            return False
+        return hmac.compare_digest(
+            _hash_code(presented, record.link_code_salt), record.link_code_hash
+        )
 
     def authenticate(self, token: str | None) -> ConnectionRecord:
         """Resolve a presented bearer token to its active connection."""
         if not token:
             raise AuthenticationError("A bearer token is required")
+        if token.startswith(ACCESS_TOKEN_PREFIX):
+            return self._authenticate_access_token(token)
         try:
             record = self._repository.find_connection_by_token_hash(hash_token(token))
         except EntityNotFoundError:
@@ -108,6 +157,28 @@ class ConnectionService:
         if record.revoked_at is not None:
             raise AuthenticationError("This connection has been revoked")
         return record
+
+    def _authenticate_access_token(self, token: str) -> ConnectionRecord:
+        """Accept an access token that this adapter issued to Muse through OAuth."""
+        stored = self._oauth.get_token(hash_token(token))
+        if (
+            stored is None
+            or stored.kind != "access"
+            or stored.revoked_at is not None
+            or stored.expires_at <= self._clock()
+        ):
+            raise AuthenticationError("Bearer token is invalid")
+        try:
+            record = self._repository.get_connection(stored.connection_id)
+        except EntityNotFoundError:
+            raise AuthenticationError("Bearer token is invalid") from None
+        if record.revoked_at is not None:
+            raise AuthenticationError("This connection has been revoked")
+        return record
+
+    def get(self, connection_id: str) -> ConnectionRecord:
+        """The current stored record (scopes can change after a provider sign-in)."""
+        return self._repository.get_connection(connection_id)
 
     def by_slug(self, slug: str) -> ConnectionRecord:
         try:
@@ -119,7 +190,9 @@ class ConnectionService:
         return record
 
     def unlink(self, connection_id: str, *, actor: str = "local-administrator") -> ConnectionRecord:
-        record = self._repository.revoke_connection(connection_id, self._clock())
+        now = self._clock()
+        record = self._repository.revoke_connection(connection_id, now)
+        self._oauth.revoke_connection(connection_id, now)
         self._audit(actor, "connection.unlink", record)
         return record
 
@@ -128,8 +201,13 @@ class ConnectionService:
     ) -> LinkedConnection:
         token = self._token_factory()
         record = self._repository.replace_connection_token(connection_id, hash_token(token))
+        # A reset also ends every session Muse obtained through OAuth.
+        self._oauth.revoke_connection(connection_id, self._clock())
         self._audit(actor, "connection.rotate_token", record)
-        return LinkedConnection(record, token)
+        code, expires = self.issue_link_code(connection_id, actor=actor)
+        return LinkedConnection(
+            self._repository.get_connection(connection_id), token, code, expires
+        )
 
     def list(self, server_id: str | None = None) -> tuple[ConnectionRecord, ...]:
         return self._repository.list_connections(server_id)
@@ -142,6 +220,30 @@ class ConnectionService:
             server_id=record.server_id,
             data={"connectionId": record.connection_id, "label": record.label},
         )
+
+
+def _new_link_code() -> str:
+    raw = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(12))
+    return "-".join(raw[index : index + 4] for index in range(0, 12, 4))
+
+
+def normalize_link_code(value: str) -> str:
+    return re.sub(r"[\s-]", "", value).upper()
+
+
+def _hash_code(code: str, salt: str) -> str:
+    return hashlib.scrypt(
+        normalize_link_code(code).encode(),
+        salt=bytes.fromhex(salt),
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32,
+    ).hex()
+
+
+def _parse(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _utc_now() -> str:

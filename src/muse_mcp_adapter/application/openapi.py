@@ -56,6 +56,7 @@ def compile_openapi(
         "Problem": _PROBLEM_SCHEMA,
         **components,
     }
+    base = f"{public_url.rstrip('/')}/c/{slug}"
     document: dict[str, object] = {
         "openapi": "3.1.0",
         "info": {
@@ -67,10 +68,24 @@ def compile_openapi(
             ),
         },
         "servers": [{"url": f"{public_url.rstrip('/')}/c/{slug}"}],
-        "security": [{"bearerAuth": []}],
+        "security": [{"oauth2": ["connector"]}, {"bearerAuth": []}],
         "paths": paths,
         "components": {
-            "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer"}},
+            "securitySchemes": {
+                "oauth2": {
+                    "type": "oauth2",
+                    "description": "Sign in to link this connector (PKCE, authorization code).",
+                    "flows": {
+                        "authorizationCode": {
+                            "authorizationUrl": f"{base}/oauth/authorize",
+                            "tokenUrl": f"{base}/oauth/token",
+                            "refreshUrl": f"{base}/oauth/token",
+                            "scopes": {"connector": "Use this connector"},
+                        }
+                    },
+                },
+                "bearerAuth": {"type": "http", "scheme": "bearer"},
+            },
             "schemas": schemas,
         },
     }

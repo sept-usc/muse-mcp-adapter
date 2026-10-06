@@ -129,7 +129,7 @@ def test_sign_in_links_are_single_use_and_expire(tmp_path: Path) -> None:
             "h1", connection, "2026-10-05T10:00:00Z", "2026-10-05T10:15:00Z"
         )
 
-        assert repository.consume_login_nonce("h1", "2026-10-05T10:01:00Z") == connection
+        assert repository.consume_login_nonce("h1", "2026-10-05T10:01:00Z") == (connection, None)
         with pytest.raises(EntityNotFoundError):  # spent
             repository.consume_login_nonce("h1", "2026-10-05T10:02:00Z")
         repository.create_login_nonce(

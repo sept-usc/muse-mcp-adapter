@@ -19,6 +19,7 @@ from muse_mcp_adapter.connections import ConnectionService
 from muse_mcp_adapter.discovery.client import ManifestDiscoveryClient
 from muse_mcp_adapter.persistence.sqlite_repository import SqliteControlPlaneRepository
 from muse_mcp_adapter.transport.security import EndpointSecurityPolicy
+from tests.fixtures.fake_muse import REDIRECT_URI, FakeMuse, pkce, query
 from tests.fixtures.fake_oauth import FakeAuthorizationServer, protected_server
 from tests.fixtures.live_server import free_port, run_asgi
 
@@ -246,6 +247,65 @@ def test_unauthenticated_responses_never_leak_tokens_or_codes(tmp_path: Path) ->
         body = world.call(linked.token, linked.record.slug).text
         assert linked.token not in body
         assert "code=" not in body
+
+
+def _follow_to(browser: httpx.Client, url: str, stop: str) -> str:
+    """Follow redirects by hand until the next location starts with ``stop``."""
+    for _ in range(12):
+        response = browser.get(url, follow_redirects=False)
+        assert response.status_code == 302, response.text
+        url = response.headers["location"]
+        if url.startswith(stop) or stop in url:
+            return url
+    raise AssertionError("too many redirects")
+
+
+def test_muse_sign_in_chains_through_the_providers_consent(tmp_path: Path) -> None:
+    with _world(tmp_path) as world:
+        linked = world.link()
+        slug = linked.record.slug
+        with httpx.Client(base_url=world.adapter, timeout=30) as browser:
+            muse = FakeMuse(browser, slug)
+            assert muse.register().status_code == 201
+            verifier, challenge = pkce()
+            consent = muse.consent(muse.authorize(challenge), str(linked.link_code))
+            assert consent.status_code == 302
+            assert "/connect/" in consent.headers["location"]  # the provider comes first
+
+            back = _follow_to(browser, consent.headers["location"], "/oauth/continue")
+            assert f"/c/{slug}/oauth/continue?req=" in back
+
+            # the provider's answer only counts in the browser that started the sign-in
+            with httpx.Client(timeout=30) as attacker:
+                assert attacker.get(back, follow_redirects=False).status_code == 400
+            delivered = browser.get(back, follow_redirects=False)
+            assert delivered.status_code == 302
+            assert delivered.headers["location"].startswith(REDIRECT_URI)
+            params = query(delivered.headers["location"])
+            assert params["state"] == "state-123"
+
+            tokens = muse.exchange(params["code"], verifier).json()
+            # Muse's token works, and the adapter uses the provider tokens behind it
+            ok = world.call(tokens["access_token"], slug)
+            assert ok.status_code == 200, ok.text
+            assert ok.json()["structuredContent"]["id"] == "ISSUE-1"
+            # the continuation was single-use
+            assert browser.get(back, follow_redirects=False).status_code == 400
+
+
+def test_second_muse_sign_in_skips_the_provider_when_already_connected(tmp_path: Path) -> None:
+    with _world(tmp_path) as world:
+        linked = world.link()
+        _browser_login(world.call(linked.token, linked.record.slug).json()["authorizationUrl"])
+        with httpx.Client(base_url=world.adapter, timeout=30) as browser:
+            muse = FakeMuse(browser, linked.record.slug)
+            muse.register()
+            verifier, challenge = pkce()
+            consent = muse.consent(muse.authorize(challenge), str(linked.link_code))
+            assert consent.headers["location"].startswith(REDIRECT_URI)
+            code = query(consent.headers["location"])["code"]
+            tokens = muse.exchange(code, verifier).json()
+            assert world.call(tokens["access_token"], linked.record.slug).status_code == 200
 
 
 @pytest.mark.parametrize("wait", [0])

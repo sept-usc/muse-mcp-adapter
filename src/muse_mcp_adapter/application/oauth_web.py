@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import html
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -29,7 +28,7 @@ import httpx
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
 from ..data_plane.tool_client import McpReauthorizationRequired
@@ -38,6 +37,7 @@ from ..domain.models import ConnectionRecord, ResolvedCredential
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from ..transport.oauth import (
     AdapterOAuthProvider,
+    NamespacedTokenStorage,
     OAuthAuthFactory,
     OAuthClientConfig,
     OAuthStorageBackend,
@@ -45,6 +45,7 @@ from ..transport.oauth import (
 )
 from ..transport.sdk_client import StreamableHttpSessionFactory
 from ..transport.security import EndpointSecurityPolicy
+from .web_pages import page, redirect
 
 COOKIE_NAME = "muse_adapter_login"
 CALLBACK_PATH = "/oauth/callback"
@@ -71,6 +72,7 @@ class _Pending:
     )
     task: asyncio.Task[None] | None = None
     state: str | None = None
+    continue_to: str | None = None
 
 
 class OAuthWebFlow:
@@ -104,8 +106,12 @@ class OAuthWebFlow:
     def callback_url(self) -> str:
         return f"{self._public_url}{CALLBACK_PATH}"
 
-    def login_link(self, connection_id: str) -> str:
-        """Create a one-time sign-in link for a connection (callable from any thread)."""
+    def login_link(self, connection_id: str, continue_to: str | None = None) -> str:
+        """Create a one-time sign-in link for a connection (callable from any thread).
+
+        ``continue_to`` is a path on this service the browser is sent to once the provider
+        sign-in succeeds, which lets another flow (such as linking Muse) resume afterwards.
+        """
         nonce = secrets.token_urlsafe(24)
         now = _parse(self._clock())
         self._repository.create_login_nonce(
@@ -113,6 +119,7 @@ class OAuthWebFlow:
             connection_id,
             now.isoformat().replace("+00:00", "Z"),
             (now + timedelta(seconds=self._nonce_ttl)).isoformat().replace("+00:00", "Z"),
+            continue_to,
         )
         return f"{self._public_url}/connect/{nonce}"
 
@@ -127,7 +134,7 @@ class OAuthWebFlow:
     async def _connect(self, request: Request) -> Response:
         self._expire()
         try:
-            connection_id = await anyio.to_thread.run_sync(
+            connection_id, continue_to = await anyio.to_thread.run_sync(
                 lambda: self._repository.consume_login_nonce(
                     _hash(request.path_params["nonce"]), self._clock()
                 )
@@ -136,14 +143,15 @@ class OAuthWebFlow:
                 lambda: self._repository.get_connection(connection_id)
             )
         except EntityNotFoundError:
-            return _page("Link not valid", "This sign-in link is invalid, expired, or used.", 404)
+            return page("Link not valid", "This sign-in link is invalid, expired, or used.", 404)
         if connection.revoked_at is not None or connection.credential_kind != "oauth":
-            return _page("Link not valid", "This connection cannot be signed in.", 404)
+            return page("Link not valid", "This connection cannot be signed in.", 404)
 
         pending = _Pending(
             connection=connection,
             cookie_secret=secrets.token_urlsafe(24),
             started_at=datetime.now(UTC),
+            continue_to=continue_to if _safe_path(continue_to) else None,
         )
         pending.task = asyncio.create_task(self._run_login(pending))
         done, _ = await asyncio.wait(
@@ -166,9 +174,9 @@ class OAuthWebFlow:
             response.headers["Cache-Control"] = "no-store"
             return response
         if pending.task in done and pending.task.exception() is None:
-            return _page("Already connected", "This account is already connected. Return to Muse.")
+            return page("Already connected", "This account is already connected. Return to Muse.")
         self._discard(pending)
-        return _page(
+        return page(
             "Could not start sign-in",
             "The service did not offer a sign-in. Check the connection and try again.",
             502,
@@ -237,6 +245,26 @@ class OAuthWebFlow:
                 )
             )
 
+    async def is_authorized(self, connection: ConnectionRecord) -> bool:
+        """Whether usable provider tokens are already stored for this connection."""
+        server = await anyio.to_thread.run_sync(
+            lambda: self._repository.get_server(connection.server_id)
+        )
+        credential = ResolvedCredential(
+            credential_ref=f"connection:{connection.connection_id}",
+            access_token="",
+            scopes=frozenset(connection.scopes),
+            local_identity_id=connection.identity_id,
+            connection_id=connection.connection_id,
+            server_id=connection.server_id,
+        )
+        storage = NamespacedTokenStorage(
+            self._backend,
+            namespace_for(server.endpoint, credential),
+            frozenset(connection.scopes),
+        )
+        return await storage.get_tokens() is not None
+
     async def _seed_client(self, server_id: str, namespace: str) -> None:
         seed = self._clients.get(server_id)
         if seed is None or await self._backend.get(namespace, "client_info") is not None:
@@ -265,7 +293,7 @@ class OAuthWebFlow:
         presented = request.cookies.get(COOKIE_NAME, "")
         if pending is None or not hmac.compare_digest(presented, pending.cookie_secret):
             # Wrong browser, replay, or forged state: never accept an authorization code here.
-            return _page(
+            return page(
                 "Sign-in not accepted",
                 "This sign-in was not started in this browser or has expired. "
                 "Request a new link from Muse.",
@@ -282,12 +310,14 @@ class OAuthWebFlow:
         try:
             await asyncio.wait_for(asyncio.shield(pending.task), timeout=60)
         except Exception:
-            return _page(
+            return page(
                 "Not connected",
                 "The service did not complete the sign-in. Return to Muse and try again.",
                 400,
             )
-        return _page("Connected", "Your account is connected. You can return to Muse.")
+        if pending.continue_to:
+            return redirect(f"{self._public_url}{pending.continue_to}")
+        return page("Connected", "Your account is connected. You can return to Muse.")
 
     def _expire(self) -> None:
         cutoff = datetime.now(UTC) - timedelta(seconds=self._ttl)
@@ -344,22 +374,14 @@ def runtime_auth_factory(
     return factory
 
 
+def _safe_path(value: str | None) -> bool:
+    """Only same-site absolute paths may be used as a post-sign-in destination."""
+    return value is not None and value.startswith("/") and not value.startswith("//")
+
+
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
 def _parse(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def _page(title: str, message: str, status: int = 200) -> Response:
-    body = (
-        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
-        f"<title>{html.escape(title)}</title>"
-        "<body style='font-family:system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem'>"
-        f"<h1>{html.escape(title)}</h1><p>{html.escape(message)}</p>"
-    )
-    response = HTMLResponse(body, status_code=status)
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response

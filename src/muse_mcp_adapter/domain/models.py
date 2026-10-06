@@ -228,3 +228,6 @@ class ConnectionRecord:
     scopes: tuple[str, ...]
     created_at: str
     revoked_at: str | None
+    link_code_hash: str | None = None
+    link_code_salt: str | None = None
+    link_code_expires_at: str | None = None

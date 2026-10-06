@@ -151,10 +151,21 @@ def test_operator_walkthrough_from_register_to_a_working_muse_call(
         )
         assert spec_url in linked["museInstructions"]
         assert linked["token"] in linked["museInstructions"]
+        assert linked["connectionCode"] in linked["museInstructions"]
+        assert len(linked["connectionCode"].replace("-", "")) == 12
 
         listing = cli.ok("links", flags=["--config", str(config_path)])
         assert len(listing) == 1 and "token" not in listing[0]
         assert linked["token"] not in json.dumps(listing)
+        assert linked["connectionCode"] not in json.dumps(listing)
+
+        reissued = cli.ok(
+            "link-code",
+            "--connection-id",
+            linked["connectionId"],
+            flags=["--config", str(config_path)],
+        )
+        assert reissued["connectionCode"] != linked["connectionCode"]
 
         # Run the service exactly as `serve` would and call it the way Muse does.
         config = load_serve_config(config_path)
