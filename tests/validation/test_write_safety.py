@@ -136,7 +136,7 @@ def test_a_connection_lost_before_the_write_can_be_retried_once_confirmed(
     assert atlas.effects("create_issue") == []  # nothing happened, but the adapter cannot know
 
     code = cli(["--database", str(conn.database), "--actor", "owner", "reconcile",
-                "--operation-id", lost.json()["operationId"], "--outcome", "not_applied"])  # fmt: skip
+                "--operation-id", lost.json()["operationId"], "--outcome", "not_applied"])  # fmt: skip  # noqa: E501
     assert code == 0
     retried = conn.call("create_issue", BODY, **_key("before"))
     assert retried.status_code == 200
