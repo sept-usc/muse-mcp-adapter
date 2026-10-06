@@ -77,13 +77,20 @@ class _ToolPolicy:
 
 
 class ToolDataPlaneService:
+    """Executes published tools.
+
+    Writes need an idempotency key. By default a write is authorized by Muse's own confirmation
+    with its user. Pass an ``approval_verifier`` to additionally require signed, single-use
+    approval evidence bound to the exact action.
+    """
+
     def __init__(
         self,
         repository: SqliteControlPlaneRepository,
         credential_resolver: CredentialResolver,
         mcp_client: McpToolClient,
         *,
-        approval_verifier: ApprovalVerifier,
+        approval_verifier: ApprovalVerifier | None = None,
         clock: Callable[[], str],
         operation_id_factory: Callable[[], str] | None = None,
         cancellation_registry: CancellationRegistry | None = None,
@@ -336,6 +343,11 @@ class ToolDataPlaneService:
     ) -> str | None:
         if operation.classification == "read":
             return None
+        if self._approval_verifier is None:
+            # Muse asks its user before consequential actions and only then calls the write
+            # operation, so the call itself is the confirmation. The request ID ties the
+            # recorded approval to this exact call for audit.
+            return f"muse-confirmed:{request.request_id}"
         evidence = request.approval
         reason: str | None
         if evidence is None:
