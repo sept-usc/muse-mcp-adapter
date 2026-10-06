@@ -38,6 +38,10 @@ class McpReauthorizationRequired(McpPreDispatchError):
     """The linked account's tokens are missing or cannot be refreshed; the owner must log in."""
 
 
+class McpAuthRejected(McpPreDispatchError):
+    """The MCP server refused the credential (HTTP 401 or 403) before doing anything."""
+
+
 class McpUnknownOutcome(RuntimeError):
     """The request may have reached the downstream server, but its result is unknown."""
 

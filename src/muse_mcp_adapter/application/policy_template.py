@@ -41,6 +41,10 @@ def draft_policies(
             "classification": classification,
             "requiredScopes": _scopes(primitive),
         }
+        description = primitive.get("description")
+        if isinstance(description, str) and description.strip():
+            # Pinned: what Muse reads stays as reviewed even if the server later edits its text.
+            entry["description"] = description.strip()[:2000]
         if kind == "tool":
             entry["timeoutSeconds"] = 30
             entry["maxResultBytes"] = DEFAULT_RESULT_BYTES

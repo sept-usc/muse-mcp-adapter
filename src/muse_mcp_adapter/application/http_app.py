@@ -22,6 +22,8 @@ from ..domain.errors import (
     ControlPlaneError,
     CredentialResolutionError,
     DataPlaneError,
+    DownstreamAuthRejectedError,
+    DownstreamConnectionLostError,
     DownstreamContentError,
     DownstreamToolError,
     EntityNotFoundError,
@@ -241,7 +243,14 @@ def _status(error: Exception) -> int:
         | ConflictError,
     ):
         return 409
-    if isinstance(error, DownstreamToolError | DownstreamContentError | UnsafeEndpointError):
+    if isinstance(
+        error,
+        DownstreamToolError
+        | DownstreamContentError
+        | DownstreamAuthRejectedError
+        | DownstreamConnectionLostError
+        | UnsafeEndpointError,
+    ):
         return 502
     if isinstance(error, RequestValidationError | UnsupportedPrimitiveError):
         return 400

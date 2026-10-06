@@ -124,8 +124,18 @@ def _operation(primitive: PublishedPrimitive, components: dict[str, object]) -> 
     return operation
 
 
+def _server_text(primitive: PublishedPrimitive) -> object:
+    """What Muse's model reads about an operation: the owner's pinned text when there is one.
+
+    A server controls its own descriptions, and Muse's model reads them, so an owner who pins the
+    text keeps later server-side edits from reaching the model without a new review.
+    """
+    pinned = primitive.policy.get("description")
+    return pinned if isinstance(pinned, str) else primitive.definition.get("description")
+
+
 def _description(primitive: PublishedPrimitive) -> str:
-    text = primitive.definition.get("description")
+    text = _server_text(primitive)
     base = text.strip() if isinstance(text, str) and text.strip() else ""
     notes = {
         "read": "Read-only: retrieves information and does not change anything.",
@@ -151,16 +161,13 @@ def _source_note(primitive: PublishedPrimitive) -> str:
 
 
 def _summary(primitive: PublishedPrimitive) -> str:
-    for key in ("title", "description"):
-        value = primitive.definition.get(key)
+    for value in (primitive.definition.get("title"), _server_text(primitive)):
         if isinstance(value, str) and value.strip():
             return value.strip().splitlines()[0][:120]
     return primitive.mcp_name
 
 
-def _responses(
-    primitive: PublishedPrimitive, components: dict[str, object]
-) -> dict[str, object]:
+def _responses(primitive: PublishedPrimitive, components: dict[str, object]) -> dict[str, object]:
     result_schema: dict[str, object] = {"$ref": "#/components/schemas/Result"}
     output = primitive.definition.get("outputSchema")
     if primitive.primitive_type == "tool" and output is not None:

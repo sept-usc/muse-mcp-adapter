@@ -13,6 +13,7 @@ DEFAULT_TIMEOUT_SECONDS = 30
 MAX_TIMEOUT_SECONDS = 300
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 MAX_PATTERN_LENGTH = 256
+MAX_DESCRIPTION_CHARS = 2000
 RESERVED_OPERATION_IDS = frozenset({"get_operation_status", "resume_operation"})
 FORBIDDEN_URI_SCHEMES = frozenset({"file", "data", "javascript", "vbscript", "ftp", "gopher"})
 
@@ -88,6 +89,14 @@ def validate_exposure_policy(
         for scope in primitive_scopes:
             if scope not in granted:
                 issues.append(f"Policy for {key} is missing required scope {scope}")
+
+    description = policy.get("description")
+    if description is not None and (
+        not isinstance(description, str) or not 1 <= len(description) <= MAX_DESCRIPTION_CHARS
+    ):
+        issues.append(
+            f"description for {key} must be text of 1 to {MAX_DESCRIPTION_CHARS} characters"
+        )
 
     timeout = policy.get("timeoutSeconds")
     if timeout is not None and (

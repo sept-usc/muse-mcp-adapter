@@ -21,6 +21,7 @@ from pydantic import AnyUrl
 from ..catalog.canonical import digest, freeze_json
 from ..data_plane.content import DEFAULT_TOOL_RESULT_TYPES
 from ..data_plane.tool_client import (
+    McpAuthRejected,
     McpCancelled,
     McpInputRequired,
     McpPreDispatchError,
@@ -29,6 +30,8 @@ from ..data_plane.tool_client import (
     McpUnknownOutcome,
 )
 from ..domain.errors import (
+    DownstreamAuthRejectedError,
+    DownstreamConnectionLostError,
     InvalidStateError,
     ReauthorizationRequiredError,
     UnsafeEndpointError,
@@ -62,6 +65,7 @@ class ConnectedSession:
     protocol_version: str
     server_info: Mapping[str, object] | None = None
     capabilities: Mapping[str, object] | None = None
+    stream_failed: anyio.Event | None = None  # set when a response stream ends abnormally
 
 
 class SessionFactory(Protocol):
@@ -77,30 +81,43 @@ class SessionFactory(Protocol):
 class _LimitedStream(httpx.AsyncByteStream):
     """Aborts a response body that grows beyond the configured byte limit."""
 
-    def __init__(self, stream: httpx.AsyncByteStream, limit: int) -> None:
+    def __init__(
+        self, stream: httpx.AsyncByteStream, limit: int, failed: anyio.Event | None = None
+    ) -> None:
         self._stream = stream
         self._limit = limit
+        self._failed = failed
 
     async def __aiter__(self):  # type: ignore[override]
         received = 0
-        async for chunk in self._stream:
-            received += len(chunk)
-            if received > self._limit:
-                raise httpx.StreamError("Downstream response exceeded the size limit")
-            yield chunk
+        try:
+            async for chunk in self._stream:
+                received += len(chunk)
+                if received > self._limit:
+                    raise httpx.StreamError("Downstream response exceeded the size limit")
+                yield chunk
+        except Exception:
+            # The SDK would swallow this and wait for its timeout; tell the caller right away.
+            if self._failed is not None:
+                self._failed.set()
+            raise
 
     async def aclose(self) -> None:
         await self._stream.aclose()
 
 
-def _response_limit_hook(limit: int) -> Callable[[httpx.Response], Any]:
+def _response_limit_hook(
+    limit: int, failed: anyio.Event | None = None
+) -> Callable[[httpx.Response], Any]:
     async def hook(response: httpx.Response) -> None:
         declared = response.headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > limit:
             await response.aclose()
+            if failed is not None:
+                failed.set()
             raise httpx.StreamError("Downstream response exceeded the size limit")
         if isinstance(response.stream, httpx.AsyncByteStream):
-            response.stream = _LimitedStream(response.stream, limit)
+            response.stream = _LimitedStream(response.stream, limit, failed)
 
     return hook
 
@@ -194,6 +211,7 @@ class StreamableHttpSessionFactory:
         lifespan = (
             self._lifespan_factory() if self._lifespan_factory is not None else _empty_lifespan()
         )
+        failed = anyio.Event()
         transport = self._transport
         if transport is None:
             transport = _PinnedAsyncTransport(
@@ -207,7 +225,7 @@ class StreamableHttpSessionFactory:
                 timeout=self._timeout_seconds,
                 follow_redirects=False,
                 transport=transport,
-                event_hooks={"response": [_response_limit_hook(self._max_response_bytes)]},
+                event_hooks={"response": [_response_limit_hook(self._max_response_bytes, failed)]},
             ) as http_client,
             streamable_http_client(
                 endpoint,
@@ -223,7 +241,7 @@ class StreamableHttpSessionFactory:
                 logging_callback=logging_callback,
             ) as session,
         ):
-            initialized = await session.initialize()
+            initialized = await _guard(failed, session.initialize)
             yield ConnectedSession(
                 session,
                 str(initialized.protocolVersion),
@@ -235,6 +253,7 @@ class StreamableHttpSessionFactory:
                     Mapping[str, object],
                     initialized.capabilities.model_dump(by_alias=True, exclude_none=True),
                 ),
+                stream_failed=failed,
             )
 
 
@@ -348,6 +367,9 @@ class McpSdkClient:
                 | McpReauthorizationRequired,
             ):
                 raise error from None
+            rejected = _auth_rejection(error)
+            if rejected is not None:
+                raise McpAuthRejected(rejected) from error
             if not state.dispatched:
                 raise McpPreDispatchError(
                     f"MCP request was not sent: {type(error).__name__}"
@@ -411,7 +433,9 @@ class McpSdkClient:
         async with self._sessions.connect(endpoint, credential) as connected:
             session = connected.session
             self._ensure_protocol(connected.protocol_version)
-            result = await session.read_resource(AnyUrl(uri))
+            result = await _guard(
+                connected.stream_failed, lambda: session.read_resource(AnyUrl(uri))
+            )
             return McpResourceResult(
                 contents=tuple(_resource_content(item) for item in result.contents)
             )
@@ -426,7 +450,9 @@ class McpSdkClient:
         async with self._sessions.connect(endpoint, credential) as connected:
             session = connected.session
             self._ensure_protocol(connected.protocol_version)
-            result = await session.get_prompt(name, arguments)
+            result = await _guard(
+                connected.stream_failed, lambda: session.get_prompt(name, arguments)
+            )
             return McpPromptResult(
                 description=result.description,
                 messages=tuple(
@@ -488,12 +514,15 @@ class McpSdkClient:
                     if cancellation is not None:
                         tasks.start_soon(cancel_on_signal, call_scope)
                     try:
-                        result = await session.call_tool(
-                            name,
-                            arguments,
-                            read_timeout_seconds=timeout,
-                            progress_callback=progress if callback else None,
-                            meta=metadata,
+                        result = await _guard(
+                            connected.stream_failed,
+                            lambda: session.call_tool(
+                                name,
+                                arguments,
+                                read_timeout_seconds=timeout,
+                                progress_callback=progress if callback else None,
+                                meta=metadata,
+                            ),
                         )
                     finally:
                         tasks.cancel_scope.cancel()
@@ -519,6 +548,33 @@ class McpSdkClient:
             )
 
 
+class McpStreamLost(RuntimeError):
+    """The server's response stream ended abnormally before a result arrived."""
+
+
+async def _guard[T](failed: anyio.Event | None, work: Callable[[], Awaitable[T]]) -> T:
+    """Run an SDK call, but stop waiting the moment its response stream breaks."""
+    if failed is None:
+        return await work()
+    outcome: list[T] = []
+
+    async with anyio.create_task_group() as tasks:
+
+        async def run() -> None:
+            outcome.append(await work())
+            tasks.cancel_scope.cancel()
+
+        async def watch() -> None:
+            await failed.wait()
+            tasks.cancel_scope.cancel()
+
+        tasks.start_soon(run)
+        tasks.start_soon(watch)
+    if not outcome:
+        raise McpStreamLost("The connection to the MCP server ended before a result arrived")
+    return outcome[0]
+
+
 def _run[T](function: Callable[[], Awaitable[T]]) -> T:
     """Run an async client call, surfacing the meaningful error from SDK task groups."""
     try:
@@ -531,7 +587,22 @@ def _run[T](function: Callable[[], Awaitable[T]]) -> T:
             raise ReauthorizationRequiredError(str(leaf)) from None
         if isinstance(leaf, UnsafeEndpointError):
             raise leaf from None
+        rejected = _auth_rejection(leaf)
+        if rejected is not None:
+            raise DownstreamAuthRejectedError(rejected) from None
+        if isinstance(leaf, McpStreamLost):
+            raise DownstreamConnectionLostError(str(leaf)) from None
         raise
+
+
+def _auth_rejection(error: BaseException) -> str | None:
+    """A readable message when the MCP server answered the credential with 401 or 403."""
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code in (401, 403):
+        return (
+            "The MCP server rejected the adapter's credential "
+            f"(HTTP {error.response.status_code}). Check the token for this connection."
+        )
+    return None
 
 
 def _unwrap(error: BaseException) -> BaseException:
@@ -546,6 +617,9 @@ def _unwrap(error: BaseException) -> BaseException:
                 | McpReauthorizationRequired
                 | UnsafeEndpointError,
             ):
+                return leaf
+        for leaf in leaves:
+            if isinstance(leaf, httpx.HTTPStatusError) and leaf.response.status_code in (401, 403):
                 return leaf
         for leaf in leaves:
             if isinstance(leaf, McpError):

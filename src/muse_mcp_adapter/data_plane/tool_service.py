@@ -15,6 +15,7 @@ from ..domain.errors import (
     ApprovalRequiredError,
     ConflictError,
     CredentialResolutionError,
+    DownstreamAuthRejectedError,
     DownstreamContentError,
     DownstreamToolError,
     IdempotencyConflictError,
@@ -44,6 +45,7 @@ from .approval import ApprovalVerifier
 from .content import DEFAULT_TOOL_RESULT_TYPES, mime_allowed, narrow_types, normalize_block
 from .serde import response_from_dict, response_to_dict
 from .tool_client import (
+    McpAuthRejected,
     McpCancelled,
     McpInputRequired,
     McpPreDispatchError,
@@ -500,6 +502,15 @@ class ToolDataPlaneService:
                     retryable=True,
                 )
                 raise ReauthorizationRequiredError(str(error)) from error
+            except McpAuthRejected as error:
+                dispatched = False
+                self._fail(
+                    operation_id,
+                    code=DownstreamAuthRejectedError.code,
+                    message=str(error),
+                    retryable=True,
+                )
+                raise DownstreamAuthRejectedError(str(error)) from error
             except McpPreDispatchError as error:
                 dispatched = False
                 self._fail(

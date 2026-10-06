@@ -128,3 +128,11 @@ class ReauthorizationRequiredError(DataPlaneError):
     def __init__(self, message: str, *, authorization_url: str | None = None) -> None:
         self.authorization_url = authorization_url
         super().__init__(message)
+
+
+class DownstreamAuthRejectedError(DataPlaneError):
+    code = "DOWNSTREAM_AUTH_REJECTED"
+
+
+class DownstreamConnectionLostError(DataPlaneError):
+    code = "DOWNSTREAM_CONNECTION_LOST"
