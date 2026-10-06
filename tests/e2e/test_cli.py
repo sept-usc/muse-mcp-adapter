@@ -387,3 +387,21 @@ def test_serve_requires_a_config_and_reports_misconfiguration(
     bad.write_text(json.dumps({"listen": {"host": "0.0.0.0"}}))
     code, _, err = cli.run("serve", flags=["--config", str(bad)])
     assert code == 1 and "publicUrl" in str(err)
+
+
+def test_discovery_with_a_static_token_needs_no_connection(tmp_path: Path) -> None:
+    from muse_mcp_adapter.application.oauth_web import runtime_auth_factory
+    from muse_mcp_adapter.domain.models import ResolvedCredential
+    from muse_mcp_adapter.persistence.sqlite_repository import SqliteControlPlaneRepository
+
+    with SqliteControlPlaneRepository(tmp_path / "a.db") as repository:
+        repository.initialize()
+        factory = runtime_auth_factory(repository, object(), public_url="https://x.example")  # type: ignore[arg-type]
+        token = ResolvedCredential(
+            credential_ref="environment://T",
+            access_token="t",
+            local_identity_id="administrative-discovery",
+            connection_id="administrative-discovery",
+            server_id="s",
+        )
+        assert factory("https://mcp.example/mcp", token) is None

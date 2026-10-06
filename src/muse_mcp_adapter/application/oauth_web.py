@@ -348,7 +348,10 @@ def runtime_auth_factory(
     def factory(endpoint: str, credential: ResolvedCredential | None) -> httpx.Auth | None:
         if credential is None or not credential.connection_id:
             return None
-        connection = repository.get_connection(credential.connection_id)
+        try:
+            connection = repository.get_connection(credential.connection_id)
+        except EntityNotFoundError:
+            return None  # a static token for administrative discovery has no connection
         if connection.credential_kind != "oauth":
             return None
         message = f"The account linked to '{connection.label}' must be authorized again."
