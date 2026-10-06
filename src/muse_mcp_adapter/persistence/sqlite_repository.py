@@ -15,6 +15,7 @@ from ..domain.errors import ConflictError, EntityNotFoundError, InvalidStateErro
 from ..domain.models import (
     ArtifactRecord,
     CatalogActivation,
+    ConnectionRecord,
     DiscoverySnapshot,
     OperationEvent,
     OperationRecord,
@@ -146,6 +147,20 @@ CREATE TABLE IF NOT EXISTS runtime_audit (
     outcome TEXT NOT NULL,
     error_code TEXT,
     duration_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS connections (
+    connection_id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL UNIQUE,
+    identity_id TEXT NOT NULL,
+    server_id TEXT NOT NULL REFERENCES server_registrations(server_id),
+    label TEXT NOT NULL,
+    credential_kind TEXT NOT NULL CHECK (credential_kind IN ('none', 'env_token', 'oauth')),
+    credential_ref TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -759,6 +774,95 @@ class SqliteControlPlaneRepository:
         rows = self._connection.execute("SELECT * FROM runtime_audit ORDER BY event_id").fetchall()
         return tuple(dict(row) for row in rows)
 
+    def create_connection(self, connection: ConnectionRecord) -> ConnectionRecord:
+        try:
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO connections (
+                        connection_id, slug, token_hash, identity_id, server_id, label,
+                        credential_kind, credential_ref, scopes_json, created_at, revoked_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        connection.connection_id,
+                        connection.slug,
+                        connection.token_hash,
+                        connection.identity_id,
+                        connection.server_id,
+                        connection.label,
+                        connection.credential_kind,
+                        connection.credential_ref,
+                        _json(list(connection.scopes)),
+                        connection.created_at,
+                        connection.revoked_at,
+                    ),
+                )
+        except sqlite3.IntegrityError as error:
+            raise ConflictError("Connection already exists or its server is unknown") from error
+        return connection
+
+    def get_connection(self, connection_id: str) -> ConnectionRecord:
+        return self._one_connection("connection_id", connection_id)
+
+    def find_connection_by_slug(self, slug: str) -> ConnectionRecord:
+        return self._one_connection("slug", slug)
+
+    def find_connection_by_token_hash(self, token_hash: str) -> ConnectionRecord:
+        return self._one_connection("token_hash", token_hash)
+
+    def list_connections(self, server_id: str | None = None) -> tuple[ConnectionRecord, ...]:
+        query = "SELECT * FROM connections"
+        parameters: tuple[object, ...] = ()
+        if server_id is not None:
+            query += " WHERE server_id = ?"
+            parameters = (server_id,)
+        rows = self._connection.execute(query + " ORDER BY created_at, connection_id", parameters)
+        return tuple(_connection_from_row(row) for row in rows.fetchall())
+
+    def revoke_connection(self, connection_id: str, revoked_at: str) -> ConnectionRecord:
+        with self._connection:
+            cursor = self._connection.execute(
+                "UPDATE connections SET revoked_at = ? WHERE connection_id = ? "
+                "AND revoked_at IS NULL",
+                (revoked_at, connection_id),
+            )
+        if cursor.rowcount != 1:
+            self.get_connection(connection_id)  # raises if unknown
+            raise InvalidStateError(f"Connection {connection_id} is already revoked")
+        return self.get_connection(connection_id)
+
+    def replace_connection_token(self, connection_id: str, token_hash: str) -> ConnectionRecord:
+        with self._connection:
+            cursor = self._connection.execute(
+                "UPDATE connections SET token_hash = ? WHERE connection_id = ? "
+                "AND revoked_at IS NULL",
+                (token_hash, connection_id),
+            )
+        if cursor.rowcount != 1:
+            self.get_connection(connection_id)
+            raise InvalidStateError(f"Connection {connection_id} is revoked")
+        return self.get_connection(connection_id)
+
+    def set_connection_scopes(
+        self, connection_id: str, scopes: Sequence[str]
+    ) -> ConnectionRecord:
+        with self._connection:
+            self._connection.execute(
+                "UPDATE connections SET scopes_json = ? WHERE connection_id = ?",
+                (_json(list(scopes)), connection_id),
+            )
+        return self.get_connection(connection_id)
+
+    def _one_connection(self, column: str, value: str) -> ConnectionRecord:
+        row = self._connection.execute(
+            f"SELECT * FROM connections WHERE {column} = ?",  # column is a fixed literal
+            (value,),
+        ).fetchone()
+        if row is None:
+            raise EntityNotFoundError("Connection was not found")
+        return _connection_from_row(row)
+
     def save_artifact(self, artifact: ArtifactRecord) -> ArtifactRecord:
         self.get_operation(artifact.operation_id)
         try:
@@ -819,6 +923,23 @@ def _server_from_row(row: sqlite3.Row) -> ServerRegistration:
         enabled=bool(row["enabled"]),
         created_at=cast(str, row["created_at"]),
         updated_at=cast(str, row["updated_at"]),
+    )
+
+
+def _connection_from_row(row: sqlite3.Row) -> ConnectionRecord:
+    scopes = json.loads(cast(str, row["scopes_json"]))
+    return ConnectionRecord(
+        connection_id=cast(str, row["connection_id"]),
+        slug=cast(str, row["slug"]),
+        token_hash=cast(str, row["token_hash"]),
+        identity_id=cast(str, row["identity_id"]),
+        server_id=cast(str, row["server_id"]),
+        label=cast(str, row["label"]),
+        credential_kind=cast(str, row["credential_kind"]),
+        credential_ref=cast(str, row["credential_ref"]),
+        scopes=tuple(cast(list[str], scopes)),
+        created_at=cast(str, row["created_at"]),
+        revoked_at=cast(str | None, row["revoked_at"]),
     )
 
 

@@ -185,7 +185,7 @@ class StreamableHttpSessionFactory:
         )
         auth = self._auth_factory(endpoint, credential) if self._auth_factory else None
         headers: dict[str, str] = {}
-        if credential is not None and auth is None:
+        if credential is not None and auth is None and credential.access_token:
             headers["Authorization"] = f"Bearer {credential.access_token}"
         lifespan = (
             self._lifespan_factory()

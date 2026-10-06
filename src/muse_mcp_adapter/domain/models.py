@@ -211,3 +211,20 @@ class ArtifactRecord:
     content_digest: str
     storage_path: str
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionRecord:
+    """One link between a Muse connector and an MCP server, owned by one person."""
+
+    connection_id: str
+    slug: str
+    token_hash: str
+    identity_id: str
+    server_id: str
+    label: str
+    credential_kind: str
+    credential_ref: str
+    scopes: tuple[str, ...]
+    created_at: str
+    revoked_at: str | None
