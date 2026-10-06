@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import cast
 from uuid import uuid4
 
+from ..catalog.canonical import canonical_json
+from ..connections import ConnectionService
 from ..data_plane.read_service import ReadDataPlaneService
 from ..data_plane.tool_service import ToolDataPlaneService
-from ..domain.errors import AuthenticationError, AuthorizationError, RequestValidationError
-from ..domain.models import ApprovalEvidence, DataPlaneRequest, DataPlaneResponse, OperationRecord
+from ..domain.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    EntityNotFoundError,
+    ReauthorizationRequiredError,
+    RequestValidationError,
+)
+from ..domain.models import (
+    DataPlaneRequest,
+    DataPlaneResponse,
+    OperationRecord,
+)
 from ..operations.artifacts import FileArtifactStore
 from ..operations.lifecycle import OperationLifecycleService
 from ..operations.runtime_controls import (
@@ -22,44 +35,31 @@ from ..operations.runtime_controls import (
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from .openapi import compile_openapi
 
+_IDEMPOTENCY_KEY = re.compile(r"^[\x21-\x7e]{1,200}$")
+
 
 @dataclass(frozen=True, slots=True)
 class Principal:
-    local_identity_id: str
-    connection_ids: frozenset[str]
-    server_ids: frozenset[str]
-    administrator: bool = False
+    """The authenticated caller: one connection, and through it one owner and one server."""
 
+    connection_id: str
+    identity_id: str
+    server_id: str
+    slug: str
 
-class BearerAuthenticator:
-    """Constant-time bearer authentication for customer-managed ingress tokens."""
-
-    def __init__(self, bindings: Mapping[str, Principal]) -> None:
-        self._bindings = tuple(
-            (hashlib.sha256(token.encode()).digest(), principal)
-            for token, principal in bindings.items()
-        )
-
-    def authenticate(self, authorization: str | None) -> Principal:
-        if not authorization or not authorization.startswith("Bearer "):
-            raise AuthenticationError("A bearer token is required")
-        presented = hashlib.sha256(authorization[7:].encode()).digest()
-        matched: Principal | None = None
-        for expected, principal in self._bindings:
-            if hmac.compare_digest(presented, expected):
-                matched = principal
-        if matched is None:
-            raise AuthenticationError("Bearer token is invalid")
-        return matched
+    @property
+    def local_identity_id(self) -> str:
+        return self.identity_id
 
 
 class AdapterRuntime:
-    """Mandatory production request path joining authz, controls, execution, and audit."""
+    """Request path joining authentication, controls, execution and audit."""
 
     def __init__(
         self,
         *,
         repository: SqliteControlPlaneRepository,
+        connections: ConnectionService,
         read_service: ReadDataPlaneService,
         tool_service: ToolDataPlaneService,
         lifecycle: OperationLifecycleService,
@@ -67,10 +67,14 @@ class AdapterRuntime:
         concurrency_limiter: RequestConcurrencyLimiter,
         metrics: AdapterMetrics,
         clock: Callable[[], str],
+        public_url: str,
         monotonic: Callable[[], float] = time.monotonic,
         artifact_store: FileArtifactStore | None = None,
+        idempotency_window_seconds: int = 300,
+        reauthorization_link: Callable[[str], str] | None = None,
     ) -> None:
         self._repository = repository
+        self._connections = connections
         self._reads = read_service
         self._tools = tool_service
         self._lifecycle = lifecycle
@@ -78,36 +82,45 @@ class AdapterRuntime:
         self._concurrency = concurrency_limiter
         self._metrics = metrics
         self._clock = clock
+        self._public_url = public_url
         self._monotonic = monotonic
         self._artifacts = artifact_store
+        self._window = idempotency_window_seconds
+        self._reauthorization_link = reauthorization_link
 
     @property
     def metrics(self) -> AdapterMetrics:
         return self._metrics
 
+    def authenticate(self, authorization: str | None, slug: str) -> Principal:
+        """Resolve the bearer token, and require that it belongs to the connector in the URL."""
+        token = None
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization[7:].strip()
+        connection = self._connections.authenticate(token)
+        if connection.slug != slug:
+            # A valid token for another connector must not reveal that this one exists.
+            raise AuthenticationError("Bearer token is invalid")
+        return Principal(
+            connection_id=connection.connection_id,
+            identity_id=connection.identity_id,
+            server_id=connection.server_id,
+            slug=connection.slug,
+        )
+
     def execute(
         self,
         principal: Principal,
         public_operation_id: str,
-        payload: Mapping[str, object],
+        arguments: Mapping[str, object],
+        *,
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
     ) -> DataPlaneResponse:
-        server_id = _required_string(payload, "serverId")
-        connection_id = _required_string(payload, "connectionId")
-        self._authorize_binding(principal, server_id, connection_id)
-        arguments = payload.get("arguments")
-        if not isinstance(arguments, Mapping):
-            raise RequestValidationError("Request arguments must be an object")
-        request = DataPlaneRequest(
-            request_id=_optional_string(payload, "requestId") or str(uuid4()),
-            server_id=server_id,
-            public_operation_id=public_operation_id,
-            local_identity_id=principal.local_identity_id,
-            connection_id=connection_id,
-            arguments=cast(Mapping[str, object], arguments),
-            idempotency_key=_optional_string(payload, "idempotencyKey"),
-            approval=_approval(payload.get("approval")),
-        )
-        catalog = self._repository.get_active_catalog(server_id)
+        server = self._repository.get_server(principal.server_id)
+        if not server.enabled:
+            raise AuthorizationError("This connector is disabled")
+        catalog = self._repository.get_active_catalog(principal.server_id)
         primitive = next(
             (
                 item
@@ -117,14 +130,27 @@ class AdapterRuntime:
             None,
         )
         if primitive is None:
-            raise AuthorizationError("The requested operation is not published")
-        key = f"{principal.local_identity_id}:{server_id}:{public_operation_id}"
-        self._rate.acquire(key)
+            raise EntityNotFoundError(f"Operation {public_operation_id} is not available")
+        if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
+            raise RequestValidationError("Idempotency-Key must be 1 to 200 printable characters")
+        if primitive.classification != "read" and idempotency_key is None:
+            idempotency_key = self._derive_key(principal, public_operation_id, arguments)
+
+        request = DataPlaneRequest(
+            request_id=request_id or str(uuid4()),
+            server_id=principal.server_id,
+            public_operation_id=public_operation_id,
+            local_identity_id=principal.identity_id,
+            connection_id=principal.connection_id,
+            arguments=arguments,
+            idempotency_key=idempotency_key,
+        )
+        self._rate.acquire(principal.connection_id)
         started = self._monotonic()
         response: DataPlaneResponse | None = None
         error: BaseException | None = None
         try:
-            with self._concurrency.slot(server_id):
+            with self._concurrency.slot(principal.server_id):
                 response = (
                     self._tools.execute(request)
                     if primitive.primitive_type == "tool"
@@ -132,6 +158,10 @@ class AdapterRuntime:
                 )
                 self._metrics.increment("requests.completed")
                 return response
+        except ReauthorizationRequiredError as raised:
+            error = raised
+            self._metrics.increment("requests.failed")
+            raise self._with_link(principal, raised) from None
         except BaseException as raised:
             error = raised
             self._metrics.increment("requests.failed")
@@ -140,69 +170,61 @@ class AdapterRuntime:
             self._repository.record_runtime_audit(
                 occurred_at=self._clock(),
                 request_id=request.request_id,
-                server_id=server_id,
+                server_id=principal.server_id,
                 public_operation_id=public_operation_id,
-                local_identity_id=principal.local_identity_id,
-                connection_id=connection_id,
+                local_identity_id=principal.identity_id,
+                connection_id=principal.connection_id,
                 catalog_version=catalog.catalog_version,
                 classification=primitive.classification,
-                approval_id=request.approval.approval_id if request.approval else None,
+                approval_id=None,
                 outcome="completed" if response is not None else "failed",
                 error_code=getattr(error, "code", type(error).__name__) if error else None,
                 duration_ms=max(0, int((self._monotonic() - started) * 1000)),
             )
 
-    def cancel(
-        self, principal: Principal, operation_id: str, *, reason: str
-    ) -> OperationRecord:
-        operation = self._owned_operation(principal, operation_id)
-        return self._lifecycle.cancel(operation.operation_id, reason=reason)
-
     def resume(
         self,
         principal: Principal,
         operation_id: str,
-        payload: Mapping[str, object],
+        arguments: Mapping[str, object],
+        inputs: Mapping[str, object],
     ) -> DataPlaneResponse:
         operation = self._owned_operation(principal, operation_id)
-        server_id = _required_string(payload, "serverId")
-        connection_id = _required_string(payload, "connectionId")
-        if server_id != operation.server_id or connection_id != operation.connection_id:
-            raise AuthorizationError("Resume request does not match the operation binding")
-        arguments = payload.get("arguments")
-        inputs = payload.get("inputs")
-        if not isinstance(arguments, Mapping) or not isinstance(inputs, Mapping):
-            raise RequestValidationError("Resume arguments and inputs must be objects")
         request = DataPlaneRequest(
             request_id=operation.request_id,
-            server_id=server_id,
+            server_id=principal.server_id,
             public_operation_id=operation.public_operation_id,
-            local_identity_id=principal.local_identity_id,
-            connection_id=connection_id,
-            arguments=cast(Mapping[str, object], arguments),
+            local_identity_id=principal.identity_id,
+            connection_id=principal.connection_id,
+            arguments=arguments,
             idempotency_key=operation.idempotency_key,
-            approval=_approval(payload.get("approval")),
         )
-        return self._tools.resume_with_input(
-            request,
-            operation_id=operation_id,
-            inputs=cast(Mapping[str, object], inputs),
-        )
+        try:
+            return self._tools.resume_with_input(request, operation_id=operation_id, inputs=inputs)
+        except ReauthorizationRequiredError as raised:
+            raise self._with_link(principal, raised) from None
 
     def operation(self, principal: Principal, operation_id: str) -> OperationRecord:
         return self._owned_operation(principal, operation_id)
 
+    def cancel(self, principal: Principal, operation_id: str, *, reason: str) -> OperationRecord:
+        operation = self._owned_operation(principal, operation_id)
+        return self._lifecycle.cancel(operation.operation_id, reason=reason)
+
     def recover_stale(self, *, updated_before: str) -> tuple[OperationRecord, ...]:
         return self._lifecycle.recover_stale(updated_before=updated_before)
 
-    def openapi(self, principal: Principal, server_id: str) -> Mapping[str, object]:
-        if server_id not in principal.server_ids:
-            raise AuthorizationError("The caller is not authorized for this server")
-        return compile_openapi(self._repository.get_active_catalog(server_id))
+    def openapi(self, slug: str) -> Mapping[str, object]:
+        """The public connector description Muse reads. It names tools but holds no secrets."""
+        connection = self._connections.by_slug(slug)
+        if not self._repository.get_server(connection.server_id).enabled:
+            raise EntityNotFoundError("Connector was not found")
+        catalog = self._repository.get_active_catalog(connection.server_id)
+        return compile_openapi(catalog, public_url=self._public_url, slug=slug)
 
     def artifact(self, principal: Principal, artifact_id: str) -> tuple[bytes, str]:
         if self._artifacts is None:
-            raise AuthorizationError("Artifact storage is not configured")
+            raise EntityNotFoundError("Artifact storage is not configured")
         record = self._artifacts.metadata(artifact_id)
         self._owned_operation(principal, record.operation_id)
         return (
@@ -212,47 +234,44 @@ class AdapterRuntime:
 
     def _owned_operation(self, principal: Principal, operation_id: str) -> OperationRecord:
         operation = self._repository.get_operation(operation_id)
-        self._authorize_binding(principal, operation.server_id, operation.connection_id)
-        owner = operation.local_identity_id == principal.local_identity_id
-        if not owner and not principal.administrator:
-            raise AuthorizationError("The operation does not belong to this identity")
+        if operation.connection_id != principal.connection_id:
+            # Another connection's operation is indistinguishable from a missing one.
+            raise EntityNotFoundError(f"Operation {operation_id} was not found")
         return operation
 
-    @staticmethod
-    def _authorize_binding(
-        principal: Principal, server_id: str, connection_id: str
-    ) -> None:
-        if server_id not in principal.server_ids or connection_id not in principal.connection_ids:
-            raise AuthorizationError("The caller is not authorized for this server connection")
+    def _derive_key(
+        self, principal: Principal, operation_id: str, arguments: Mapping[str, object]
+    ) -> str:
+        """Deduplicate identical writes retried close together when Muse sends no key."""
+        now = datetime.fromisoformat(self._clock().replace("Z", "+00:00"))
+        bucket = int(now.timestamp() // self._window)
+        digest = hashlib.sha256(
+            canonical_json(
+                {
+                    "connection": principal.connection_id,
+                    "operation": operation_id,
+                    "arguments": arguments,
+                    "bucket": bucket,
+                }
+            ).encode()
+        ).hexdigest()
+        return f"auto-{digest[:40]}"
+
+    def _with_link(
+        self, principal: Principal, error: ReauthorizationRequiredError
+    ) -> ReauthorizationRequiredError:
+        link = (
+            self._reauthorization_link(principal.connection_id)
+            if self._reauthorization_link is not None
+            else None
+        )
+        message = str(error)
+        if link:
+            message += f" Open this link in your browser to reconnect: {link}"
+        return ReauthorizationRequiredError(message, authorization_url=link)
 
 
-def _approval(value: object) -> ApprovalEvidence | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise RequestValidationError("Approval evidence must be an object")
-    item = cast(Mapping[str, object], value)
-    return ApprovalEvidence(
-        approval_id=_required_string(item, "approvalId"),
-        classification=_required_string(item, "classification"),
-        action_digest=_required_string(item, "actionDigest"),
-        approved_at=_required_string(item, "approvedAt"),
-        expires_at=_required_string(item, "expiresAt"),
-        signature=_required_string(item, "signature"),
-    )
-
-
-def _required_string(value: Mapping[str, object], key: str) -> str:
-    item = value.get(key)
-    if not isinstance(item, str) or not item:
-        raise RequestValidationError(f"{key} is required")
-    return item
-
-
-def _optional_string(value: Mapping[str, object], key: str) -> str | None:
-    item = value.get(key)
-    if item is None:
-        return None
-    if not isinstance(item, str) or not item:
-        raise RequestValidationError(f"{key} must be a non-empty string")
-    return item
+def payload_object(value: object, label: str) -> Mapping[str, object]:
+    if not isinstance(value, dict):
+        raise RequestValidationError(f"{label} must be a JSON object")
+    return cast(Mapping[str, object], value)

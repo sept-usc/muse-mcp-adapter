@@ -13,6 +13,7 @@ DEFAULT_TIMEOUT_SECONDS = 30
 MAX_TIMEOUT_SECONDS = 300
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 MAX_PATTERN_LENGTH = 256
+RESERVED_OPERATION_IDS = frozenset({"get_operation_status", "resume_operation"})
 FORBIDDEN_URI_SCHEMES = frozenset({"file", "data", "javascript", "vbscript", "ftp", "gopher"})
 
 
@@ -69,6 +70,8 @@ def validate_exposure_policy(
     operation_id = policy.get("publicOperationId")
     if not isinstance(operation_id, str) or not _OPERATION_ID.fullmatch(operation_id):
         issues.append(f"Invalid publicOperationId for {key}")
+    elif operation_id in RESERVED_OPERATION_IDS:
+        issues.append(f"publicOperationId {operation_id} is reserved for {key}")
 
     classification = policy.get("classification")
     if classification not in MuseClassification:
@@ -129,9 +132,7 @@ def validate_exposure_policy(
                 if parsed.scheme in ("http", "https"):
                     allowed_hosts = _string_list(hosts) if hosts is not None else None
                     if not allowed_hosts:
-                        issues.append(
-                            f"HTTP resource policy for {key} requires allowedUriHosts"
-                        )
+                        issues.append(f"HTTP resource policy for {key} requires allowedUriHosts")
                     elif parsed.hostname not in {item.lower() for item in allowed_hosts}:
                         issues.append(
                             f"Resource URI host {parsed.hostname} is not in allowedUriHosts "
@@ -150,18 +151,16 @@ def validate_exposure_policy(
     if primitive.get("type") == PrimitiveType.PROMPT:
         prompt = _string_mapping(policy.get("prompt"))
         roles = _string_list(prompt.get("allowedRoles")) if prompt is not None else None
-        if roles is None or len(roles) != len(set(roles)) or any(
-            role not in ("user", "assistant") for role in roles
+        if (
+            roles is None
+            or len(roles) != len(set(roles))
+            or any(role not in ("user", "assistant") for role in roles)
         ):
             issues.append(f"Prompt policy for {key} requires valid allowedRoles")
         embedded_mime_types = (
-            _string_list(prompt.get("allowedEmbeddedMimeTypes"))
-            if prompt is not None
-            else None
+            _string_list(prompt.get("allowedEmbeddedMimeTypes")) if prompt is not None else None
         )
-        if embedded_mime_types is None or len(embedded_mime_types) != len(
-            set(embedded_mime_types)
-        ):
+        if embedded_mime_types is None or len(embedded_mime_types) != len(set(embedded_mime_types)):
             issues.append(f"Prompt policy for {key} requires allowedEmbeddedMimeTypes")
         max_bytes = prompt.get("maxBytes") if prompt is not None else None
         if not _bounded_int(max_bytes, MAX_PAYLOAD_BYTES):

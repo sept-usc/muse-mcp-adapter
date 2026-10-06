@@ -7,7 +7,18 @@ from pathlib import Path
 from typing import cast
 
 from .application.control_plane_service import ControlPlaneService
+from .application.oauth_web import OAuthWebFlow, runtime_auth_factory
+from .application.policy_template import draft_policies
+from .application.serve import (
+    ServeConfig,
+    endpoint_policy,
+    load_serve_config,
+    open_oauth_backend,
+    open_repository,
+)
 from .catalog.serde import catalog_to_dict
+from .connections import ConnectionCredentialResolver, ConnectionService
+from .data_plane.tool_service import ToolDataPlaneService
 from .discovery.client import ManifestDiscoveryClient
 from .domain.errors import (
     CatalogValidationError,
@@ -17,13 +28,17 @@ from .domain.errors import (
 )
 from .domain.models import (
     CatalogActivation,
+    ConnectionRecord,
     DiscoverySnapshot,
     DriftEvent,
     ResolvedCredential,
     ServerRegistration,
 )
 from .persistence.sqlite_repository import SqliteControlPlaneRepository
-from .transport.sdk_client import McpSdkClient
+from .transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
+from .transport.security import EndpointSecurityPolicy
+
+_DEFAULT_PUBLIC_URL = "http://127.0.0.1:8080"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -31,12 +46,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        config = _config(args)
         if args.command == "serve":
-            return _serve(args)
-        with SqliteControlPlaneRepository(args.database) as repository:
+            return _serve(args, config)
+        with open_repository(args.database, config, os.environ) as repository:
             repository.initialize()
-            service = ControlPlaneService(repository)
-            result = _execute(args, service)
+            result = _execute(args, repository, config)
         if result is not None:
             print(json.dumps(result, indent=2, sort_keys=True))
         return 0
@@ -51,79 +66,101 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-def _serve(args: argparse.Namespace) -> int:
+def _config(args: argparse.Namespace) -> ServeConfig:
+    path = args.config or os.environ.get("MUSE_ADAPTER_CONFIG")
+    if path:
+        return load_serve_config(Path(path))
+    return ServeConfig(public_url=args.public_url or _DEFAULT_PUBLIC_URL)
+
+
+def _policy(args: argparse.Namespace, config: ServeConfig) -> EndpointSecurityPolicy:
+    base = endpoint_policy(config)
+    return EndpointSecurityPolicy(
+        require_tls=base.require_tls and not args.allow_http,
+        allow_private_networks=base.allow_private_networks or args.allow_private_network,
+    )
+
+
+def _serve(args: argparse.Namespace, config: ServeConfig) -> int:
     import uvicorn
 
-    from .application.serve import build_application, load_serve_config, open_repository
+    from .application.serve import build_application
 
-    config = load_serve_config(Path(args.config))
+    if not (args.config or os.environ.get("MUSE_ADAPTER_CONFIG")):
+        raise ControlPlaneError("serve needs --config (or MUSE_ADAPTER_CONFIG)")
     with open_repository(args.database, config, os.environ) as repository:
-        application = build_application(repository, config, os.environ)
+        repository.initialize()
+        application = build_application(repository, config, os.environ, database=args.database)
         uvicorn.run(application, host=config.host, port=config.port, log_level="info")
     return 0
 
 
-def _execute(args: argparse.Namespace, service: ControlPlaneService) -> object:
+def _execute(
+    args: argparse.Namespace, repository: SqliteControlPlaneRepository, config: ServeConfig
+) -> object:
+    policy = _policy(args, config)
+    service = ControlPlaneService(repository, endpoint_policy=policy)
+    actor = args.actor
+
     if args.command == "server-register":
-        server = service.register_server(
-            server_id=args.server_id,
-            display_name=args.display_name,
-            endpoint=args.endpoint,
-            auth_profile=args.auth_profile,
-            provider_pack=args.provider_pack,
+        return _server_dict(
+            service.register_server(
+                server_id=args.server_id,
+                display_name=args.display_name,
+                endpoint=args.endpoint,
+                auth_profile=args.auth_profile,
+                provider_pack=args.provider_pack,
+                actor=actor,
+            )
         )
-        return _server_dict(server)
 
     if args.command == "server-list":
         return [_server_dict(server) for server in service.list_servers()]
 
     if args.command == "discover":
         manifest = _load_mapping(Path(args.manifest))
-        snapshot = service.discover(args.server_id, ManifestDiscoveryClient(manifest))
+        snapshot = service.discover(args.server_id, ManifestDiscoveryClient(manifest), actor=actor)
         return _snapshot_dict(snapshot)
 
     if args.command == "discover-remote":
-        token = os.environ.get(args.token_env) if args.token_env else None
-        credential = (
-            ResolvedCredential(
-                credential_ref=f"environment://{args.token_env}",
-                access_token=token,
-                local_identity_id="administrative-discovery",
-                connection_id="administrative-discovery",
-                server_id=args.server_id,
-            )
-            if token is not None
-            else None
+        client = McpSdkClient(
+            StreamableHttpSessionFactory(
+                endpoint_policy=policy,
+                auth_factory=runtime_auth_factory(
+                    repository, open_oauth_backend(args.database), public_url=config.public_url
+                ),
+            ),
+            discovery_credential=_discovery_credential(args, repository),
         )
-        snapshot = service.discover(
-            args.server_id,
-            McpSdkClient(discovery_credential=credential),
-        )
-        return _snapshot_dict(snapshot)
+        return _snapshot_dict(service.discover(args.server_id, client, actor=actor))
 
     if args.command in ("server-enable", "server-disable"):
         return _server_dict(
             service.set_server_enabled(
-                args.server_id, enabled=args.command == "server-enable"
+                args.server_id, enabled=args.command == "server-enable", actor=actor
             )
         )
 
+    if args.command == "policy-template":
+        snapshot = service.get_latest_discovery(args.server_id)
+        return draft_policies(snapshot, expose_reads=args.expose_reads)
+
     if args.command == "publish":
-        policies = _load_policy_list(Path(args.policies))
         catalog = service.publish_catalog(
             server_id=args.server_id,
             catalog_version=args.catalog_version,
-            policies=policies,
+            policies=_load_policy_list(Path(args.policies)),
+            actor=actor,
         )
         return catalog_to_dict(catalog)
 
     if args.command == "activate":
         return _activation_dict(
-            service.activate_catalog(args.server_id, args.catalog_version)
+            service.activate_catalog(args.server_id, args.catalog_version, actor=actor)
         )
 
     if args.command == "rollback":
-        return _activation_dict(service.rollback_catalog(args.server_id))
+        return _activation_dict(service.rollback_catalog(args.server_id, actor=actor))
 
     if args.command == "drift":
         return [_drift_dict(event) for event in service.get_drift(args.server_id)]
@@ -137,74 +174,249 @@ def _execute(args: argparse.Namespace, service: ControlPlaneService) -> object:
             raise EntityNotFoundError(f"Server {args.server_id} was not found")
         result: dict[str, object] = {"server": _server_dict(server)}
         try:
-            result["latestDiscovery"] = _snapshot_dict(
-                service.get_latest_discovery(args.server_id)
-            )
+            result["latestDiscovery"] = _snapshot_dict(service.get_latest_discovery(args.server_id))
         except EntityNotFoundError:
             result["latestDiscovery"] = None
         try:
-            result["activeCatalog"] = catalog_to_dict(
-                service.get_active_catalog(args.server_id)
-            )
+            result["activeCatalog"] = catalog_to_dict(service.get_active_catalog(args.server_id))
         except EntityNotFoundError:
             result["activeCatalog"] = None
+        result["connections"] = [
+            _connection_dict(item, config.public_url)
+            for item in repository.list_connections(args.server_id)
+        ]
         return result
 
+    connections = ConnectionService(repository)
+
+    if args.command == "link":
+        scopes = [item for item in (args.scopes or "").split(",") if item.strip()]
+        linked = connections.link(
+            server_id=args.server_id,
+            label=args.label,
+            credential_kind=args.credential,
+            credential_ref=args.token_env or "",
+            scopes=[item.strip() for item in scopes],
+            actor=actor,
+        )
+        record = linked.record
+        connector_url = _connector_url(config.public_url, record)
+        result = _connection_dict(record, config.public_url)
+        result["token"] = linked.token
+        result["tokenNote"] = "Shown once. Store it only in Muse's credential prompt."
+        result["museInstructions"] = _muse_instructions(record.label, connector_url, linked.token)
+        if record.credential_kind == "oauth":
+            result["loginUrl"] = _flow(repository, config, args).login_link(record.connection_id)
+            result["loginNote"] = "Open this one-time link in your browser to sign in."
+        return result
+
+    if args.command == "links":
+        return [
+            _connection_dict(item, config.public_url)
+            for item in connections.list(getattr(args, "server_id", None))
+        ]
+
+    if args.command == "unlink":
+        return _connection_dict(
+            connections.unlink(args.connection_id, actor=actor), config.public_url
+        )
+
+    if args.command == "rotate-token":
+        rotated = connections.rotate_token(args.connection_id, actor=actor)
+        result = _connection_dict(rotated.record, config.public_url)
+        result["token"] = rotated.token
+        result["museInstructions"] = _muse_instructions(
+            rotated.record.label, _connector_url(config.public_url, rotated.record), rotated.token
+        )
+        return result
+
+    if args.command == "login":
+        record = repository.get_connection(args.connection_id)
+        if record.credential_kind != "oauth":
+            raise ControlPlaneError("Only OAuth connections need to sign in")
+        return {
+            "connectionId": record.connection_id,
+            "loginUrl": _flow(repository, config, args).login_link(record.connection_id),
+            "note": "Open this one-time link in your browser. It expires in 15 minutes.",
+        }
+
+    if args.command == "reconcile":
+        return _reconcile(args, repository)
+
     raise AssertionError(f"Unhandled command {args.command}")
+
+
+def _flow(
+    repository: SqliteControlPlaneRepository, config: ServeConfig, args: argparse.Namespace
+) -> OAuthWebFlow:
+    return OAuthWebFlow(
+        repository=repository,
+        public_url=config.public_url,
+        backend=open_oauth_backend(args.database),
+        endpoint_policy=_policy(args, config),
+        clock=ConnectionService(repository)._clock,  # pyright: ignore[reportPrivateUsage]
+    )
+
+
+def _discovery_credential(
+    args: argparse.Namespace, repository: SqliteControlPlaneRepository
+) -> ResolvedCredential | None:
+    if args.connection_id:
+        connection = repository.get_connection(args.connection_id)
+        return ConnectionCredentialResolver(repository, os.environ).resolve(
+            local_identity_id=connection.identity_id,
+            connection_id=connection.connection_id,
+            server_id=args.server_id,
+            required_scopes=frozenset(),
+        )
+    if args.token_env:
+        token = os.environ.get(args.token_env)
+        if not token:
+            raise ControlPlaneError(f"Environment variable {args.token_env} is not set")
+        return ResolvedCredential(
+            credential_ref=f"environment://{args.token_env}",
+            access_token=token,
+            local_identity_id="administrative-discovery",
+            connection_id="administrative-discovery",
+            server_id=args.server_id,
+        )
+    return None
+
+
+def _reconcile(args: argparse.Namespace, repository: SqliteControlPlaneRepository) -> object:
+    """Settle an UNKNOWN write after the owner has checked the downstream system."""
+    from .credentials.resolver import InMemoryCredentialResolver
+    from .data_plane.serde import response_from_dict
+
+    class _NoDownstream:
+        def call_tool(self, **_: object) -> object:
+            raise ControlPlaneError("Reconciliation never calls the downstream server")
+
+    service = ToolDataPlaneService(
+        repository,
+        InMemoryCredentialResolver(),
+        _NoDownstream(),  # type: ignore[arg-type]
+        clock=ConnectionService(repository)._clock,  # pyright: ignore[reportPrivateUsage]
+    )
+    response = None
+    if args.outcome == "completed":
+        if not args.response:
+            raise ControlPlaneError("--response (a JSON file) is required for 'completed'")
+        response = response_from_dict(_load_mapping(Path(args.response)))
+    record = service.reconcile_unknown(
+        args.operation_id, actor=args.actor, outcome=args.outcome, response=response
+    )
+    return {"operationId": record.operation_id, "status": record.status}
+
+
+def _connector_url(public_url: str, record: ConnectionRecord) -> str:
+    return f"{public_url.rstrip('/')}/c/{record.slug}/openapi.json"
+
+
+def _muse_instructions(label: str, connector_url: str, token: str) -> str:
+    return (
+        f'Tell Muse: "Create a connector called {label} from the API spec at {connector_url}. '
+        'It uses bearer-token authentication." When Muse asks for the token, give it: '
+        f"{token}"
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="muse-mcp-adapter")
     parser.add_argument("--database", default="adapter.db")
+    parser.add_argument(
+        "--config", help="Service configuration (also read from MUSE_ADAPTER_CONFIG)"
+    )
+    parser.add_argument("--public-url", help="Public origin of this service when no --config")
+    parser.add_argument(
+        "--actor",
+        default=os.environ.get("USER", "local-administrator"),
+        help="Name recorded in the administrative audit trail",
+    )
+    parser.add_argument(
+        "--allow-http",
+        action="store_true",
+        help="Development only: allow plain-HTTP MCP servers",
+    )
+    parser.add_argument(
+        "--allow-private-network",
+        action="store_true",
+        help="Development only: allow MCP servers on loopback or private addresses",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    register = commands.add_parser("server-register")
+    def server_command(name: str, help_text: str | None = None) -> argparse.ArgumentParser:
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("--server-id", required=True)
+        return command
+
+    register = commands.add_parser("server-register", help="Register an MCP server")
     register.add_argument("--server-id", required=True)
     register.add_argument("--display-name", required=True)
     register.add_argument("--endpoint", required=True)
     register.add_argument("--auth-profile", required=True)
     register.add_argument("--provider-pack")
 
-    commands.add_parser("server-list")
+    commands.add_parser("server-list", help="List registered MCP servers")
+    commands.add_parser("serve", help="Run the Muse-facing HTTP service")
 
-    serve = commands.add_parser(
-        "serve", help="Run the Muse-facing HTTP ingress (secrets are read from the environment)"
-    )
-    serve.add_argument("--config", required=True)
-
-    discover = commands.add_parser("discover")
-    discover.add_argument("--server-id", required=True)
+    discover = server_command("discover", "Record primitives from a manifest file")
     discover.add_argument("--manifest", required=True)
 
-    remote = commands.add_parser("discover-remote")
-    remote.add_argument("--server-id", required=True)
-    remote.add_argument(
-        "--token-env",
-        help="Name of an environment variable containing a bearer token",
+    remote = server_command("discover-remote", "Connect to the MCP server and record primitives")
+    remote.add_argument("--token-env", help="Environment variable holding a bearer token")
+    remote.add_argument("--connection-id", help="Use this connection's credential")
+
+    server_command("server-enable", "Resume traffic for a server")
+    server_command("server-disable", "Stop all traffic for a server")
+
+    template = server_command("policy-template", "Draft an exposure policy to review and edit")
+    template.add_argument(
+        "--expose-reads",
+        action="store_true",
+        help="Draft read-only primitives as allowed (writes always start disallowed)",
     )
 
-    enable = commands.add_parser("server-enable")
-    enable.add_argument("--server-id", required=True)
-    disable = commands.add_parser("server-disable")
-    disable.add_argument("--server-id", required=True)
-
-    publish = commands.add_parser("publish")
-    publish.add_argument("--server-id", required=True)
+    publish = server_command("publish", "Compile a catalog from discovery and a policy file")
     publish.add_argument("--catalog-version", required=True)
     publish.add_argument("--policies", required=True)
 
-    activate = commands.add_parser("activate")
-    activate.add_argument("--server-id", required=True)
+    activate = server_command("activate", "Make a catalog version live")
     activate.add_argument("--catalog-version", required=True)
 
-    rollback = commands.add_parser("rollback")
-    rollback.add_argument("--server-id", required=True)
+    server_command("rollback", "Return to the previously active catalog")
+    server_command("drift", "Compare the live server with the active catalog")
+    server_command("status", "Show a server, its catalog and its connections")
 
-    drift = commands.add_parser("drift")
-    drift.add_argument("--server-id", required=True)
+    link = server_command("link", "Create a connection Muse will use to reach a server")
+    link.add_argument("--label", required=True, help="A name for this Muse connection")
+    link.add_argument(
+        "--credential",
+        choices=("none", "env_token", "oauth"),
+        default="none",
+        help="How the adapter authenticates to the MCP server",
+    )
+    link.add_argument("--token-env", help="Environment variable holding the server token")
+    link.add_argument("--scopes", help="Comma-separated scopes to request or assume")
 
-    status = commands.add_parser("status")
-    status.add_argument("--server-id", required=True)
+    links = commands.add_parser("links", help="List connections")
+    links.add_argument("--server-id")
+
+    unlink = commands.add_parser("unlink", help="Revoke a connection")
+    unlink.add_argument("--connection-id", required=True)
+
+    rotate = commands.add_parser("rotate-token", help="Issue a new token for a connection")
+    rotate.add_argument("--connection-id", required=True)
+
+    login = commands.add_parser("login", help="Get a sign-in link for an OAuth connection")
+    login.add_argument("--connection-id", required=True)
+
+    reconcile = commands.add_parser(
+        "reconcile", help="Settle a write whose outcome is unknown after checking the system"
+    )
+    reconcile.add_argument("--operation-id", required=True)
+    reconcile.add_argument("--outcome", choices=("not_applied", "completed"), required=True)
+    reconcile.add_argument("--response", help="JSON file with the result (for 'completed')")
     return parser
 
 
@@ -243,6 +455,19 @@ def _server_dict(server: ServerRegistration) -> dict[str, object]:
         "enabled": server.enabled,
         "createdAt": server.created_at,
         "updatedAt": server.updated_at,
+    }
+
+
+def _connection_dict(record: ConnectionRecord, public_url: str) -> dict[str, object]:
+    return {
+        "connectionId": record.connection_id,
+        "serverId": record.server_id,
+        "label": record.label,
+        "credential": record.credential_kind,
+        "scopes": list(record.scopes),
+        "connectorUrl": _connector_url(public_url, record),
+        "revoked": record.revoked_at is not None,
+        "createdAt": record.created_at,
     }
 
 

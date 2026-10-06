@@ -4,7 +4,7 @@ import json
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Protocol, cast
 
 import anyio
 from starlette.applications import Starlette
@@ -31,6 +31,7 @@ from ..domain.errors import (
     OperationInProgressError,
     OperationNotFoundError,
     RateLimitExceededError,
+    ReauthorizationRequiredError,
     RequestTooLargeError,
     RequestValidationError,
     ServerDisabledError,
@@ -39,15 +40,21 @@ from ..domain.errors import (
     UnsupportedPrimitiveError,
 )
 from ..domain.models import OperationRecord
-from .runtime import AdapterRuntime, BearerAuthenticator, Principal
+from .runtime import AdapterRuntime, Principal, payload_object
 
 MAX_INGRESS_BYTES = 1024 * 1024
+
+
+class WebAuthorization(Protocol):
+    """Browser-facing routes of the delegated OAuth flow."""
+
+    def routes(self) -> list[Route]: ...
 
 
 def create_http_app(
     *,
     runtime: AdapterRuntime,
-    authenticator: BearerAuthenticator,
+    web_authorization: WebAuthorization | None = None,
     stale_after_seconds: int = 300,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Starlette:
@@ -59,73 +66,55 @@ def create_http_app(
         )
         yield
 
+    def principal_of(request: Request) -> Principal:
+        return runtime.authenticate(
+            request.headers.get("authorization"), request.path_params["slug"]
+        )
+
     async def health(_: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
     async def openapi(request: Request) -> Response:
-        principal = _principal(request, authenticator)
-        server_id = request.query_params.get("serverId")
-        if not server_id or server_id not in principal.server_ids:
-            raise AuthorizationError("An authorized serverId query parameter is required")
-        return JSONResponse(runtime.openapi(principal, server_id))
+        slug = request.path_params["slug"]
+        document = await anyio.to_thread.run_sync(lambda: runtime.openapi(slug))
+        return JSONResponse(document)
 
     async def execute(request: Request) -> Response:
-        principal = _principal(request, authenticator)
-        payload = await _payload(request)
+        principal = principal_of(request)
+        arguments = await _arguments(request)
         operation_id = request.path_params["public_operation_id"]
+        key = request.headers.get("idempotency-key")
+        request_id = _request_id(request)
         result = await anyio.to_thread.run_sync(
-            lambda: runtime.execute(principal, operation_id, payload)
+            lambda: runtime.execute(
+                principal,
+                operation_id,
+                arguments,
+                idempotency_key=key,
+                request_id=request_id,
+            )
         )
         return JSONResponse(response_to_dict(result))
 
     async def resume(request: Request) -> Response:
-        principal = _principal(request, authenticator)
-        payload = await _payload(request)
+        principal = principal_of(request)
+        payload = await _arguments(request)
+        arguments = payload_object(payload.get("arguments"), "arguments")
+        inputs = payload_object(payload.get("inputs"), "inputs")
         operation_id = request.path_params["operation_id"]
         result = await anyio.to_thread.run_sync(
-            lambda: runtime.resume(principal, operation_id, payload)
+            lambda: runtime.resume(principal, operation_id, arguments, inputs)
         )
         return JSONResponse(response_to_dict(result))
 
-    async def cancel(request: Request) -> Response:
-        principal = _principal(request, authenticator)
-        payload = await _payload(request)
-        reason = payload.get("reason", "Cancelled by caller")
-        if not isinstance(reason, str) or not reason:
-            raise RequestValidationError("Cancellation reason must be a non-empty string")
-        operation_id = request.path_params["operation_id"]
-        result = await anyio.to_thread.run_sync(
-            lambda: runtime.cancel(principal, operation_id, reason=reason)
-        )
-        body = _operation_dict(result)
-        if result.status == "CANCELLED":
-            body["cancellation"] = "applied"
-            return JSONResponse(body)
-        # A dispatched write cannot be rolled back: the request is recorded, and the operation
-        # still resolves to its real outcome (COMPLETED, FAILED, or UNKNOWN).
-        body["cancellation"] = "requested"
-        body["message"] = (
-            "The operation is already running and cannot be aborted safely; "
-            "poll its status for the final outcome"
-        )
-        return JSONResponse(body, status_code=202)
-
     async def operation(request: Request) -> Response:
-        principal = _principal(request, authenticator)
+        principal = principal_of(request)
         operation_id = request.path_params["operation_id"]
-        result = await anyio.to_thread.run_sync(
-            lambda: runtime.operation(principal, operation_id)
-        )
+        result = await anyio.to_thread.run_sync(lambda: runtime.operation(principal, operation_id))
         return JSONResponse(_operation_dict(result))
 
-    async def metrics(request: Request) -> Response:
-        principal = _principal(request, authenticator)
-        if not principal.administrator:
-            raise AuthorizationError("Administrator access is required")
-        return JSONResponse(runtime.metrics.snapshot())
-
     async def artifact(request: Request) -> Response:
-        principal = _principal(request, authenticator)
+        principal = principal_of(request)
         artifact_id = request.path_params["artifact_id"]
         content, media_type = await anyio.to_thread.run_sync(
             lambda: runtime.artifact(principal, artifact_id)
@@ -133,30 +122,32 @@ def create_http_app(
         return Response(content, media_type=media_type)
 
     async def error_handler(_: Request, error: Exception) -> Response:
-        status = _status(error)
         payload: dict[str, object] = {
             "error": getattr(error, "code", type(error).__name__),
             "message": str(error),
         }
-        if isinstance(error, (ApprovalRequiredError, InputRequiredError, UnknownOutcomeError)):
+        if isinstance(error, ApprovalRequiredError | InputRequiredError | UnknownOutcomeError):
             payload["operationId"] = error.operation_id
         if isinstance(error, ApprovalRequiredError):
             payload["actionDigest"] = error.action_digest
         if isinstance(error, InputRequiredError):
             payload["schema"] = error.schema
-        return JSONResponse(payload, status_code=status)
+        if isinstance(error, ReauthorizationRequiredError) and error.authorization_url:
+            payload["authorizationUrl"] = error.authorization_url
+        return JSONResponse(payload, status_code=_status(error))
 
+    routes = [
+        Route("/health", health, methods=["GET"]),
+        Route("/c/{slug}/openapi.json", openapi, methods=["GET"]),
+        Route("/c/{slug}/operations/{public_operation_id}", execute, methods=["POST"]),
+        Route("/c/{slug}/executions/{operation_id}", operation, methods=["GET"]),
+        Route("/c/{slug}/executions/{operation_id}/resume", resume, methods=["POST"]),
+        Route("/c/{slug}/artifacts/{artifact_id}", artifact, methods=["GET"]),
+    ]
+    if web_authorization is not None:
+        routes.extend(web_authorization.routes())
     return Starlette(
-        routes=[
-            Route("/health", health, methods=["GET"]),
-            Route("/openapi.json", openapi, methods=["GET"]),
-            Route("/v1/operations/{public_operation_id}", execute, methods=["POST"]),
-            Route("/v1/executions/{operation_id}", operation, methods=["GET"]),
-            Route("/v1/executions/{operation_id}/resume", resume, methods=["POST"]),
-            Route("/v1/executions/{operation_id}/cancel", cancel, methods=["POST"]),
-            Route("/metrics", metrics, methods=["GET"]),
-            Route("/v1/artifacts/{artifact_id}", artifact, methods=["GET"]),
-        ],
+        routes=routes,
         exception_handlers={
             AuthenticationError: error_handler,
             AuthorizationError: error_handler,
@@ -167,24 +158,29 @@ def create_http_app(
     )
 
 
-def _principal(request: Request, authenticator: BearerAuthenticator) -> Principal:
-    return authenticator.authenticate(request.headers.get("authorization"))
-
-
-async def _payload(request: Request) -> Mapping[str, object]:
+async def _arguments(request: Request) -> Mapping[str, object]:
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > MAX_INGRESS_BYTES:
-        raise RequestTooLargeError("Request body exceeds the ingress size limit")
+        raise RequestTooLargeError("Request body exceeds the size limit")
     body = await request.body()
     if len(body) > MAX_INGRESS_BYTES:
-        raise RequestTooLargeError("Request body exceeds the ingress size limit")
+        raise RequestTooLargeError("Request body exceeds the size limit")
+    if not body.strip():
+        return {}
     try:
         value: object = json.loads(body)
     except ValueError as error:
         raise RequestValidationError("Request body must be valid JSON") from error
-    if not isinstance(value, dict):
-        raise RequestValidationError("Request body must be a JSON object")
-    return cast(Mapping[str, object], value)
+    return payload_object(value, "Request body")
+
+
+def _request_id(request: Request) -> str | None:
+    value = request.headers.get("x-request-id")
+    if value is None:
+        return None
+    if not 1 <= len(value) <= 200 or not value.isprintable():
+        raise RequestValidationError("X-Request-Id must be 1 to 200 printable characters")
+    return value
 
 
 def _operation_dict(operation: OperationRecord) -> dict[str, object]:
@@ -192,8 +188,6 @@ def _operation_dict(operation: OperationRecord) -> dict[str, object]:
     return {
         "operationId": operation.operation_id,
         "requestId": operation.request_id,
-        "serverId": operation.server_id,
-        "catalogVersion": operation.catalog_version,
         "publicOperationId": operation.public_operation_id,
         "classification": operation.classification,
         "status": operation.status,
@@ -207,7 +201,7 @@ def _operation_dict(operation: OperationRecord) -> dict[str, object]:
 
 def _status(error: Exception) -> int:
     """Map adapter errors to HTTP statuses a Muse connector can act on."""
-    if isinstance(error, AuthenticationError):
+    if isinstance(error, AuthenticationError | ReauthorizationRequiredError):
         return 401
     if isinstance(error, AuthorizationError | ServerDisabledError | CredentialResolutionError):
         return 403
@@ -229,13 +223,14 @@ def _status(error: Exception) -> int:
         | ConflictError,
     ):
         return 409
-    if isinstance(
-        error,
-        DownstreamToolError | DownstreamContentError | UnsafeEndpointError,
-    ):
+    if isinstance(error, DownstreamToolError | DownstreamContentError | UnsafeEndpointError):
         return 502
     if isinstance(error, RequestValidationError | UnsupportedPrimitiveError):
         return 400
     if isinstance(error, DataPlaneError):
         return 500
     return 400
+
+
+__all__ = ["WebAuthorization", "create_http_app", "payload_object"]
+_ = cast

@@ -163,6 +163,14 @@ CREATE TABLE IF NOT EXISTS connections (
     revoked_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS login_nonces (
+    nonce_hash TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES connections(connection_id),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
     operation_id TEXT NOT NULL REFERENCES operations(operation_id),
@@ -228,9 +236,7 @@ class SqliteControlPlaneRepository:
                 for row in self._connection.execute("PRAGMA table_info(published_catalogs)")
             }
             if "signature" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE published_catalogs ADD COLUMN signature TEXT"
-                )
+                self._connection.execute("ALTER TABLE published_catalogs ADD COLUMN signature TEXT")
 
     def _sign(self, payload: str) -> str | None:
         if self._integrity_key is None:
@@ -844,15 +850,38 @@ class SqliteControlPlaneRepository:
             raise InvalidStateError(f"Connection {connection_id} is revoked")
         return self.get_connection(connection_id)
 
-    def set_connection_scopes(
-        self, connection_id: str, scopes: Sequence[str]
-    ) -> ConnectionRecord:
+    def set_connection_scopes(self, connection_id: str, scopes: Sequence[str]) -> ConnectionRecord:
         with self._connection:
             self._connection.execute(
                 "UPDATE connections SET scopes_json = ? WHERE connection_id = ?",
                 (_json(list(scopes)), connection_id),
             )
         return self.get_connection(connection_id)
+
+    def create_login_nonce(
+        self, nonce_hash: str, connection_id: str, created_at: str, expires_at: str
+    ) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO login_nonces (nonce_hash, connection_id, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (nonce_hash, connection_id, created_at, expires_at),
+            )
+
+    def consume_login_nonce(self, nonce_hash: str, now: str) -> str:
+        """Atomically spend a one-time login link; returns the connection it belongs to."""
+        with self._connection:
+            cursor = self._connection.execute(
+                "UPDATE login_nonces SET used_at = ? WHERE nonce_hash = ? "
+                "AND used_at IS NULL AND expires_at > ?",
+                (now, nonce_hash, now),
+            )
+            if cursor.rowcount != 1:
+                raise EntityNotFoundError("This sign-in link is invalid, expired, or already used")
+            row = self._connection.execute(
+                "SELECT connection_id FROM login_nonces WHERE nonce_hash = ?", (nonce_hash,)
+            ).fetchone()
+        return cast(str, row["connection_id"])
 
     def _one_connection(self, column: str, value: str) -> ConnectionRecord:
         row = self._connection.execute(
@@ -955,9 +984,7 @@ def _snapshot_from_row(row: sqlite3.Row) -> DiscoverySnapshot:
         snapshot_digest=cast(str, row["snapshot_digest"]),
         server_info=cast(Mapping[str, object], freeze_json(server_info)),
         capabilities=cast(Mapping[str, object], freeze_json(capabilities)),
-        primitives=tuple(
-            cast(Mapping[str, object], freeze_json(item)) for item in primitives
-        ),
+        primitives=tuple(cast(Mapping[str, object], freeze_json(item)) for item in primitives),
     )
 
 

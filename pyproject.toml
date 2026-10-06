@@ -24,6 +24,7 @@ muse-mcp-adapter = "muse_mcp_adapter.cli:main"
 [project.optional-dependencies]
 dev = [
   "httpx2",
+  "openapi-spec-validator",
   "pyright",
   "pytest",
   "pytest-cov",
