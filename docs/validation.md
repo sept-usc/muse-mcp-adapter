@@ -153,7 +153,7 @@ These are the places where a connector is not byte-for-byte what a direct MCP cl
 | Tool errors | `isError` result | HTTP 502 with the server's message | REST reports failure by status code. |
 | Invalid arguments | The server rejects them | The adapter rejects them (HTTP 400) before the server is contacted | Bad input from a model never reaches your server. |
 | Unknown tool | `isError` result | HTTP 404 | Same. |
-| Progress and logs | Streamed live | Delivered with the operation's status and events | A request/response API cannot push. |
+| Progress and logs | Streamed live | Returned with the result, and kept with the operation's events | A request/response API cannot push. |
 | Questions to the user (elicitation) | Asked mid-call | HTTP 409 `INPUT_REQUIRED` with the question, answered by calling resume | Same; the user still answers once. |
 | Resources and templates | `resources/list`, `read` | One operation per resource or template, naming its URI | There is no list call in OpenAPI. |
 | Annotations | Advisory hints | The owner's policy classification, with confirmation hints | Hints from a server are untrusted. |
@@ -203,6 +203,8 @@ The local suites cover the adapter completely on their own. A session with Muse 
    | Rotate the token, then use Muse | It fails clearly and asks you to reconnect. |
 
 5. Compare with the same requests made directly against Atlas using any MCP client. Differences should match the table above.
+
+The [live test report](muse-live-test-report.md) records what a real run with Muse showed.
 
 ## Troubleshooting
 
