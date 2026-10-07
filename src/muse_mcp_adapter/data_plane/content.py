@@ -102,3 +102,12 @@ def normalize_resource(
         NormalizedContent("resource", content.text, content.mime_type, content.uri, details),
         len(content.text.encode()),
     )
+
+
+def too_large(noun: str, limit: int) -> str:
+    """The message for a result over the owner's size limit; it must not read as an outage."""
+    return (
+        f"{noun} exceeds the published size limit of {limit} bytes. This is a limit set for this "
+        "connector, not a network problem: ask for a smaller portion, or the owner can raise "
+        "the limit."
+    )

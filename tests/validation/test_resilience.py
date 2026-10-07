@@ -144,3 +144,14 @@ def test_a_pending_question_is_answered_by_resuming_not_by_repeating(
     )
     assert done.status_code == 200
     assert len(atlas.effects("schedule_review")) == 1
+
+
+def test_an_oversized_result_is_explained_as_a_limit_not_an_outage(
+    world: tuple[AtlasHandle, ConnectorHandle],
+) -> None:
+    atlas, conn = world
+    big = conn.call("payload", {"size_kb": 600})
+    assert big.status_code == 502 and big.json()["error"] == "DOWNSTREAM_CONTENT_REJECTED"
+    message = big.json()["message"]
+    assert "bytes" in message and "not a network problem" in message
+    assert conn.call("payload", {"size_kb": 1}).status_code == 200

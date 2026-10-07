@@ -29,7 +29,7 @@ from ..domain.models import (
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from ..policy.validate_policy import FORBIDDEN_URI_SCHEMES
-from .content import normalize_block, normalize_resource
+from .content import normalize_block, normalize_resource, too_large
 from .mcp_client import McpReadClient
 
 _TEMPLATE_FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -334,7 +334,7 @@ def _normalize_resource_result(
         item, size = _normalize_resource_content(content, allowed_mime_types)
         total_bytes += size
         if total_bytes > max_bytes:
-            raise DownstreamContentError("Resource result exceeds the published size limit")
+            raise DownstreamContentError(too_large("Resource", max_bytes))
         normalized.append(item)
     return tuple(normalized)
 
@@ -357,7 +357,7 @@ def _normalize_prompt_result(
             normalized, size = _normalize_prompt_block(block, allowed_mime_types)
             total_bytes += size
             if total_bytes > max_bytes:
-                raise DownstreamContentError("Prompt result exceeds the published size limit")
+                raise DownstreamContentError(too_large("Prompt", max_bytes))
             blocks.append(normalized)
         messages.append(NormalizedMessage(role=message.role, content=tuple(blocks)))
     return tuple(messages)

@@ -42,7 +42,13 @@ from ..domain.models import (
 from ..operations.cancellation import CancellationRegistry
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from .approval import ApprovalVerifier
-from .content import DEFAULT_TOOL_RESULT_TYPES, mime_allowed, narrow_types, normalize_block
+from .content import (
+    DEFAULT_TOOL_RESULT_TYPES,
+    mime_allowed,
+    narrow_types,
+    normalize_block,
+    too_large,
+)
 from .serde import response_from_dict, response_to_dict
 from .tool_client import (
     McpAuthRejected,
@@ -887,10 +893,10 @@ def _normalize_tool_result(
         content, size = normalize_block(block, policy.result_content_types, noun="Tool")
         total_bytes += size
         if total_bytes > policy.max_result_bytes:
-            raise DownstreamContentError("Tool result exceeds the published size limit")
+            raise DownstreamContentError(too_large("Tool result", policy.max_result_bytes))
         contents.append(content)
     if total_bytes > policy.max_result_bytes:
-        raise DownstreamContentError("Tool result exceeds the published size limit")
+        raise DownstreamContentError(too_large("Tool result", policy.max_result_bytes))
 
     structured = (
         cast(Mapping[str, object], freeze_json(result.structured_content))
