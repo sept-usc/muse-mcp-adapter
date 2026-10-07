@@ -204,8 +204,6 @@ The local suites cover the adapter completely on their own. A session with Muse 
 
 5. Compare with the same requests made directly against Atlas using any MCP client. Differences should match the table above.
 
-The [live test report](muse-live-test-report.md) records what a real run with Muse showed.
-
 ## Troubleshooting
 
 | Symptom | Likely cause |
