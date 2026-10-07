@@ -76,6 +76,8 @@ def test_a_read_that_times_out_fails_and_can_be_retried(tmp_path: Path) -> None:
         started = time.monotonic()
         late = conn.call("slow", {"seconds": 4})
         assert late.status_code == 502
+        assert "1-second limit" in late.json()["message"]
+        assert "not a network problem" in late.json()["message"]
         assert time.monotonic() - started < 3  # gave up at its own limit, not the server's pace
         assert conn.call("slow", {"seconds": 0}).status_code == 200
 

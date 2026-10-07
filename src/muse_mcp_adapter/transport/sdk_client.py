@@ -57,6 +57,7 @@ IDEMPOTENCY_META_KEY = "io.muse.mcp-adapter/idempotencyKey"
 DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 # JSON-RPC errors by which a server definitively refused the request before acting on it.
 _DEFINITIVE_REJECTIONS = frozenset({-32700, -32600, -32601, -32602})
+_REQUEST_TIMEOUT = 408  # what the MCP SDK reports when the server does not answer in time
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,8 +379,16 @@ class McpSdkClient:
                 raise McpToolExecutionFailure(
                     error.error.message, code=f"JSONRPC_{error.error.code}"
                 ) from error
-            if isinstance(error, TimeoutError):
-                raise McpUnknownOutcome("MCP tool call timed out after dispatch") from error
+            if isinstance(error, TimeoutError) or (
+                isinstance(error, McpError) and error.error.code == _REQUEST_TIMEOUT
+            ):
+                limit = f"{timeout_seconds}-second" if timeout_seconds else "configured"
+                raise McpUnknownOutcome(
+                    f"The server did not answer within the {limit} limit set for this "
+                    "operation, so it was stopped waiting. The server may still be working on it; "
+                    "this is not a network problem. Try a smaller request, or the owner can allow "
+                    "more time."
+                ) from error
             raise McpUnknownOutcome("MCP transport ended before a result was received") from error
 
     async def _discover(self, server: ServerRegistration) -> DiscoverySnapshot:
