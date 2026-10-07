@@ -122,3 +122,25 @@ def test_a_stateless_server_works_for_everything_that_does_not_ask_questions(
         asked = conn.call("schedule_review", {"issue_id": "ISSUE-1"})
         assert asked.status_code in (409, 502)
         assert atlas.effects("schedule_review") == []
+
+
+def test_a_pending_question_is_answered_by_resuming_not_by_repeating(
+    world: tuple[AtlasHandle, ConnectorHandle],
+) -> None:
+    atlas, conn = world
+    first = conn.call("schedule_review", {"issue_id": "ISSUE-1"})
+    again = conn.call("schedule_review", {"issue_id": "ISSUE-1"})  # a caller that retries
+    for response in (first, again):
+        assert response.status_code == 409
+        body = response.json()
+        assert body["error"] == "INPUT_REQUIRED" and "time" in body["schema"]["properties"]
+        assert "resume_operation" in body["nextStep"]
+    assert atlas.effects("schedule_review") == []
+
+    done = conn.http.post(
+        f"/c/{conn.slug}/executions/{first.json()['operationId']}/resume",
+        json={"arguments": {"issue_id": "ISSUE-1"}, "inputs": {"time": "Friday 10:00"}},
+        headers=conn.headers,
+    )
+    assert done.status_code == 200
+    assert len(atlas.effects("schedule_review")) == 1

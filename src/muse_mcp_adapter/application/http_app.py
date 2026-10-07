@@ -141,7 +141,12 @@ def create_http_app(
         if isinstance(error, ApprovalRequiredError):
             payload["actionDigest"] = error.action_digest
         if isinstance(error, InputRequiredError):
-            payload["schema"] = error.schema
+            payload["schema"] = thaw_json(error.schema)
+            payload["nextStep"] = (
+                "Do not repeat the original call. Ask the user for the fields in `schema`, then "
+                "call resume_operation with this operationId and "
+                '{"arguments": <the same arguments>, "inputs": <the answers>}.'
+            )
         if isinstance(error, ReauthorizationRequiredError) and error.authorization_url:
             payload["authorizationUrl"] = error.authorization_url
         headers: dict[str, str] = {}
