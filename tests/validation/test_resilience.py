@@ -155,3 +155,16 @@ def test_an_oversized_result_is_explained_as_a_limit_not_an_outage(
     message = big.json()["message"]
     assert "bytes" in message and "not a network problem" in message
     assert conn.call("payload", {"size_kb": 1}).status_code == 200
+
+
+def test_progress_and_logs_arrive_with_the_result(
+    world: tuple[AtlasHandle, ConnectorHandle],
+) -> None:
+    atlas, conn = world
+    done = conn.call("progress_task", {"steps": 3})
+    assert done.status_code == 200
+    body = done.json()
+    assert [item["progress"] for item in body["progress"]] == [1.0, 2.0, 3.0]
+    assert len(body["logs"]) == 3 and "message" in body["logs"][0]
+    plain = conn.call("get_issue", {"issue_id": "ISSUE-1"}).json()
+    assert "progress" not in plain and "logs" not in plain

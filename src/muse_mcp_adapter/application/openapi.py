@@ -460,6 +460,16 @@ _RESULT_SCHEMA: dict[str, object] = {
             "description": "True when this repeats an earlier identical request; nothing new ran.",
         },
         "note": {"type": "string"},
+        "progress": {
+            "type": "array",
+            "description": "Progress the server reported while working (progress, total, message).",
+            "items": {"type": "object"},
+        },
+        "logs": {
+            "type": "array",
+            "description": "Log messages the server sent while working (level, message).",
+            "items": {"type": "object"},
+        },
         "structuredContent": {"type": ["object", "null"]},
         "contents": {"type": "array", "items": {"$ref": "#/components/schemas/Content"}},
         "messages": {

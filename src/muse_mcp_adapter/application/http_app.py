@@ -42,7 +42,7 @@ from ..domain.errors import (
     UnsafeEndpointError,
     UnsupportedPrimitiveError,
 )
-from ..domain.models import OperationRecord
+from ..domain.models import OperationEvent, OperationRecord
 from .runtime import AdapterRuntime, Principal, payload_object
 
 MAX_INGRESS_BYTES = 1024 * 1024
@@ -98,7 +98,14 @@ def create_http_app(
                 request_id=request_id,
             )
         )
-        return JSONResponse(response_to_dict(result))
+        body = response_to_dict(result)
+        if result.operation_id and not result.replayed:
+            body.update(
+                await anyio.to_thread.run_sync(
+                    lambda: _server_notes(runtime.events(principal, result.operation_id or ""))
+                )
+            )
+        return JSONResponse(body)
 
     async def resume(request: Request) -> Response:
         principal = principal_of(request)
@@ -200,6 +207,18 @@ async def _arguments(request: Request) -> Mapping[str, object]:
     if _nesting(value) > MAX_JSON_DEPTH:
         raise RequestValidationError("Request body is nested too deeply")
     return payload_object(value, "Request body")
+
+
+def _server_notes(events: Sequence[OperationEvent]) -> dict[str, object]:
+    """The progress and log messages the server sent while working, as part of the result."""
+    notes: dict[str, object] = {}
+    progress = [thaw_json(item.data) for item in events if item.event_type == "progress"]
+    logs = [thaw_json(item.data) for item in events if item.event_type == "log"]
+    if progress:
+        notes["progress"] = progress
+    if logs:
+        notes["logs"] = logs
+    return notes
 
 
 def _nesting(value: object) -> int:
