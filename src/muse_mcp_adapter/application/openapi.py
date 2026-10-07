@@ -110,7 +110,8 @@ def _operation(primitive: PublishedPrimitive, components: dict[str, object]) -> 
                 "required": False,
                 "description": (
                     "Send the same value when retrying an action so it runs once. If omitted, "
-                    "identical requests sent close together are treated as one."
+                    "identical requests sent close together are treated as one. To deliberately "
+                    "repeat an identical action, send a new unique value."
                 ),
                 "schema": {"type": "string", "minLength": 1, "maxLength": 200},
             }
@@ -454,6 +455,11 @@ _RESULT_SCHEMA: dict[str, object] = {
         "primitiveType": {"type": "string"},
         "operationId": {"type": ["string", "null"]},
         "operationStatus": {"type": ["string", "null"]},
+        "idempotentReplay": {
+            "type": "boolean",
+            "description": "True when this repeats an earlier identical request; nothing new ran.",
+        },
+        "note": {"type": "string"},
         "structuredContent": {"type": ["object", "null"]},
         "contents": {"type": "array", "items": {"$ref": "#/components/schemas/Content"}},
         "messages": {

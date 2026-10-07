@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -164,7 +165,8 @@ def test_idempotent_write_executes_once_and_returns_cached_result(tmp_path: Path
             )
         )
 
-        assert first == cached
+        assert cached.replayed and not first.replayed
+        assert replace(cached, replayed=False) == first
         assert first.operation_status == COMPLETED
         assert len(client.calls) == 1
         assert service.get_operation("operation-1").status == COMPLETED

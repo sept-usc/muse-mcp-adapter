@@ -1,7 +1,7 @@
 import functools
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 from uuid import uuid4
 
@@ -394,7 +394,7 @@ class ToolDataPlaneService:
         if existing.status == COMPLETED:
             if existing.result is None:
                 raise DownstreamToolError("Completed operation has no stored result")
-            return response_from_dict(existing.result)
+            return replace(response_from_dict(existing.result), replayed=True)
         if existing.status == UNKNOWN:
             raise UnknownOutcomeError(
                 "The prior write may have completed; reconcile its status before retrying",

@@ -9,8 +9,22 @@ from ..domain.models import (
     NormalizedMessage,
 )
 
+REPLAY_NOTE = (
+    "This repeats an identical request made a moment ago, so nothing new was done and the "
+    "earlier result is returned. To deliberately run it again, send a new unique "
+    "Idempotency-Key."
+)
+
 
 def response_to_dict(response: DataPlaneResponse) -> dict[str, object]:
+    body = _response_fields(response)
+    if response.replayed:
+        body["idempotentReplay"] = True
+        body["note"] = REPLAY_NOTE
+    return body
+
+
+def _response_fields(response: DataPlaneResponse) -> dict[str, object]:
     return {
         "requestId": response.request_id,
         "catalogVersion": response.catalog_version,

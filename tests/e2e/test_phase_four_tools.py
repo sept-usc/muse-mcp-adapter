@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -64,7 +65,8 @@ def test_phase_four_read_write_deduplication_and_unknown_recovery(
         )
         created = service.execute(approved)
         duplicate = service.execute(approved)
-        assert created == duplicate
+        assert duplicate.replayed and not created.replayed
+        assert replace(duplicate, replayed=False) == created
         assert created.operation_status == COMPLETED
 
         client.unknown_tools.add("create_issue")
@@ -111,7 +113,8 @@ def test_phase_four_read_write_deduplication_and_unknown_recovery(
         )
         cached_after_restart = reopened_service.execute(approved)
 
-    assert cached_after_restart == created
+    assert cached_after_restart.replayed
+    assert replace(cached_after_restart, replayed=False) == created
     assert len(client.calls) == calls_before_reopen
 
 

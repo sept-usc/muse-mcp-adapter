@@ -195,3 +195,18 @@ def test_a_write_the_caller_never_retries_after_a_dropped_response_is_still_visi
     )
     assert unknown["n"] == 1
     assert len(atlas.effects("add_comment")) == 1
+
+
+def test_an_identical_request_without_a_key_is_flagged_as_a_replay(world) -> None:  # type: ignore[no-untyped-def]
+    atlas, conn = world
+    first = conn.call("create_issue", BODY)
+    again = conn.call("create_issue", BODY)
+    assert first.status_code == again.status_code == 200
+    assert "idempotentReplay" not in first.json()
+    assert again.json()["idempotentReplay"] is True
+    assert "Idempotency-Key" in again.json()["note"]
+    assert len(atlas.effects("create_issue")) == 1  # nothing new ran
+
+    deliberate = conn.call("create_issue", BODY, **{"Idempotency-Key": "second-copy"})
+    assert "idempotentReplay" not in deliberate.json()
+    assert len(atlas.effects("create_issue")) == 2  # a fresh key really runs it again

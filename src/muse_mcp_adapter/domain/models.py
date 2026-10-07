@@ -177,6 +177,7 @@ class DataPlaneResponse:
     structured_content: Mapping[str, object] | None = None
     contents: tuple[NormalizedContent, ...] = ()
     messages: tuple[NormalizedMessage, ...] = ()
+    replayed: bool = False  # the stored result of an earlier identical request
 
 
 @dataclass(frozen=True, slots=True)
