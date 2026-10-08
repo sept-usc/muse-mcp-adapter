@@ -1,0 +1,298 @@
+"""The deployment bundle: render it, install it on a target, and look after its secrets.
+
+Layout on the target, in /opt/muse-adapter:
+
+  compose.yml, compose.build.yml, compose.cloudflare.yml   the services (static)
+  Caddyfile, tailscale-serve.json                          ingress configuration (static)
+  .env                  compose variables: images, ingress, hostname            (0600)
+  config/serve.json     the adapter's configuration; names no secret
+  data/                 the adapter's database, key file and token store        (0700, uid 10001)
+  secrets/              one file per secret an MCP server needs                 (0700, files 0400)
+  backups/              backups the adapter makes of its own state              (0700, uid 10001)
+  *.sh                  backup, self-heal and idle scripts run by systemd timers
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import re
+import shlex
+import tarfile
+from importlib import resources
+from pathlib import Path
+
+from . import __version__
+from .targets import Target
+
+UID = 10001
+STATIC_FILES = [
+    "compose.yml",
+    "compose.build.yml",
+    "compose.cloudflare.yml",
+    "Caddyfile",
+    "tailscale-serve.json",
+]
+SCRIPTS = ["backup.sh", "heal.sh", "idle.sh"]
+UNITS = [
+    "muse-adapter.service",
+    "muse-adapter-backup.service",
+    "muse-adapter-backup.timer",
+    "muse-adapter-heal.service",
+    "muse-adapter-heal.timer",
+    "muse-adapter-idle.service",
+    "muse-adapter-idle.timer",
+]
+DEFAULT_IMAGE = "ghcr.io/sept-usc/muse-mcp-adapter"
+DEFAULT_GUARD_IMAGE = "ghcr.io/sept-usc/muse-mcp-adapter-guard"
+INGRESS_PROFILES = ("caddy", "tailscale-funnel", "cloudflare-tunnel")
+INGRESS_SERVICE = {
+    "caddy": "caddy",
+    "tailscale-funnel": "tailscale",
+    "cloudflare-tunnel": "cloudflared",
+}
+SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def bundle_file(name: str) -> str:
+    return resources.files("muse_vm").joinpath("bundle", name).read_text(encoding="utf-8")
+
+
+def local_images() -> list[str]:
+    """The image tags `--build` produces (see compose.build.yml)."""
+    return [
+        f"muse-adapter-local/adapter:{__version__}",
+        f"muse-adapter-local/guard:{__version__}",
+    ]
+
+
+# ---- configuration --------------------------------------------------------------------------
+def parse_env(text: str | None) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value
+    return values
+
+
+def render_env(values: dict[str, str]) -> str:
+    for key, value in values.items():
+        if "\n" in value:
+            raise ValueError(f"{key}: a value must be a single line")
+    return "".join(f"{key}={value}\n" for key, value in values.items())
+
+
+def compose_env(
+    *,
+    project: str,
+    ingress: str,
+    hostname: str | None,
+    build: bool,
+    image: str | None = None,
+    guard_image: str | None = None,
+    tz: str = "UTC",
+    egress_allow: str = "",
+    ts_hostname: str | None = None,
+    ingress_secrets: dict[str, str] | None = None,
+) -> dict[str, str]:
+    if ingress not in INGRESS_PROFILES:
+        raise SystemExit(
+            f"Unknown ingress {ingress!r}. Choose one of: {', '.join(INGRESS_PROFILES)}."
+        )
+    files = ["compose.yml"]
+    if build:
+        files.append("compose.build.yml")
+    if ingress == "cloudflare-tunnel":
+        files.append("compose.cloudflare.yml")
+    local = local_images()
+    env = {
+        "MMA_PROJECT": project,
+        "MMA_VERSION": __version__,
+        "COMPOSE_PROFILES": ingress,
+        "COMPOSE_FILE": ":".join(files),
+        "MMA_IMAGE": image or (local[0] if build else f"{DEFAULT_IMAGE}:{__version__}"),
+        "MMA_GUARD_IMAGE": guard_image
+        or (local[1] if build else f"{DEFAULT_GUARD_IMAGE}:{__version__}"),
+        "MMA_TZ": tz,
+        "MMA_EGRESS_ALLOW": egress_allow,
+    }
+    if hostname:
+        env["MMA_HOSTNAME"] = hostname
+    if ts_hostname:
+        env["MMA_TS_HOSTNAME"] = ts_hostname
+    env.update(ingress_secrets or {})
+    return env
+
+
+def serve_config(hostname: str, *, rate_limit: int = 60) -> str:
+    """The adapter's own configuration: it names where secrets are, and holds none."""
+    return (
+        json.dumps(
+            {
+                "publicUrl": f"https://{hostname}",
+                "listen": {"host": "0.0.0.0", "port": 8080},
+                "limits": {
+                    "rateLimit": rate_limit,
+                    "rateWindowSeconds": 60,
+                    "perServerConcurrency": 8,
+                },
+                "secretsDir": "/run/secrets",
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+# ---- installing on a target -----------------------------------------------------------------
+def install(target: Target, env: dict[str, str], serve_json: str) -> None:
+    """Write the bundle and create its directories with the right owners and modes."""
+    for name in STATIC_FILES:
+        target.put(name, bundle_file(name), 0o644)
+    target.put(".env", render_env(env), 0o600)
+    target.put("config/serve.json", serve_json, 0o644)
+    for name in SCRIPTS:
+        target.put(name, bundle_file(name), 0o755)
+    target.sh(
+        "mkdir -p config data secrets backups ts-state && chmod 755 . config "
+        f"&& chown {UID}:{UID} data secrets backups && chmod 700 data secrets backups ts-state"
+    )
+
+
+def install_units(target: Target, *, idle_hours: int | None = None) -> None:
+    """Install the systemd units: the service, backups, self-healing and optional idle stop."""
+    for name in UNITS:
+        target.put(f"units/{name}", bundle_file(name), 0o644)
+    enable = ["muse-adapter.service", "muse-adapter-backup.timer", "muse-adapter-heal.timer"]
+    if idle_hours:
+        target.put("idle.env", f"MMA_IDLE_HOURS={int(idle_hours)}\n", 0o644)
+        enable.append("muse-adapter-idle.timer")
+    target.sh(
+        "install -m 644 units/*.service units/*.timer /etc/systemd/system/ "
+        "&& systemctl daemon-reload "
+        f"&& systemctl enable {' '.join(enable)} >/dev/null 2>&1"
+    )
+
+
+def remove_units(target: Target) -> None:
+    target.sh(
+        "systemctl disable --now muse-adapter-idle.timer muse-adapter-heal.timer "
+        "muse-adapter-backup.timer muse-adapter.service >/dev/null 2>&1; "
+        "rm -f /etc/systemd/system/muse-adapter*.service /etc/systemd/system/muse-adapter*.timer; "
+        "systemctl daemon-reload",
+        check=False,
+        cwd_root=False,
+    )
+
+
+def set_secret(
+    target: Target, name: str, value: str, *, mode: int = 0o400, owner: str = f"{UID}:{UID}"
+) -> None:
+    """Store a secret an MCP server needs. It travels on stdin; only the adapter can read it.
+
+    The Cloudflare tunnel token is the exception that needs a wider mode: cloudflared runs as its
+    own user and reads it through a bind mount. It stays unreachable from outside the container,
+    because the directory that holds it is private on the host."""
+    if not SECRET_NAME.match(name):
+        raise SystemExit(f"{name!r} is not a valid secret name (letters, digits and '_' only).")
+    if not value or "\n" in value:
+        raise SystemExit("A secret must be a single non-empty line.")
+    target.put(f"secrets/{name}", value + "\n", mode, owner=owner)
+
+
+def list_secrets(target: Target) -> list[str]:
+    result = target.sh("ls -1 secrets 2>/dev/null || true", check=False)
+    return sorted(line for line in result.stdout.split() if SECRET_NAME.match(line))
+
+
+# ---- images ---------------------------------------------------------------------------------
+def find_source_dir(start: Path | None = None) -> Path | None:
+    """The checkout this package runs from (or the current directory is in), if there is one."""
+    for origin in (start or Path(__file__).resolve().parent, Path.cwd()):
+        for parent in (origin, *origin.parents):
+            if (
+                (parent / "Dockerfile").is_file()
+                and (parent / "requirements.lock").is_file()
+                and (parent / "deploy" / "guard" / "Dockerfile").is_file()
+                and (parent / "src" / "muse_mcp_adapter").is_dir()
+            ):
+                return parent
+    return None
+
+
+def upload_source(target: Target, source: Path) -> None:
+    """Send what the images are built from: the adapter, its lock, and the egress guard."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for relative, arcname in (
+            ("Dockerfile", "Dockerfile"),
+            ("requirements.lock", "requirements.lock"),
+            ("src/muse_mcp_adapter", "src/muse_mcp_adapter"),
+            ("deploy/guard", "guard"),
+        ):
+            archive.add(source / relative, arcname=arcname, filter=_normalise)
+    target.sh("rm -rf src && mkdir -p src && tar -xpzf - -C src", input=buffer.getvalue())
+
+
+def _normalise(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    if "__pycache__" in info.name or info.name.endswith(".pyc"):
+        return None
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    # Files end up root-owned in the image while the adapter runs unprivileged, so they must be
+    # readable by everyone even if the checkout is not.
+    if info.isdir():
+        info.mode = 0o755
+    elif info.isfile():
+        info.mode = 0o755 if info.mode & 0o100 else 0o644
+    return info
+
+
+def enable_build(target: Target) -> bool:
+    """From now on build the images on the VM instead of pulling them. True if .env changed."""
+    env = parse_env(target.get(".env"))
+    files = [item for item in env.get("COMPOSE_FILE", "compose.yml").split(":") if item]
+    if "compose.build.yml" in files:
+        return False
+    files.insert(1, "compose.build.yml")
+    env["COMPOSE_FILE"] = ":".join(files)
+    env["MMA_IMAGE"], env["MMA_GUARD_IMAGE"] = local_images()
+    target.put(".env", render_env(env), 0o600)
+    return True
+
+
+def set_version(target: Target) -> str | None:
+    """On upgrade: move the default images to this version. Returns the version it replaced."""
+    env = parse_env(target.get(".env"))
+    previous = env.get("MMA_VERSION")
+    if not env or previous == __version__:
+        return None
+    env["MMA_VERSION"] = __version__
+    for key, default in (("MMA_IMAGE", DEFAULT_IMAGE), ("MMA_GUARD_IMAGE", DEFAULT_GUARD_IMAGE)):
+        if previous and env.get(key) == f"{default}:{previous}":
+            env[key] = f"{default}:{__version__}"
+    local = local_images()
+    if env.get("MMA_IMAGE", "").startswith("muse-adapter-local/"):
+        env["MMA_IMAGE"], env["MMA_GUARD_IMAGE"] = local
+    target.put(".env", render_env(env), 0o600)
+    return previous
+
+
+def set_hostname(target: Target, hostname: str) -> bool:
+    """Record the hostname once it is known (tunnels learn it after they start)."""
+    env = parse_env(target.get(".env"))
+    if env.get("MMA_HOSTNAME") == hostname:
+        return False
+    env["MMA_HOSTNAME"] = hostname
+    target.put(".env", render_env(env), 0o600)
+    target.put("config/serve.json", serve_config(hostname), 0o644)
+    return True
+
+
+def ingress_logs(target: Target, ingress: str, tail: int = 200) -> str:
+    result = target.compose(
+        f"logs --no-color --tail {tail} {shlex.quote(INGRESS_SERVICE[ingress])}", check=False
+    )
+    return result.stdout + result.stderr
