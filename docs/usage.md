@@ -24,6 +24,8 @@ Global options go before the command: `--database <path>` (default `adapter.db`)
 | `login` | Print a one-time sign-in link for a connection that uses OAuth to its MCP server. |
 | `reconcile` | Settle a write whose outcome is unknown after you have checked the downstream system. |
 | `server-enable` / `server-disable` | Resume or stop all traffic for a server. |
+| `backup --to DIR [--keep N]` | Copy the database (a consistent copy, taken while the service runs), key file, token store, and artifacts to a new folder under `DIR`, with a manifest of hashes. The folder is owner-only and holds secrets. `--keep N` removes all but the newest N backups. |
+| `restore --from BACKUP [--force]` | Put a backup back. Stop the service first. Every hash is checked before anything is replaced, and existing data is moved to `pre-restore-<time>` instead of being deleted. Without `--force` it refuses to touch existing data. |
 | `serve` | Run the Muse-facing HTTP service. |
 
 For local testing against a plain-HTTP or loopback server, add `--allow-http` and/or `--allow-private-network` before the command. They are off by default and meant for development only.

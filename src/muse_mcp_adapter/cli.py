@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
+from .application import backup as backups
 from .application.control_plane_service import ControlPlaneService
 from .application.oauth_web import OAuthWebFlow, runtime_auth_factory
 from .application.policy_template import draft_policies
@@ -50,6 +51,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = _config(args)
         if args.command == "serve":
             return _serve(args, config)
+        if args.command in ("backup", "restore"):
+            print(json.dumps(_archive(args, config), indent=2, sort_keys=True))
+            return 0
         with open_repository(args.database, config, _environment(config)) as repository:
             repository.initialize()
             result = _execute(args, repository, config)
@@ -72,6 +76,25 @@ def _config(args: argparse.Namespace) -> ServeConfig:
     if path:
         return load_serve_config(Path(path))
     return ServeConfig(public_url=args.public_url or _DEFAULT_PUBLIC_URL)
+
+
+def _archive(args: argparse.Namespace, config: ServeConfig) -> object:
+    database = Path(args.database)
+    if args.command == "restore":
+        return backups.restore_backup(
+            Path(args.source),
+            database,
+            artifact_root=config.artifact_root,
+            force=args.force,
+        )
+    info = backups.create_backup(database, Path(args.to), artifact_root=config.artifact_root)
+    removed = backups.prune(Path(args.to), args.keep) if args.keep else []
+    return {
+        "backup": str(info.path),
+        "files": info.files,
+        "bytes": info.bytes,
+        "removedOld": [str(path) for path in removed],
+    }
 
 
 def _environment(config: ServeConfig) -> Mapping[str, str]:
@@ -395,6 +418,18 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("server-list", help="List registered MCP servers")
     commands.add_parser("serve", help="Run the Muse-facing HTTP service")
+
+    backup = commands.add_parser(
+        "backup", help="Copy the database, key file, token store and artifacts to a folder"
+    )
+    backup.add_argument("--to", required=True, help="Folder that holds the backups")
+    backup.add_argument("--keep", type=int, default=0, help="Keep only the newest N backups")
+
+    restore = commands.add_parser(
+        "restore", help="Put a backup back (stop the service first; existing data is moved aside)"
+    )
+    restore.add_argument("--from", dest="source", required=True, help="A backup folder")
+    restore.add_argument("--force", action="store_true", help="Replace existing data")
 
     discover = server_command("discover", "Record primitives from a manifest file")
     discover.add_argument("--manifest", required=True)
