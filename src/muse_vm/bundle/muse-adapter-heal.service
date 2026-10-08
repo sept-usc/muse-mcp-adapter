@@ -1,0 +1,12 @@
+[Unit]
+Description=Restart the Muse MCP Adapter if it stops answering
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/muse-adapter
+ExecStart=/bin/sh /opt/muse-adapter/heal.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

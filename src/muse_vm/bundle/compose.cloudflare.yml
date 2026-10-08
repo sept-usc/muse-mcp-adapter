@@ -1,0 +1,9 @@
+# Added to COMPOSE_FILE only for the cloudflare-tunnel ingress: it hands the tunnel token to
+# cloudflared as a file, so the token never appears in an environment variable.
+services:
+  cloudflared:
+    secrets: [cf_tunnel_token]
+
+secrets:
+  cf_tunnel_token:
+    file: ./secrets/CF_TUNNEL_TOKEN

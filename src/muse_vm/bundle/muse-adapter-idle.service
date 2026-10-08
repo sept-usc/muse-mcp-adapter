@@ -1,0 +1,8 @@
+[Unit]
+Description=Power off the VM when the Muse MCP Adapter is idle
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/muse-adapter/idle.env
+ExecStart=/bin/sh /opt/muse-adapter/idle.sh
+NoNewPrivileges=true

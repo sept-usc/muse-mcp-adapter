@@ -1,0 +1,8 @@
+# Build the images on the VM from the uploaded source (`muse-vm up --build`) instead of pulling.
+services:
+  guard:
+    build: { context: ./src/guard }
+    image: muse-adapter-local/guard:${MMA_VERSION:-dev}
+  adapter:
+    build: { context: ./src, args: { VERSION: "${MMA_VERSION:-dev}" } }
+    image: muse-adapter-local/adapter:${MMA_VERSION:-dev}
