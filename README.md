@@ -319,6 +319,7 @@ These are starting points, not a claim that everything a provider offers is safe
 ## Documentation
 
 - [Usage guide](docs/usage.md): configuration, policy reference, API, and operations
+- [Deploying on a VM](docs/deployment.md): one command to host the adapter on Google Cloud or any Linux machine
 - [Security model](docs/security.md): controls and guarantees
 - [Validation guide](docs/validation.md): how parity with a direct MCP connection is tested, and the [Atlas validation server](docs/validation-server.md)
 - [System design](docs/design.md)
