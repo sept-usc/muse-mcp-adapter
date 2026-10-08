@@ -3,8 +3,9 @@
 `muse-vm` puts the adapter on a Linux machine and looks after it from your own computer. The adapter is installed inside the VM, runs in a locked-down container, and is reachable by Muse over HTTPS. Nothing else on the machine is exposed.
 
 ```
-pip install muse-mcp-adapter        # provides the muse-vm command
-muse-vm up --cloud gcp --project my-project
+git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter
+pip install .                        # provides the muse-vm command
+muse-vm up --cloud gcp --project my-project --build
 muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp
 ```
 
@@ -64,8 +65,8 @@ Secrets are read from files in a root-only directory on the VM, never from the c
 | `list`, `status`, `logs` | See deployments, health, and container logs |
 | `stop`, `start` | Stop the adapter (on a cloud VM, the VM itself, so billing pauses) |
 | `upgrade` | Move to this version; address, connections, and data stay |
-| `backup --to FILE` | Download an encrypted backup (passphrase of at least 12 characters) |
-| `restore --from FILE` | Restore onto the deployment; current data is moved aside, not deleted |
+| `backup --out FILE` | Download an encrypted backup (passphrase of at least 12 characters) |
+| `restore FILE` | Restore onto the deployment; current data is moved aside, not deleted |
 | `down` | Remove the deployment and everything it created |
 
 Deployment details are kept on your computer under `~/.config/muse-vm/` (no secrets in them).
@@ -76,4 +77,4 @@ Deployment details are kept on your computer under `~/.config/muse-vm/` (no secr
 
 ## Building from source
 
-`--build` builds the images on the VM from your checkout instead of pulling them. The adapter image is built from the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`).
+`--build` builds the images on the VM from your checkout instead of pulling the published release images. The adapter image is built from the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`).

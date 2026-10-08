@@ -144,7 +144,7 @@ You choose this per connection when you run `link --credential ...`:
 | `--credential` | Use it when | How it works |
 | --- | --- | --- |
 | `none` | The server is public, such as Microsoft Learn. | Nothing is sent. |
-| `env_token` | The server takes an API key or token. | The adapter reads it from the environment variable you name with `--token-env` when it needs it. It is never written to the database. |
+| `env_token` | The server takes an API key or token. | The adapter reads it when it needs it, from the environment variable you name with `--token-env` or, on a VM, from a file in the root-only secrets folder (`muse-vm secret set`). It is never written to the database. |
 | `oauth` | The server signs users in with OAuth, as Linear and Atlassian do. | `link` prints a one-time sign-in link. You open it and approve the adapter at the server's own sign-in page. The server sends your browser back to the adapter, which exchanges the result for tokens, stores them encrypted, and refreshes them itself. Muse is not part of that redirect and never sees the tokens. If they ever stop working, the adapter tells Muse to reconnect and includes a fresh sign-in link. |
 
 ## Set it up
@@ -296,7 +296,32 @@ The routes never change. What the server offers is reflected in the generated de
 
 ## Where to run it
 
-Run the adapter wherever your credentials already live: your own machine, or a private VM. It is one process, one database file, and one configuration file, and it listens on plain HTTP, so put it behind TLS (a reverse proxy or a tunnel). One adapter holds many connections, so you run it once, not once per server.
+Run the adapter wherever your credentials already live: your own machine for trying it out, or a small VM so Muse can reach it any time. `muse-vm` sets up the VM for you, on Google Cloud or on any Linux machine you can reach over SSH, and administers it from your own computer. The adapter runs inside the VM in a locked-down container.
+
+```bash
+git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter
+pip install .
+muse-vm up --cloud gcp --project my-project --build   # or: muse-vm up --ssh user@host --build
+muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp
+```
+
+`add-server` prints a connector address and a token. Paste both into Muse.
+
+```text
+Muse ──HTTPS──▶ ingress ──▶ adapter (container) ──HTTPS──▶ MCP servers
+                  ▲             ▲
+                  │             └── egress guard: no metadata server, no private ranges
+         Caddy | Tailscale Funnel | Cloudflare Tunnel
+you ──SSH (via Identity-Aware Proxy on Google Cloud)──▶ VM ──▶ administration
+```
+
+**You need:** Python 3.12+ and `pip` on your computer; for Google Cloud, the `gcloud` CLI and a project with billing; for your own machine, key-based SSH and passwordless `sudo`. Full checklist: [running on a VM](docs/operations.md).
+
+**What is public:** only the ingress, and through it only the connector paths. The adapter itself, SSH, and the host are not reachable from the internet (Google Cloud: SSH only through Identity-Aware Proxy). See [network exposure](docs/networking.md).
+
+**Who holds which secret:** Muse holds one revocable token per connector. The adapter keeps only its hash. Credentials for MCP servers live in a root-only folder on the VM and never reach Muse. See [identity and authentication](docs/authentication.md) for every credential, where it comes from, and what happens if it leaks.
+
+Not using a VM? The adapter is one process, one database file and one configuration file that listens on plain HTTP, so put it behind TLS (a reverse proxy or a tunnel). One adapter holds many connections.
 
 ## Reference provider packs
 
@@ -320,6 +345,9 @@ These are starting points, not a claim that everything a provider offers is safe
 
 - [Usage guide](docs/usage.md): configuration, policy reference, API, and operations
 - [Deploying on a VM](docs/deployment.md): one command to host the adapter on Google Cloud or any Linux machine
+- [Running on a VM](docs/operations.md): prerequisites, how it runs, and troubleshooting
+- [Identity and authentication](docs/authentication.md): every identity and credential, and how each is protected
+- [Network exposure](docs/networking.md): what is public, what is private, and what the adapter may reach
 - [Security model](docs/security.md): controls and guarantees
 - [Validation guide](docs/validation.md): how parity with a direct MCP connection is tested, and the [Atlas validation server](docs/validation-server.md)
 - [System design](docs/design.md)
