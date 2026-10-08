@@ -9,6 +9,7 @@ from typing import cast
 from .application.control_plane_service import ControlPlaneService
 from .application.oauth_web import OAuthWebFlow, runtime_auth_factory
 from .application.policy_template import draft_policies
+from .application.secret_source import SecretSource
 from .application.serve import (
     ServeConfig,
     endpoint_policy,
@@ -49,7 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = _config(args)
         if args.command == "serve":
             return _serve(args, config)
-        with open_repository(args.database, config, os.environ) as repository:
+        with open_repository(args.database, config, _environment(config)) as repository:
             repository.initialize()
             result = _execute(args, repository, config)
         if result is not None:
@@ -73,6 +74,13 @@ def _config(args: argparse.Namespace) -> ServeConfig:
     return ServeConfig(public_url=args.public_url or _DEFAULT_PUBLIC_URL)
 
 
+def _environment(config: ServeConfig) -> Mapping[str, str]:
+    """The environment, plus secrets kept as files in the configured secrets directory."""
+    configured = os.environ.get("MUSE_ADAPTER_SECRETS_DIR")
+    directory = config.secrets_dir or (Path(configured) if configured else None)
+    return SecretSource(os.environ, directory)
+
+
 def _policy(args: argparse.Namespace, config: ServeConfig) -> EndpointSecurityPolicy:
     base = endpoint_policy(config)
     return EndpointSecurityPolicy(
@@ -88,9 +96,10 @@ def _serve(args: argparse.Namespace, config: ServeConfig) -> int:
 
     if not (args.config or os.environ.get("MUSE_ADAPTER_CONFIG")):
         raise ControlPlaneError("serve needs --config (or MUSE_ADAPTER_CONFIG)")
-    with open_repository(args.database, config, os.environ) as repository:
+    environ = _environment(config)
+    with open_repository(args.database, config, environ) as repository:
         repository.initialize()
-        application = build_application(repository, config, os.environ, database=args.database)
+        application = build_application(repository, config, environ, database=args.database)
         uvicorn.run(application, host=config.host, port=config.port, log_level="info")
     return 0
 
@@ -130,7 +139,7 @@ def _execute(
                     repository, open_oauth_backend(args.database), public_url=config.public_url
                 ),
             ),
-            discovery_credential=_discovery_credential(args, repository),
+            discovery_credential=_discovery_credential(args, repository, _environment(config)),
         )
         return _snapshot_dict(service.discover(args.server_id, client, actor=actor))
 
@@ -279,18 +288,18 @@ def _flow(
 
 
 def _discovery_credential(
-    args: argparse.Namespace, repository: SqliteControlPlaneRepository
+    args: argparse.Namespace, repository: SqliteControlPlaneRepository, environ: Mapping[str, str]
 ) -> ResolvedCredential | None:
     if args.connection_id:
         connection = repository.get_connection(args.connection_id)
-        return ConnectionCredentialResolver(repository, os.environ).resolve(
+        return ConnectionCredentialResolver(repository, environ).resolve(
             local_identity_id=connection.identity_id,
             connection_id=connection.connection_id,
             server_id=args.server_id,
             required_scopes=frozenset(),
         )
     if args.token_env:
-        token = os.environ.get(args.token_env)
+        token = environ.get(args.token_env)
         if not token:
             raise ControlPlaneError(f"Environment variable {args.token_env} is not set")
         return ResolvedCredential(

@@ -48,6 +48,7 @@ class ServeConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     artifact_root: Path | None = None
+    secrets_dir: Path | None = None
     approval_mode: str = "muse"
     approval_secret_env: str | None = None
     integrity_key_env: str | None = None
@@ -107,11 +108,13 @@ def load_serve_config(path: Path) -> ServeConfig:
         )
 
     artifact_root = config.get("artifactRoot")
+    secrets_dir = config.get("secretsDir")
     return ServeConfig(
         public_url=public_url.rstrip("/"),
         host=host,
         port=port,
         artifact_root=Path(artifact_root) if isinstance(artifact_root, str) else None,
+        secrets_dir=Path(secrets_dir) if isinstance(secrets_dir, str) else None,
         approval_mode=cast(str, mode),
         approval_secret_env=cast(str | None, approval_env),
         integrity_key_env=cast(str | None, config.get("integrityKeyEnv")),
