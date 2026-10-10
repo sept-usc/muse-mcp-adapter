@@ -23,6 +23,7 @@ from ..targets import GcloudTarget, Target
 from .base import Provider
 
 IAP_RANGE = "35.235.240.0/20"
+_STILL_SETTLING = ("is not ready", "resourceinuse", "already being used", "is being used by")
 SUBNET_RANGE = "10.20.0.0/24"
 ARM_PREFIXES = ("t2a", "c4a")
 MONTHLY_USD = {"e2-micro": 7, "e2-small": 13, "e2-medium": 25}
@@ -432,6 +433,14 @@ class GcpProvider(Provider):
             result = self._delete(kind, name, resource, keep_data)
             if result is None:
                 continue
+            # A resource whose neighbour was deleted a moment ago can briefly report "not ready"
+            # or "in use"; waiting a little is better than leaving a deployment half removed.
+            for _ in range(8):
+                text = (result.stderr + result.stdout).lower()
+                if result.ok or not any(word in text for word in _STILL_SETTLING):
+                    break
+                time.sleep(10)
+                result = self._delete(kind, name, resource, keep_data) or result
             text = (result.stderr + result.stdout).lower()
             if result.ok or "not found" in text or "was not found" in text:
                 dep.resources.remove(resource)
