@@ -8,12 +8,12 @@ What you need, how to start it, how to look after it, and what to do when someth
 
 | Need | Why |
 |---|---|
-| Python 3.12 or newer, and this repository installed with `pip install .` | Provides the `muse-vm` and `muse-mcp-adapter` commands |
+| Python 3.12 or newer, `git`, and a clone of this repository with `pip install .` run in it | Provides the `muse-vm` and `muse-mcp-adapter` commands |
 | `ssh` client | Reaching the VM |
 | Google Cloud only: the `gcloud` CLI, signed in (`gcloud auth login`) | Creates the network and VM |
 | Google Cloud only: a project with billing, the Compute Engine and IAP APIs enabled, and your account allowed to create instances, firewall rules and use IAP tunnelling | Provisioning and SSH |
 
-You do not need Docker on your computer: `--build` builds the images on the VM from your checkout. Without it, `up` pulls the published release images.
+You do not need Docker on your computer: the images are built on the VM from your checkout of this repository. The VM needs outbound access to Docker Hub (base images) and PyPI (dependencies, verified against hashes).
 
 **On the VM (Google Cloud creates this for you; for an existing machine check these)**
 
@@ -37,7 +37,7 @@ You do not need Docker on your computer: `--build` builds the images on the VM f
 ```
 git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter
 pip install .
-muse-vm up --cloud gcp --project my-project --build    # or: --ssh user@host
+muse-vm up --cloud gcp --project my-project    # or: --ssh user@host
 muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp
 ```
 

@@ -18,6 +18,7 @@ import io
 import json
 import re
 import shlex
+import subprocess
 import tarfile
 from importlib import resources
 from pathlib import Path
@@ -43,8 +44,6 @@ UNITS = [
     "muse-adapter-idle.service",
     "muse-adapter-idle.timer",
 ]
-DEFAULT_IMAGE = "ghcr.io/sept-usc/muse-mcp-adapter"
-DEFAULT_GUARD_IMAGE = "ghcr.io/sept-usc/muse-mcp-adapter-guard"
 INGRESS_PROFILES = ("caddy", "tailscale-funnel", "cloudflare-tunnel")
 INGRESS_SERVICE = {
     "caddy": "caddy",
@@ -97,6 +96,8 @@ def compose_env(
     ts_hostname: str | None = None,
     ingress_secrets: dict[str, str] | None = None,
 ) -> dict[str, str]:
+    if not build and not (image and guard_image):
+        raise SystemExit("Without building from source, give both --image and --guard-image.")
     if ingress not in INGRESS_PROFILES:
         raise SystemExit(
             f"Unknown ingress {ingress!r}. Choose one of: {', '.join(INGRESS_PROFILES)}."
@@ -112,9 +113,8 @@ def compose_env(
         "MMA_VERSION": __version__,
         "COMPOSE_PROFILES": ingress,
         "COMPOSE_FILE": ":".join(files),
-        "MMA_IMAGE": image or (local[0] if build else f"{DEFAULT_IMAGE}:{__version__}"),
-        "MMA_GUARD_IMAGE": guard_image
-        or (local[1] if build else f"{DEFAULT_GUARD_IMAGE}:{__version__}"),
+        "MMA_IMAGE": local[0] if build else str(image),
+        "MMA_GUARD_IMAGE": local[1] if build else str(guard_image),
         "MMA_TZ": tz,
         "MMA_EGRESS_ALLOW": egress_allow,
     }
@@ -222,8 +222,38 @@ def find_source_dir(start: Path | None = None) -> Path | None:
     return None
 
 
-def upload_source(target: Target, source: Path) -> None:
-    """Send what the images are built from: the adapter, its lock, and the egress guard."""
+def source_revision(source: Path) -> tuple[str, bool]:
+    """The commit the checkout is at, and whether it has uncommitted changes."""
+
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(source), *args], capture_output=True, text=True, timeout=30
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    revision = git("rev-parse", "--short=12", "HEAD")
+    if not revision:
+        return "unknown", False
+    changed = git(
+        "status",
+        "--porcelain",
+        "--",
+        "Dockerfile",
+        "requirements.lock",
+        "src/muse_mcp_adapter",
+        "deploy/guard",
+    )
+    return revision, bool(changed)
+
+
+def upload_source(target: Target, source: Path) -> str:
+    """Send what the images are built from: the adapter, its lock, and the egress guard.
+
+    Returns the commit they were built from, which is recorded in the images.
+    """
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for relative, arcname in (
@@ -234,6 +264,13 @@ def upload_source(target: Target, source: Path) -> None:
         ):
             archive.add(source / relative, arcname=arcname, filter=_normalise)
     target.sh("rm -rf src && mkdir -p src && tar -xpzf - -C src", input=buffer.getvalue())
+    revision, dirty = source_revision(source)
+    revision += "-modified" if dirty else ""
+    env = parse_env(target.get(".env"))
+    if env:
+        env["MMA_REVISION"] = revision
+        target.put(".env", render_env(env), 0o600)
+    return revision
 
 
 def _normalise(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
@@ -250,29 +287,13 @@ def _normalise(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
     return info
 
 
-def enable_build(target: Target) -> bool:
-    """From now on build the images on the VM instead of pulling them. True if .env changed."""
-    env = parse_env(target.get(".env"))
-    files = [item for item in env.get("COMPOSE_FILE", "compose.yml").split(":") if item]
-    if "compose.build.yml" in files:
-        return False
-    files.insert(1, "compose.build.yml")
-    env["COMPOSE_FILE"] = ":".join(files)
-    env["MMA_IMAGE"], env["MMA_GUARD_IMAGE"] = local_images()
-    target.put(".env", render_env(env), 0o600)
-    return True
-
-
 def set_version(target: Target) -> str | None:
-    """On upgrade: move the default images to this version. Returns the version it replaced."""
+    """On upgrade: move locally built images to this version. Returns the version replaced."""
     env = parse_env(target.get(".env"))
     previous = env.get("MMA_VERSION")
     if not env or previous == __version__:
         return None
     env["MMA_VERSION"] = __version__
-    for key, default in (("MMA_IMAGE", DEFAULT_IMAGE), ("MMA_GUARD_IMAGE", DEFAULT_GUARD_IMAGE)):
-        if previous and env.get(key) == f"{default}:{previous}":
-            env[key] = f"{default}:{__version__}"
     local = local_images()
     if env.get("MMA_IMAGE", "").startswith("muse-adapter-local/"):
         env["MMA_IMAGE"], env["MMA_GUARD_IMAGE"] = local

@@ -5,7 +5,7 @@
 ```
 git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter
 pip install .                        # provides the muse-vm command
-muse-vm up --cloud gcp --project my-project --build
+muse-vm up --cloud gcp --project my-project
 muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp
 ```
 
@@ -77,4 +77,8 @@ Deployment details are kept on your computer under `~/.config/muse-vm/` (no secr
 
 ## Building from source
 
-`--build` builds the images on the VM from your checkout instead of pulling the published release images. The adapter image is built from the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`).
+The images are always built on the target machine from your checkout of this repository, so you run exactly the code you have reviewed and nothing is pulled from a registry we operate. The build uses the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`) and base images pinned by digest, and records the commit it was built from in the image. `up` and `upgrade` refuse a checkout with uncommitted changes (`--allow-dirty` overrides).
+
+To get a new version: `git pull`, review what changed, then `muse-vm upgrade`.
+
+If your organisation requires images from its own registry, build and scan them yourself from the same `Dockerfile` and `deploy/guard/Dockerfile`, push them to your registry, and run `muse-vm up --image REF --guard-image REF`. The machine must be able to pull from it.

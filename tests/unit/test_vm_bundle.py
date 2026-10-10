@@ -134,9 +134,10 @@ def test_caddy_sends_security_headers_limits_bodies_and_logs_no_requests() -> No
 # ---- the environment and configuration the CLI renders --------------------------------------
 def test_the_environment_selects_the_ingress_and_pinned_images() -> None:
     env = bundle.compose_env(
-        project="muse-adapter-a", ingress="caddy", hostname="a.example.com", build=False
+        project="muse-adapter-a", ingress="caddy", hostname="a.example.com", build=True
     )
-    assert env["COMPOSE_PROFILES"] == "caddy" and env["COMPOSE_FILE"] == "compose.yml"
+    assert env["COMPOSE_PROFILES"] == "caddy"
+    assert env["COMPOSE_FILE"] == "compose.yml:compose.build.yml"
     assert env["MMA_IMAGE"].endswith(f":{bundle.__version__}") and ":latest" not in env["MMA_IMAGE"]
     assert env["MMA_HOSTNAME"] == "a.example.com"
 
@@ -145,13 +146,27 @@ def test_build_and_tunnel_modes_add_their_compose_files() -> None:
     built = bundle.compose_env(project="p", ingress="caddy", hostname="h", build=True)
     assert built["COMPOSE_FILE"] == "compose.yml:compose.build.yml"
     assert built["MMA_IMAGE"].startswith("muse-adapter-local/")
-    tunnel = bundle.compose_env(project="p", ingress="cloudflare-tunnel", hostname="h", build=False)
-    assert tunnel["COMPOSE_FILE"] == "compose.yml:compose.cloudflare.yml"
+    tunnel = bundle.compose_env(project="p", ingress="cloudflare-tunnel", hostname="h", build=True)
+    assert tunnel["COMPOSE_FILE"] == "compose.yml:compose.build.yml:compose.cloudflare.yml"
+
+
+def test_images_from_your_own_registry_need_both_names() -> None:
+    env = bundle.compose_env(
+        project="p",
+        ingress="caddy",
+        hostname="h",
+        build=False,
+        image="registry.example.com/adapter@sha256:" + "a" * 64,
+        guard_image="registry.example.com/guard@sha256:" + "b" * 64,
+    )
+    assert env["COMPOSE_FILE"] == "compose.yml" and "registry.example.com" in env["MMA_IMAGE"]
+    with pytest.raises(SystemExit, match="--image and --guard-image"):
+        bundle.compose_env(project="p", ingress="caddy", hostname="h", build=False, image="x")
 
 
 def test_an_unknown_ingress_is_refused() -> None:
     with pytest.raises(SystemExit, match="Unknown ingress"):
-        bundle.compose_env(project="p", ingress="carrier-pigeon", hostname="h", build=False)
+        bundle.compose_env(project="p", ingress="carrier-pigeon", hostname="h", build=True)
 
 
 def test_a_multi_line_value_cannot_inject_another_variable() -> None:
@@ -174,7 +189,7 @@ def test_the_rendered_adapter_configuration_loads_and_holds_no_secret(tmp_path: 
 # ---- installing ------------------------------------------------------------------------------
 def test_install_writes_private_files_and_prepares_the_directories() -> None:
     target = FakeTarget()
-    env = bundle.compose_env(project="p", ingress="caddy", hostname="a.example.com", build=False)
+    env = bundle.compose_env(project="p", ingress="caddy", hostname="a.example.com", build=True)
     bundle.install(target, env, bundle.serve_config("a.example.com"))
 
     assert target.files[".env"].mode == 0o600
@@ -226,7 +241,8 @@ def test_the_source_upload_holds_exactly_what_the_images_need() -> None:
     runner = FakeRunner()
     target = SSHTarget(runner, "me@host")  # type: ignore[arg-type]
     bundle.upload_source(target, ROOT)
-    with tarfile.open(fileobj=io.BytesIO(runner.calls[-1]["input"]), mode="r:gz") as archive:
+    upload = next(call for call in runner.calls if call.get("input"))
+    with tarfile.open(fileobj=io.BytesIO(upload["input"]), mode="r:gz") as archive:
         names = archive.getnames()
         members = archive.getmembers()
 
@@ -245,19 +261,50 @@ def test_the_source_directory_is_found_from_a_checkout() -> None:
     assert bundle.find_source_dir(ROOT / "src" / "muse_vm") == ROOT
 
 
-def test_upgrading_moves_default_images_but_leaves_ones_the_owner_chose() -> None:
+def test_upgrading_moves_built_images_but_leaves_ones_the_owner_chose() -> None:
     target = FakeTarget()
-    old = {
+    built = {
         "MMA_VERSION": "0.0.9",
-        "MMA_IMAGE": f"{bundle.DEFAULT_IMAGE}:0.0.9",
-        "MMA_GUARD_IMAGE": "registry.example.com/my-guard:7",
+        "MMA_IMAGE": "muse-adapter-local/adapter:0.0.9",
+        "MMA_GUARD_IMAGE": "muse-adapter-local/guard:0.0.9",
     }
-    target.put(".env", bundle.render_env(old))
+    target.put(".env", bundle.render_env(built))
     assert bundle.set_version(target) == "0.0.9"
     env = bundle.parse_env(target.text(".env"))
-    assert env["MMA_IMAGE"] == f"{bundle.DEFAULT_IMAGE}:{bundle.__version__}"
-    assert env["MMA_GUARD_IMAGE"] == "registry.example.com/my-guard:7"
+    assert env["MMA_IMAGE"] == f"muse-adapter-local/adapter:{bundle.__version__}"
     assert bundle.set_version(target) is None  # already current
+
+    own = {
+        "MMA_VERSION": "0.0.9",
+        "MMA_IMAGE": "registry.example.com/adapter@sha256:" + "a" * 64,
+        "MMA_GUARD_IMAGE": "registry.example.com/guard@sha256:" + "b" * 64,
+    }
+    target.put(".env", bundle.render_env(own))
+    bundle.set_version(target)
+    after = bundle.parse_env(target.text(".env"))
+    assert (
+        after["MMA_IMAGE"] == own["MMA_IMAGE"]
+        and after["MMA_GUARD_IMAGE"] == own["MMA_GUARD_IMAGE"]
+    )
+
+
+def test_the_source_revision_names_the_commit_and_notices_edits(tmp_path: Path) -> None:
+    import subprocess
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    git("add", "-A")
+    git("commit", "-qm", "x")
+    revision, dirty = bundle.source_revision(tmp_path)
+    assert len(revision) == 12 and not dirty
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n# edited\n")
+    assert bundle.source_revision(tmp_path)[1] is True
+    assert bundle.source_revision(tmp_path / "missing") == ("unknown", False)
 
 
 def test_every_bundle_file_ships_in_the_package() -> None:

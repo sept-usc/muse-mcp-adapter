@@ -118,17 +118,26 @@ def cmd_up(args: argparse.Namespace) -> None:
     provider_name = "ssh" if args.ssh else args.cloud
     if not provider_name:
         raise SystemExit("Choose where to run the adapter: --ssh user@host or --cloud gcp.")
+    build = not args.image
+    if args.image and not args.guard_image:
+        raise SystemExit("--image needs --guard-image too: both images come from your registry.")
     source = None
-    if args.build:
+    if build:
         source = bundle.find_source_dir()
+        if source:
+            _refuse_unreviewed(source, args.allow_dirty)
         if not source:
-            raise SystemExit("--build needs a checkout of the muse-mcp-adapter repository.")
+            raise SystemExit(
+                "Run muse-vm from a checkout of the muse-mcp-adapter repository: the images are "
+                "built from it on the target machine. (To use images from your own registry, "
+                "pass --image and --guard-image.)"
+            )
     dep = Deployment(
         name=name,
         provider=provider_name,
         ingress=args.ingress or "",
         image=args.image,
-        build=args.build,
+        build=build,
         ssh_host=args.ssh,
         ssh_opts=args.ssh_opt or [],
     )
@@ -181,7 +190,7 @@ def cmd_up(args: argparse.Namespace) -> None:
             project=f"muse-adapter-{name}",
             ingress=dep.ingress,
             hostname=dep.hostname,
-            build=args.build,
+            build=build,
             image=args.image,
             guard_image=args.guard_image,
             tz=args.tz,
@@ -240,31 +249,32 @@ def cmd_up(args: argparse.Namespace) -> None:
     say(f"  muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp --name {name}")
 
 
+def _refuse_unreviewed(source: Path, allow: bool) -> None:
+    """A deployment should come from a commit that can be named again, not from local edits."""
+    revision, dirty = bundle.source_revision(source)
+    if dirty and not allow:
+        raise SystemExit(
+            f"The checkout at {revision} has uncommitted changes to what is deployed. Commit or "
+            "stash them so the deployment matches a commit, or pass --allow-dirty."
+        )
+
+
 def _fetch_images(
     t: Any, dep: Deployment, env: dict[str, str], source: Path | None, log: Any
 ) -> None:
     if dep.build:
         assert source
-        log("  uploading the source and building the images on the VM (a few minutes)…")
+        log("  uploading the source and building the images on the machine (a few minutes)…")
         bundle.upload_source(t, source)
         t.compose("build", stream=True, timeout=3600)
         return
     try:
         t.compose("pull", stream=True, timeout=1800)
     except CommandError as error:
-        found = bundle.find_source_dir()
-        if not found:
-            raise SystemExit(
-                f"The images could not be pulled ({env['MMA_IMAGE']}). If they are not published "
-                "yet or are private, run muse-vm from a checkout of the muse-mcp-adapter "
-                "repository with --build."
-            ) from error
-        log("  the images could not be pulled; building them on the VM from this checkout instead…")
-        bundle.enable_build(t)
-        bundle.upload_source(t, found)
-        t.compose("build", stream=True, timeout=3600)
-        dep.build = True
-        dep.save()
+        raise SystemExit(
+            f"The images could not be pulled ({env['MMA_IMAGE']}, {env['MMA_GUARD_IMAGE']}). "
+            "Check the names and that the machine can sign in to your registry."
+        ) from error
 
 
 def _show_logs(t: Any, ingress_name: str, tail: int = 15) -> None:
@@ -466,14 +476,17 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     dep, provider = _context(args)
     t = provider.target()
     previous = bundle.set_version(t)
-    if args.build:
+    if dep.build:
         source = bundle.find_source_dir()
         if not source:
-            raise SystemExit("--build needs a checkout of the muse-mcp-adapter repository.")
-        bundle.enable_build(t)
-        bundle.upload_source(t, source)
+            raise SystemExit(
+                "Run `muse-vm upgrade` from the updated checkout of the muse-mcp-adapter "
+                "repository (git pull first): the images are rebuilt from it."
+            )
+        _refuse_unreviewed(source, args.allow_dirty)
+        revision = bundle.upload_source(t, source)
+        say(f"  building from commit {revision}")
         t.compose("build", stream=True, timeout=3600)
-        dep.build = True
     else:
         t.compose("pull", stream=True, timeout=1800)
     env = bundle.parse_env(t.get(".env"))
@@ -583,12 +596,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="private ranges the adapter may reach (default: none)",
     )
     up.add_argument(
-        "--build", action="store_true", help="build the images on the VM from this checkout"
+        "--image",
+        help="use this adapter image from your own registry instead of building from the "
+        "checkout (needs --guard-image)",
     )
-    up.add_argument(
-        "--image", help="adapter image (default: ghcr.io/sept-usc/muse-mcp-adapter:<version>)"
-    )
-    up.add_argument("--guard-image", help="egress guard image")
+    up.add_argument("--guard-image", help="egress guard image from your own registry")
     up.add_argument(
         "--ssh-opt", action="append", metavar="OPT", help="extra ssh option, e.g. --ssh-opt=-p2222"
     )
@@ -613,6 +625,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     up.add_argument(
         "--keep-on-failure", action="store_true", help="do not roll back a failed deployment"
+    )
+    up.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="build even if the checkout has uncommitted changes (not recommended)",
     )
     up.set_defaults(func=cmd_up)
 
@@ -676,7 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
             "upgrade", help="move to this version; the address, connections and data stay"
         )
     )
-    sp.add_argument("--build", action="store_true")
+    sp.add_argument("--allow-dirty", action="store_true", help="build with uncommitted changes")
     sp.set_defaults(func=cmd_upgrade)
     sp = common(
         commands.add_parser("backup", help="download an encrypted backup of the adapter's state")

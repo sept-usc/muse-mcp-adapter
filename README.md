@@ -301,7 +301,7 @@ Run the adapter wherever your credentials already live: your own machine for try
 ```bash
 git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter
 pip install .
-muse-vm up --cloud gcp --project my-project --build   # or: muse-vm up --ssh user@host --build
+muse-vm up --cloud gcp --project my-project   # or: muse-vm up --ssh user@host
 muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp
 ```
 
