@@ -138,6 +138,8 @@ def run(
     healthy, why = wait_healthy(base_url, wait, say)
     report.add("public HTTPS /health answers", healthy, why)
     if not healthy:
+        # Still look inside: it tells a broken deployment from an address that is not reachable.
+        report.checks.extend(inside_checks(target).checks)
         return report
 
     _, headers, _ = _request("GET", base_url + "/health")
