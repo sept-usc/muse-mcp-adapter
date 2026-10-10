@@ -206,7 +206,9 @@ def test_units_are_installed_and_enabled_and_idle_stop_is_opt_in() -> None:
     bundle.install_units(target)
     enable = next(s for s in target.scripts if "systemctl enable" in s)
     assert "muse-adapter-heal.timer" in enable and "muse-adapter-backup.timer" in enable
-    assert "idle" not in enable and "idle.env" not in target.files
+    assert "idle" not in enable.split("; ")[0] and "idle.env" not in target.files
+    # Enabled alone would leave them idle until the next reboot: they must be started too.
+    assert "systemctl start muse-adapter-backup.timer muse-adapter-heal.timer" in enable
 
     target = FakeTarget()
     bundle.install_units(target, idle_hours=6)

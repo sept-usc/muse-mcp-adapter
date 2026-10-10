@@ -112,6 +112,18 @@ class Admin:
         finally:
             self.target.sh(f"rm -f {shlex.quote(path)}", check=False)
 
+    def published(self, server_id: str) -> tuple[str, dict[str, dict[str, Any]]]:
+        """The live catalog's version and the policy of each primitive in it."""
+        data = self.status(server_id)
+        active = cast(dict[str, Any], data.get("activeCatalog") or {})
+        policies: dict[str, dict[str, Any]] = {}
+        for item in cast(list[dict[str, Any]], active.get("primitives", [])):
+            policy = item.get("policy")
+            if isinstance(policy, dict):
+                typed = cast(dict[str, Any], policy)
+                policies[str(typed["primitiveKey"])] = typed
+        return str(active.get("catalogVersion", "")), policies
+
     def link(self, server_id: str, label: str, credential: str, token_env: str | None) -> Linked:
         args = ["link", "--server-id", server_id, "--label", label, "--credential", credential]
         if token_env:

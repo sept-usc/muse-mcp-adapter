@@ -165,15 +165,20 @@ def install_units(target: Target, *, idle_hours: int | None = None) -> None:
     """Install the systemd units: the service, backups, self-healing and optional idle stop."""
     for name in UNITS:
         target.put(f"units/{name}", bundle_file(name), 0o644)
-    enable = ["muse-adapter.service", "muse-adapter-backup.timer", "muse-adapter-heal.timer"]
+    timers = ["muse-adapter-backup.timer", "muse-adapter-heal.timer"]
     if idle_hours:
         target.put("idle.env", f"MMA_IDLE_HOURS={int(idle_hours)}\n", 0o644)
-        enable.append("muse-adapter-idle.timer")
-    target.sh(
+        timers.append("muse-adapter-idle.timer")
+    # Enabled so they survive a reboot, and started now so they run without one.
+    script = (
         "install -m 644 units/*.service units/*.timer /etc/systemd/system/ "
         "&& systemctl daemon-reload "
-        f"&& systemctl enable {' '.join(enable)} >/dev/null 2>&1"
+        f"&& systemctl enable muse-adapter.service {' '.join(timers)} >/dev/null "
+        f"&& systemctl start {' '.join(timers)}"
     )
+    if not idle_hours:
+        script += "; systemctl disable --now muse-adapter-idle.timer >/dev/null 2>&1 || true"
+    target.sh(script)
 
 
 def remove_units(target: Target) -> None:

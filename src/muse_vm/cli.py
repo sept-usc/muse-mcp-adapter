@@ -337,6 +337,38 @@ def cmd_add_server(args: argparse.Namespace) -> None:
     _show_linked(linked, copy=not args.no_copy)
 
 
+def _next_version(current: str) -> str:
+    parts = current.split(".")
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        return f"{parts[0]}.{int(parts[1]) + 1}.0"
+    return "1.0.0"
+
+
+def cmd_expose(args: argparse.Namespace) -> None:
+    """Change which of a server's tools Muse can use, as a new reviewable catalog version."""
+    _, provider = _context(args)
+    server_id = check_server_id(args.server)
+    admin = Admin(provider.target(), actor=args.actor)
+    live_version, live = admin.published(server_id)
+    drafted = admin.draft_policy(server_id, expose_reads=not args.no_reads)
+    # What is already published keeps its settings; only the changes asked for are applied.
+    policies = [dict(live.get(str(item["primitiveKey"]), item)) for item in drafted]
+    known = {str(item["primitiveKey"]).split(":", 1)[1] for item in policies}
+    unknown = set(args.deny or []) - known
+    if unknown:
+        raise SystemExit(f"The server offers no such tool: {', '.join(sorted(unknown))}.")
+    for item in policies:
+        if str(item["primitiveKey"]).split(":", 1)[1] in (args.deny or []):
+            item["allowed"] = False
+    exposed = pick_exposure(policies, allow=args.allow)
+    version = _next_version(live_version)
+    say(f"Publishing {server_id} {version}; Muse will be able to use:")
+    for item in exposed:
+        say(f"  {item}")
+    admin.publish(server_id, version, policies)
+    say("Done. Muse sees the change on its next request; its address and token are unchanged.")
+
+
 def cmd_servers(args: argparse.Namespace) -> None:
     _, provider = _context(args)
     admin = Admin(provider.target(), actor=args.actor)
@@ -669,6 +701,12 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("server")
         sp.set_defaults(func=handler)
 
+    sp = common(commands.add_parser("expose", help="change which tools of a server Muse can use"))
+    sp.add_argument("server")
+    sp.add_argument("--allow", action="append", metavar="TOOL", help="also expose this tool")
+    sp.add_argument("--deny", action="append", metavar="TOOL", help="stop exposing this tool")
+    sp.add_argument("--no-reads", action="store_true", help="do not pre-approve read-only tools")
+    sp.set_defaults(func=cmd_expose)
     sp = common(commands.add_parser("secret", help="store or list the secrets servers need"))
     sp.add_argument("action", choices=("set", "list"))
     sp.add_argument("secret_name", nargs="?")
