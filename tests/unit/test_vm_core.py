@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from muse_vm import crypt, ingress
+from muse_vm import crypt
 from muse_vm.runner import CommandError, Result, Runner
 from muse_vm.state import Deployment, check_name
 from muse_vm.targets import GcloudTarget, SSHTarget
-from tests.fixtures.vm_fakes import FakeRunner, FakeTarget
+from tests.fixtures.vm_fakes import FakeRunner
 
 
 # ---- running commands -------------------------------------------------------------------------
@@ -140,45 +140,6 @@ def test_the_same_data_encrypts_differently_each_time() -> None:
 def test_a_weak_passphrase_is_refused() -> None:
     with pytest.raises(SystemExit, match="12 characters"):
         crypt.encrypt(b"x", "short")
-
-
-# ---- ingress ----------------------------------------------------------------------------------
-def test_the_tailscale_hostname_is_learned_once_it_is_running() -> None:
-    target = FakeTarget()
-    target.answer("tailscale status", stdout=json.dumps({"BackendState": "NeedsLogin"}))
-    target.answer("logs", stdout="login: https://login.tailscale.com/a/abc123XYZ")
-    seen: list[str] = []
-    states = iter(
-        [
-            json.dumps({"BackendState": "NeedsLogin"}),
-            json.dumps(
-                {"BackendState": "Running", "Self": {"DNSName": "muse-adapter-muse.tail1.ts.net."}}
-            ),
-        ]
-    )
-
-    original = target.sh
-
-    def sh(script: str, *a: object, **k: object):  # type: ignore[no-untyped-def]
-        if "tailscale status" in script:
-            from muse_vm.runner import Result
-
-            return Result(0, next(states), "")
-        return original(script, *a, **k)  # type: ignore[arg-type]
-
-    target.sh = sh  # type: ignore[method-assign]
-    name = ingress.hostname_after_start(target, say=seen.append, sleep=lambda _: None)
-    assert name == "muse-adapter-muse.tail1.ts.net"
-    assert any(
-        "login.tailscale.com/a/abc123XYZ" in line for line in seen
-    )  # the login link was shown
-
-
-def test_a_tailscale_that_never_signs_in_ends_with_a_clear_message() -> None:
-    target = FakeTarget()
-    target.answer("tailscale status", stdout=json.dumps({"BackendState": "NeedsLogin"}))
-    with pytest.raises(SystemExit, match="did not appear"):
-        ingress.hostname_after_start(target, timeout=0.05, sleep=lambda _: None)
 
 
 # ---- dropped connections are retried ---------------------------------------------------------

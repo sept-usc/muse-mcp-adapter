@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import http.client
+import ipaddress
 import json
+import socket
+import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -58,6 +63,88 @@ class Report:
         ]
 
 
+DOH_ENDPOINTS = (
+    "https://1.1.1.1/dns-query?name={name}&type=A",
+    "https://8.8.8.8/resolve?name={name}&type=A",
+)
+
+
+def _is_global(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address).is_global
+    except ValueError:
+        return False
+
+
+def public_address(host: str) -> str | None:
+    """A public IPv4 address for host when this computer's own DNS cannot give one.
+
+    A computer that is itself in the owner's tailnet answers a Funnel name with its private
+    100.x address, and a brand-new name may not have reached this computer's resolver yet. Muse
+    uses public DNS, so asking a public resolver over HTTPS shows what Muse will see. Returns
+    None when the system resolver already answers with a public address (the normal case).
+    """
+    found: set[str] = set()
+    try:
+        for item in socket.getaddrinfo(host, 443, socket.AF_INET):
+            found.add(str(item[4][0]))
+    except OSError:
+        pass
+    if any(_is_global(address) for address in found):
+        return None
+    for endpoint in DOH_ENDPOINTS:
+        request = urllib.request.Request(
+            endpoint.format(name=urllib.parse.quote(host)),
+            headers={"accept": "application/dns-json", "user-agent": "muse-vm-selfcheck"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                answers = json.loads(response.read()).get("Answer", [])
+        except (OSError, ValueError):
+            continue
+        for answer in answers:
+            data = str(answer.get("data", ""))
+            if answer.get("type") == 1 and _is_global(data):
+                return data
+    return None
+
+
+class _PinnedHTTPS(http.client.HTTPSConnection):
+    """HTTPS to a given IP address, verifying the certificate against the real hostname."""
+
+    def __init__(self, host: str, address: str, timeout: float) -> None:
+        super().__init__(host, timeout=timeout, context=ssl.create_default_context())
+        self._address = address
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._address, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)  # type: ignore[attr-defined]
+
+
+def _request_pinned(
+    method: str,
+    url: str,
+    address: str,
+    body: bytes | None,
+    headers: dict[str, str],
+    timeout: float,
+) -> tuple[int, dict[str, str], str]:
+    parts = urllib.parse.urlsplit(url)
+    connection = _PinnedHTTPS(str(parts.hostname), address, timeout)
+    try:
+        connection.request(
+            method, parts.path or "/", body=body, headers={"host": str(parts.hostname), **headers}
+        )
+        response = connection.getresponse()
+        return (
+            response.status,
+            {k.lower(): v for k, v in response.getheaders()},
+            response.read().decode(errors="replace"),
+        )
+    finally:
+        connection.close()
+
+
 def _request(
     method: str,
     url: str,
@@ -65,6 +152,22 @@ def _request(
     headers: dict[str, str] | None = None,
     timeout: float = 15,
 ) -> tuple[int, dict[str, str], str]:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https" and parts.hostname:
+        address = public_address(parts.hostname)
+        if address:
+            return _request_pinned(
+                method,
+                url,
+                address,
+                body,
+                {
+                    "content-type": "application/json",
+                    "user-agent": "muse-vm-selfcheck",
+                    **(headers or {}),
+                },
+                timeout,
+            )
     request = urllib.request.Request(
         url,
         data=body,
