@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -160,6 +161,11 @@ def cmd_up(args: argparse.Namespace) -> None:
         "TS_AUTHKEY", "Tailscale auth key (empty: sign in with a link)", required=False
     )
     if key:
+        if not re.fullmatch(r"tskey-[A-Za-z0-9_-]{20,}", key):
+            raise SystemExit(
+                "That does not look like a Tailscale auth key (it should start with `tskey-` and "
+                "hold no spaces). Generate one under Settings, Keys in the Tailscale console."
+            )
         ingress_secrets["TS_AUTHKEY"] = key
 
     say("1/6 preflight")
