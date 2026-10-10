@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 from muse_mcp_adapter.application.secret_source import SecretSource
 from muse_mcp_adapter.application.serve import build_application, load_serve_config
 from muse_mcp_adapter.persistence.sqlite_repository import SqliteControlPlaneRepository
-from muse_vm import bundle, cli, selfcheck
+from muse_vm import bundle, cli, ingress, selfcheck
 from muse_vm.admin import Admin
 from muse_vm.providers.base import Provider
 from muse_vm.selfcheck import Report
@@ -51,9 +51,6 @@ class _FakeProvider(Provider):
     def target(self) -> Any:
         return self._target
 
-    def public_ip(self) -> str | None:
-        return "34.1.2.3"
-
     def start_stack(self, t: Any) -> None:
         self.started = True
 
@@ -71,7 +68,7 @@ def _config(directory: Path) -> None:
     (directory / "config" / "serve.json").write_text(
         json.dumps(
             {
-                "publicUrl": "https://34-1-2-3.sslip.io",
+                "publicUrl": "https://adapter.tail1.ts.net",
                 "secretsDir": str(directory / "secrets"),
                 "limits": {"rateLimit": 1000},
                 # only because the stand-in MCP server here is on loopback over plain HTTP; the
@@ -108,7 +105,9 @@ def test_add_server_connects_a_real_server_and_the_printed_token_works(
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("TRACKER_TOKEN", "atlas-secret-token")
-    Deployment(name="muse", provider="fake", ingress="caddy", hostname="34-1-2-3.sslip.io").save()
+    Deployment(
+        name="muse", provider="fake", ingress="tailscale-funnel", hostname="adapter.tail1.ts.net"
+    ).save()
     vm = ContainerTarget(tmp_path / "vm")
     _config(tmp_path / "vm")
     _use(monkeypatch, _FakeProvider(Deployment.load("muse"), vm))
@@ -186,7 +185,9 @@ def test_add_server_for_a_public_server_needs_no_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    Deployment(name="muse", provider="fake", ingress="caddy", hostname="h.example.com").save()
+    Deployment(
+        name="muse", provider="fake", ingress="tailscale-funnel", hostname="adapter.tail1.ts.net"
+    ).save()
     vm = ContainerTarget(tmp_path / "vm")
     _config(tmp_path / "vm")
     _use(monkeypatch, _FakeProvider(Deployment.load("muse"), vm))
@@ -215,7 +216,9 @@ def test_naming_a_tool_the_server_does_not_have_stops_before_anything_is_publish
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    Deployment(name="muse", provider="fake", ingress="caddy", hostname="h.example.com").save()
+    Deployment(
+        name="muse", provider="fake", ingress="tailscale-funnel", hostname="adapter.tail1.ts.net"
+    ).save()
     vm = ContainerTarget(tmp_path / "vm")
     _config(tmp_path / "vm")
     _use(monkeypatch, _FakeProvider(Deployment.load("muse"), vm))
@@ -243,7 +246,9 @@ def test_a_server_id_that_is_not_valid_is_refused_before_it_is_registered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    Deployment(name="muse", provider="fake", ingress="caddy", hostname="h.example.com").save()
+    Deployment(
+        name="muse", provider="fake", ingress="tailscale-funnel", hostname="adapter.tail1.ts.net"
+    ).save()
     vm = ContainerTarget(tmp_path / "vm")
     _config(tmp_path / "vm")
     _use(monkeypatch, _FakeProvider(Deployment.load("muse"), vm))
@@ -280,9 +285,7 @@ def test_the_self_check_passes_against_a_real_adapter(tmp_path: Path) -> None:
     target = FakeTarget()
     _inside_ok(target)
     with run_asgi(application, free_port()) as port:
-        report = selfcheck.run(
-            target, f"http://127.0.0.1:{port}", ingress="tailscale-funnel", wait=20
-        )
+        report = selfcheck.run(target, f"http://127.0.0.1:{port}", wait=20)
     assert report.ok, report.lines()
     names = [name for name, *_ in report.checks]
     assert (
@@ -304,9 +307,7 @@ def test_the_self_check_fails_when_the_adapter_answers_a_call_without_a_token() 
     target = FakeTarget()
     _inside_ok(target)
     with run_asgi(app, free_port()) as port:
-        report = selfcheck.run(
-            target, f"http://127.0.0.1:{port}", ingress="tailscale-funnel", wait=20
-        )
+        report = selfcheck.run(target, f"http://127.0.0.1:{port}", wait=20)
     assert not report.ok
     failed = [name for name, ok, _, required in report.checks if required and not ok]
     assert "a call without a token is refused" in failed
@@ -370,7 +371,7 @@ def _write(directory: Path, data: dict[str, Any]) -> Path:
 
 # ---- `up` as a whole -------------------------------------------------------------------------
 def _up_args(*extra: str) -> list[str]:
-    return ["up", "--cloud", "gcp", "--yes", "--name", "muse", *extra]
+    return ["up", "--cloud", "gcp", "--yes", "--allow-dirty", "--name", "muse", *extra]
 
 
 def test_up_installs_the_bundle_starts_it_and_leaves_a_ready_deployment(
@@ -386,18 +387,27 @@ def test_up_installs_the_bundle_starts_it_and_leaves_a_ready_deployment(
         return holder["p"]
 
     monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
     assert cli.main(_up_args()) == 0
 
     dep = Deployment.load("muse")
-    assert dep.status == "ready" and dep.hostname == "34-1-2-3.sslip.io" and dep.ingress == "caddy"
+    assert dep.status == "ready" and dep.hostname == "adapter.tail1.ts.net"
+    assert dep.ingress == "tailscale-funnel"
     assert holder["p"].started and not holder["p"].torn_down
-    for name in ("compose.yml", "Caddyfile", "config/serve.json", ".env", "backup.sh", "heal.sh"):
+    for name in (
+        "compose.yml",
+        "tailscale-serve.json",
+        "config/serve.json",
+        ".env",
+        "backup.sh",
+        "heal.sh",
+    ):
         assert (tmp_path / "vm" / name).exists(), name
     assert oct((tmp_path / "vm" / ".env").stat().st_mode & 0o777) == "0o600"
     env = bundle.parse_env((tmp_path / "vm" / ".env").read_text())
-    assert env["COMPOSE_PROFILES"] == "caddy" and env["MMA_HOSTNAME"] == "34-1-2-3.sslip.io"
+    assert "COMPOSE_PROFILES" not in env and "TS_AUTHKEY" not in env
     config = json.loads((tmp_path / "vm" / "config" / "serve.json").read_text())
-    assert config["publicUrl"] == "https://34-1-2-3.sslip.io"
+    assert config["publicUrl"] == "https://adapter.tail1.ts.net"
     assert "muse-vm add-server" in capsys.readouterr().out  # it says what to do next
 
 
@@ -416,6 +426,7 @@ def test_up_rolls_back_everything_when_the_self_check_fails(
         return holder["p"]
 
     monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
     _fails(_up_args(), capsys, "self-check failed")
     assert holder["p"].torn_down is True
     assert Deployment.all() == []  # no half-made deployment is left in the state
@@ -436,6 +447,7 @@ def test_up_keeps_a_failed_deployment_when_asked_to_for_debugging(
         return provider_holder["p"]
 
     monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
     assert cli.main(_up_args("--keep-on-failure")) == 1
     capsys.readouterr()
     assert provider_holder["p"].torn_down is False
@@ -446,7 +458,7 @@ def test_up_refuses_a_name_that_is_already_in_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    Deployment(name="muse", provider="gcp", ingress="caddy").save()
+    Deployment(name="muse", provider="gcp", ingress="tailscale-funnel").save()
     _fails(_up_args(), capsys, "already exists")
 
 
@@ -457,18 +469,22 @@ def test_up_needs_to_be_told_where_to_run(
     _fails(["up", "--name", "muse"], capsys, "--ssh user@host or --cloud gcp")
 
 
-def test_a_cloudflare_tunnel_token_is_stored_as_a_file_and_never_in_the_environment_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_tailscale_auth_key_goes_into_the_private_environment_file_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    monkeypatch.setenv("CF_TUNNEL_TOKEN", "cf-token-value")
+    monkeypatch.setenv("TS_AUTHKEY", "tskey-auth-example")
     monkeypatch.setattr(selfcheck, "run", _returning(_passing()))
+    monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
     vm = ContainerTarget(tmp_path / "vm")
     monkeypatch.setattr(cli, "provider_for", _fake_for(vm))
-    assert cli.main(_up_args("--ingress", "cloudflare-tunnel", "--domain", "adapter.me.dev")) == 0
-    assert (tmp_path / "vm" / "secrets" / "CF_TUNNEL_TOKEN").read_text().strip() == "cf-token-value"
-    assert "cf-token-value" not in (tmp_path / "vm" / ".env").read_text()
-    assert "compose.cloudflare.yml" in (tmp_path / "vm" / ".env").read_text()
+    assert cli.main(_up_args()) == 0
+    env_file = tmp_path / "vm" / ".env"
+    assert oct(env_file.stat().st_mode & 0o777) == "0o600"
+    assert "TS_AUTHKEY=tskey-auth-example" in env_file.read_text()
+    shown = capsys.readouterr()
+    assert "tskey-auth-example" not in shown.out + shown.err
+    assert "tskey" not in Deployment.path_for("muse").read_text()  # not remembered on this computer
 
 
 def _passing() -> Report:

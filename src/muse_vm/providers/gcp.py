@@ -6,7 +6,8 @@ made and `down` removes exactly that.
 
 Unlike the project's `default` network, which ships with firewall rules that allow SSH and RDP from
 anywhere, the VM lives in a network of its own that has no rules except the ones created here:
-SSH only from Google's IAP range, and HTTPS only when the Caddy ingress needs it.
+SSH only from Google's IAP range. The VM has no public address at all: Muse reaches the adapter
+through Tailscale Funnel, which needs no inbound connection.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ TEARDOWN_ORDER = [
     "budget",
     "router",
     "firewall",
-    "address",
     "subnet",
     "network",
 ]
@@ -60,11 +60,6 @@ class GcpProvider(Provider):
         assert self.dep.zone
         return self.dep.zone.rsplit("-", 1)[0]
 
-    @property
-    def private(self) -> bool:
-        """No public address: only tunnels need no inbound connection."""
-        return self.dep.ingress != "caddy"
-
     def _g(self, *args: str, check: bool = True, timeout: float = 600) -> Result:
         return self.runner(
             ["gcloud", *args, f"--project={self.dep.project}", "--quiet"],
@@ -75,10 +70,6 @@ class GcpProvider(Provider):
     def target(self) -> Target:
         assert self.dep.zone and self.dep.project
         return GcloudTarget(self.runner, self.instance, self.dep.zone, self.dep.project, self.root)
-
-    def public_ip(self) -> str | None:
-        address = self.dep.extra.get("public_ip")
-        return str(address) if address else None
 
     # ---- preflight ---------------------------------------------------------------------------
     def preflight(self) -> None:
@@ -134,7 +125,7 @@ class GcpProvider(Provider):
                 )
         machine = dep.extra["machine_type"]
         cost = MONTHLY_USD.get(machine)
-        extras = " + about $3 for the fixed address" if not self.private else " + about $1 for NAT"
+        extras = " + about $1 for NAT"
         self.say(
             f"  account {account}, project {dep.project}, zone {dep.zone}, {machine}"
             + (f" (about ${cost}/month while running{extras}, $1-2 for the disk)" if cost else "")
@@ -175,8 +166,7 @@ class GcpProvider(Provider):
         )
         dep.add_resource("subnet", name, region=region)
 
-        rules = "SSH from Google's IAP range only" + ("" if self.private else ", HTTPS 80/443")
-        self.say(f"  creating firewall rules ({rules})…")
+        self.say("  creating firewall rules (SSH from Google's IAP range only)…")
         self._g(
             "compute",
             "firewall-rules",
@@ -192,53 +182,20 @@ class GcpProvider(Provider):
         )
         dep.add_resource("firewall", f"{name}-iap-ssh")
 
-        if self.private:
-            self.say("  no public address: outbound traffic goes through Cloud NAT…")
-            self._g("compute", "routers", "create", name, f"--network={name}", f"--region={region}")
-            dep.add_resource("router", name, region=region)
-            self._g(
-                "compute",
-                "routers",
-                "nats",
-                "create",
-                name,
-                f"--router={name}",
-                f"--region={region}",
-                "--auto-allocate-nat-external-ips",
-                "--nat-all-subnet-ip-ranges",
-            )
-        else:
-            self._g(
-                "compute",
-                "firewall-rules",
-                "create",
-                f"{name}-https",
-                f"--network={name}",
-                "--direction=INGRESS",
-                "--action=allow",
-                "--rules=tcp:80,tcp:443",
-                "--source-ranges=0.0.0.0/0",
-                f"--target-tags={name}",
-                f"--description={label}",
-            )
-            dep.add_resource("firewall", f"{name}-https")
-            self._g(
-                "compute",
-                "addresses",
-                "create",
-                name,
-                f"--region={region}",
-                f"--description={label}",
-            )
-            dep.add_resource("address", name, region=region)
-            dep.extra["public_ip"] = self._g(
-                "compute",
-                "addresses",
-                "describe",
-                name,
-                f"--region={region}",
-                "--format=value(address)",
-            ).stdout.strip()
+        self.say("  no public address: outbound traffic goes through Cloud NAT…")
+        self._g("compute", "routers", "create", name, f"--network={name}", f"--region={region}")
+        dep.add_resource("router", name, region=region)
+        self._g(
+            "compute",
+            "routers",
+            "nats",
+            "create",
+            name,
+            f"--router={name}",
+            f"--region={region}",
+            "--auto-allocate-nat-external-ips",
+            "--nat-all-subnet-ip-ranges",
+        )
 
         machine = dep.extra["machine_type"]
         architecture = "arm64" if machine.startswith(ARM_PREFIXES) else "amd64"
@@ -271,7 +228,7 @@ class GcpProvider(Provider):
                 "--shielded-secure-boot",
                 "--shielded-vtpm",
                 "--shielded-integrity-monitoring",
-                "--no-address" if self.private else f"--address={dep.extra['public_ip']}",
+                "--no-address",
             ]
             self._g(*args)
         finally:
@@ -480,10 +437,6 @@ class GcpProvider(Provider):
             return self._g("compute", "routers", "delete", name, f"--region={region}", check=False)
         if kind == "firewall":
             return self._g("compute", "firewall-rules", "delete", name, check=False)
-        if kind == "address":
-            return self._g(
-                "compute", "addresses", "delete", name, f"--region={region}", check=False
-            )
         if kind == "subnet":
             return self._g(
                 "compute", "networks", "subnets", "delete", name, f"--region={region}", check=False
@@ -545,7 +498,7 @@ class GcpProvider(Provider):
             "instance": self.instance,
             "machine type": self.dep.extra.get("machine_type"),
             "VM status": result.stdout.strip() or "unknown",
-            "public IP": self.dep.extra.get("public_ip", "none (Cloud NAT)"),
+            "public IP": "none (outbound through Cloud NAT)",
             "disk snapshots": self.dep.extra.get("snapshots", "off"),
             "idle stop": f"{idle}h" if idle else "off",
             "resources": ", ".join(f"{r['kind']}:{r['name']}" for r in self.dep.resources),

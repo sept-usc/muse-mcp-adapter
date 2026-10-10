@@ -2,9 +2,9 @@
 
 Layout on the target, in /opt/muse-adapter:
 
-  compose.yml, compose.build.yml, compose.cloudflare.yml   the services (static)
-  Caddyfile, tailscale-serve.json                          ingress configuration (static)
-  .env                  compose variables: images, ingress, hostname            (0600)
+  compose.yml, compose.build.yml   the services (static)
+  tailscale-serve.json             what Tailscale Funnel publishes (static)
+  .env                  compose variables: images, tailscale settings           (0600)
   config/serve.json     the adapter's configuration; names no secret
   data/                 the adapter's database, key file and token store        (0700, uid 10001)
   secrets/              one file per secret an MCP server needs                 (0700, files 0400)
@@ -30,8 +30,6 @@ UID = 10001
 STATIC_FILES = [
     "compose.yml",
     "compose.build.yml",
-    "compose.cloudflare.yml",
-    "Caddyfile",
     "tailscale-serve.json",
 ]
 SCRIPTS = ["backup.sh", "heal.sh", "idle.sh"]
@@ -44,12 +42,9 @@ UNITS = [
     "muse-adapter-idle.service",
     "muse-adapter-idle.timer",
 ]
-INGRESS_PROFILES = ("caddy", "tailscale-funnel", "cloudflare-tunnel")
-INGRESS_SERVICE = {
-    "caddy": "caddy",
-    "tailscale-funnel": "tailscale",
-    "cloudflare-tunnel": "cloudflared",
-}
+# Muse reaches the adapter through Tailscale Funnel: no public IP, no open port, no domain.
+INGRESS = "tailscale-funnel"
+INGRESS_SERVICE = "tailscale"
 SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
@@ -86,8 +81,6 @@ def render_env(values: dict[str, str]) -> str:
 def compose_env(
     *,
     project: str,
-    ingress: str,
-    hostname: str | None,
     build: bool,
     image: str | None = None,
     guard_image: str | None = None,
@@ -98,28 +91,19 @@ def compose_env(
 ) -> dict[str, str]:
     if not build and not (image and guard_image):
         raise SystemExit("Without building from source, give both --image and --guard-image.")
-    if ingress not in INGRESS_PROFILES:
-        raise SystemExit(
-            f"Unknown ingress {ingress!r}. Choose one of: {', '.join(INGRESS_PROFILES)}."
-        )
     files = ["compose.yml"]
     if build:
         files.append("compose.build.yml")
-    if ingress == "cloudflare-tunnel":
-        files.append("compose.cloudflare.yml")
     local = local_images()
     env = {
         "MMA_PROJECT": project,
         "MMA_VERSION": __version__,
-        "COMPOSE_PROFILES": ingress,
         "COMPOSE_FILE": ":".join(files),
         "MMA_IMAGE": local[0] if build else str(image),
         "MMA_GUARD_IMAGE": local[1] if build else str(guard_image),
         "MMA_TZ": tz,
         "MMA_EGRESS_ALLOW": egress_allow,
     }
-    if hostname:
-        env["MMA_HOSTNAME"] = hostname
     if ts_hostname:
         env["MMA_TS_HOSTNAME"] = ts_hostname
     env.update(ingress_secrets or {})
@@ -195,11 +179,7 @@ def remove_units(target: Target) -> None:
 def set_secret(
     target: Target, name: str, value: str, *, mode: int = 0o400, owner: str = f"{UID}:{UID}"
 ) -> None:
-    """Store a secret an MCP server needs. It travels on stdin; only the adapter can read it.
-
-    The Cloudflare tunnel token is the exception that needs a wider mode: cloudflared runs as its
-    own user and reads it through a bind mount. It stays unreachable from outside the container,
-    because the directory that holds it is private on the host."""
+    """Store a secret an MCP server needs. It travels on stdin; only the adapter can read it."""
     if not SECRET_NAME.match(name):
         raise SystemExit(f"{name!r} is not a valid secret name (letters, digits and '_' only).")
     if not value or "\n" in value:
@@ -307,18 +287,16 @@ def set_version(target: Target) -> str | None:
 
 
 def set_hostname(target: Target, hostname: str) -> bool:
-    """Record the hostname once it is known (tunnels learn it after they start)."""
-    env = parse_env(target.get(".env"))
-    if env.get("MMA_HOSTNAME") == hostname:
+    """Record the public hostname once Tailscale has assigned it. True if it changed."""
+    wanted = serve_config(hostname)
+    if target.get("config/serve.json") == wanted:
         return False
-    env["MMA_HOSTNAME"] = hostname
-    target.put(".env", render_env(env), 0o600)
-    target.put("config/serve.json", serve_config(hostname), 0o644)
+    target.put("config/serve.json", wanted, 0o644)
     return True
 
 
-def ingress_logs(target: Target, ingress: str, tail: int = 200) -> str:
+def ingress_logs(target: Target, tail: int = 200) -> str:
     result = target.compose(
-        f"logs --no-color --tail {tail} {shlex.quote(INGRESS_SERVICE[ingress])}", check=False
+        f"logs --no-color --tail {tail} {shlex.quote(INGRESS_SERVICE)}", check=False
     )
     return result.stdout + result.stderr

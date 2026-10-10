@@ -135,7 +135,7 @@ def cmd_up(args: argparse.Namespace) -> None:
     dep = Deployment(
         name=name,
         provider=provider_name,
-        ingress=args.ingress or "",
+        ingress=bundle.INGRESS,
         image=args.image,
         build=build,
         ssh_host=args.ssh,
@@ -149,30 +149,18 @@ def cmd_up(args: argparse.Namespace) -> None:
         "idle_stop_hours": args.idle_stop_hours,
         "snapshots": not args.no_snapshots,
         "yes": args.yes,
-        "domain": args.domain,
         "reuse_dir": args.force,
     }
     runner = _runner(args)
     provider = provider_for(dep, runner, say, options)
-    if not dep.ingress:
-        dep.ingress = provider.default_ingress()
-    if dep.ingress not in bundle.INGRESS_PROFILES:
-        raise SystemExit(f"Unknown --ingress {dep.ingress!r}.")
-    say(
-        f"muse-vm {__version__}: deploying {name!r} to {provider_name} "
-        f"with the {dep.ingress} ingress"
-    )
+    say(f"muse-vm {__version__}: deploying {name!r} to {provider_name}")
 
     ingress_secrets: dict[str, str] = {}
-    tunnel_token: str | None = None
-    if dep.ingress == "tailscale-funnel":
-        key = _secret_value(
-            "TS_AUTHKEY", "Tailscale auth key (empty: sign in with a link)", required=False
-        )
-        if key:
-            ingress_secrets["TS_AUTHKEY"] = key
-    elif dep.ingress == "cloudflare-tunnel":
-        tunnel_token = _secret_value("CF_TUNNEL_TOKEN", "Cloudflare tunnel token")
+    key = _secret_value(
+        "TS_AUTHKEY", "Tailscale auth key (empty: sign in with a link)", required=False
+    )
+    if key:
+        ingress_secrets["TS_AUTHKEY"] = key
 
     say("1/6 preflight")
     provider.preflight()
@@ -181,15 +169,9 @@ def cmd_up(args: argparse.Namespace) -> None:
     try:
         say("2/6 provision")
         t = provider.provision()
-        dep.hostname = ingress.hostname_before_start(
-            dep.ingress, domain=args.domain, public_ip=provider.public_ip()
-        )
-        dep.save()
         say(f"3/6 install on {t.describe()}")
         env = bundle.compose_env(
             project=f"muse-adapter-{name}",
-            ingress=dep.ingress,
-            hostname=dep.hostname,
             build=build,
             image=args.image,
             guard_image=args.guard_image,
@@ -198,26 +180,21 @@ def cmd_up(args: argparse.Namespace) -> None:
             ts_hostname=f"muse-adapter-{name}",
             ingress_secrets=ingress_secrets,
         )
-        bundle.install(t, env, bundle.serve_config(dep.hostname or "pending.invalid"))
-        if tunnel_token:
-            bundle.set_secret(t, "CF_TUNNEL_TOKEN", tunnel_token, mode=0o444, owner="0:0")
+        bundle.install(t, env, bundle.serve_config("pending.invalid"))
         _fetch_images(t, dep, env, source, say)
         say("4/6 start")
         provider.start_stack(t)
-        if not dep.hostname:
-            dep.hostname = ingress.hostname_after_start(t, dep.ingress, say=say)
-            dep.save()
-            if bundle.set_hostname(t, dep.hostname):
-                provider.restart_adapter(t)
+        dep.hostname = ingress.hostname_after_start(t, say=say)
+        dep.save()
+        if bundle.set_hostname(t, dep.hostname):
+            provider.restart_adapter(t)
         say(f"5/6 public address https://{dep.hostname}")
         say("6/6 self-check")
-        report = selfcheck.run(
-            t, str(dep.base_url), ingress=dep.ingress, wait=args.wait or 600, say=say
-        )
+        report = selfcheck.run(t, str(dep.base_url), wait=args.wait or 600, say=say)
         for line in report.lines():
             say(line)
         if not report.ok:
-            _show_logs(t, dep.ingress)
+            _show_logs(t)
             raise SystemExit("The self-check failed.")
         provider.after_start(t)
         dep.status = "ready"
@@ -277,8 +254,8 @@ def _fetch_images(
         ) from error
 
 
-def _show_logs(t: Any, ingress_name: str, tail: int = 15) -> None:
-    for service in ("adapter", bundle.INGRESS_SERVICE[ingress_name]):
+def _show_logs(t: Any, tail: int = 15) -> None:
+    for service in ("adapter", bundle.INGRESS_SERVICE):
         result = t.compose(f"logs --no-color --tail {tail} {shlex.quote(service)}", check=False)
         text = (result.stdout + result.stderr).strip()
         if text:
@@ -445,15 +422,12 @@ def cmd_list(args: argparse.Namespace) -> None:
     if not found:
         say("No deployments.")
     for dep in found:
-        say(f"{dep.name}  {dep.provider}  {dep.ingress}  {dep.base_url or '-'}  {dep.status}")
+        say(f"{dep.name}  {dep.provider}  {dep.base_url or '-'}  {dep.status}")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
     dep, provider = _context(args, ready=False)
-    say(
-        f"{dep.name}: {dep.provider}, {dep.ingress}, "
-        f"{dep.base_url or 'no address yet'} ({dep.status})"
-    )
+    say(f"{dep.name}: {dep.provider}, {dep.base_url or 'no address yet'} ({dep.status})")
     for key, value in provider.status().items():
         say(f"  {key}: {value}")
     try:
@@ -485,9 +459,7 @@ def cmd_logs(args: argparse.Namespace) -> None:
 
 def cmd_selfcheck(args: argparse.Namespace) -> None:
     dep, provider = _context(args)
-    report = selfcheck.run(
-        provider.target(), str(dep.base_url), ingress=dep.ingress, wait=args.wait, say=say
-    )
+    report = selfcheck.run(provider.target(), str(dep.base_url), wait=args.wait, say=say)
     for line in report.lines():
         say(line)
     if not report.ok:
@@ -529,7 +501,7 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     bundle.install_units(t, idle_hours=dep.extra.get("idle_stop_hours"))
     t.compose("up -d --remove-orphans", stream=True)
     dep.save()
-    report = selfcheck.run(t, str(dep.base_url), ingress=dep.ingress, wait=300, say=say)
+    report = selfcheck.run(t, str(dep.base_url), wait=300, say=say)
     for line in report.lines():
         say(line)
     say(
@@ -614,15 +586,6 @@ def build_parser() -> argparse.ArgumentParser:
     where.add_argument("--ssh", metavar="USER@HOST", help="use an existing Linux machine over SSH")
     where.add_argument(
         "--cloud", choices=sorted(set(PROVIDERS) - {"ssh"}), help="create a cloud VM"
-    )
-    up.add_argument(
-        "--ingress",
-        choices=bundle.INGRESS_PROFILES,
-        help="how Muse reaches it (default: caddy with a public IP, otherwise tailscale-funnel)",
-    )
-    up.add_argument(
-        "--domain",
-        help="your own hostname (caddy: an A record to the VM; tunnel: the mapped hostname)",
     )
     up.add_argument("--tz", default=os.environ.get("MMA_TZ", "UTC"))
     up.add_argument(

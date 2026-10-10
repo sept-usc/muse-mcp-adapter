@@ -56,37 +56,26 @@ def test_nothing_is_privileged_or_exposes_the_host() -> None:
         )
 
 
-def test_only_the_ingress_publishes_ports() -> None:
+def test_nothing_publishes_a_port_on_the_host() -> None:
+    # Muse reaches the adapter through Tailscale Funnel, which needs no inbound connection.
     services = _compose()["services"]
-    assert [name for name, service in services.items() if "ports" in service] == ["caddy"]
-    assert services["caddy"]["ports"] == ["80:80", "443:443"]
-
-
-def test_each_ingress_is_a_profile_and_the_adapter_always_runs() -> None:
-    services = _compose()["services"]
-    assert "profiles" not in services["adapter"] and "profiles" not in services["guard"]
-    assert {
-        name: service["profiles"] for name, service in services.items() if "profiles" in service
-    } == {
-        "caddy": ["caddy"],
-        "tailscale": ["tailscale-funnel"],
-        "cloudflared": ["cloudflare-tunnel"],
-    }
+    assert [name for name, service in services.items() if "ports" in service] == []
+    assert set(services) == {"guard", "adapter", "tailscale"}
+    assert "profiles" not in services["tailscale"]
 
 
 def test_the_adapter_waits_for_the_guard_and_the_ingress_for_the_adapter() -> None:
     services = _compose()["services"]
     assert services["adapter"]["network_mode"] == "service:guard"
     assert services["adapter"]["depends_on"]["guard"]["condition"] == "service_healthy"
-    for name in ("caddy", "tailscale", "cloudflared"):
-        assert services[name]["depends_on"]["adapter"]["condition"] == "service_healthy"
+    assert services["tailscale"]["depends_on"]["adapter"]["condition"] == "service_healthy"
 
 
 def test_every_third_party_image_is_pinned_by_digest() -> None:
     text = (BUNDLE / "compose.yml").read_text()
     images = [line.split("image:", 1)[1].strip() for line in text.splitlines() if "image:" in line]
     third_party = [i for i in images if "MMA_IMAGE" not in i and "MMA_GUARD_IMAGE" not in i]
-    assert len(third_party) == 3
+    assert len(third_party) == 1  # Tailscale
     for image in third_party:
         assert "@sha256:" in image and ":latest" not in image, image
 
@@ -101,72 +90,31 @@ def test_the_adapter_receives_state_config_and_secrets_the_right_way() -> None:
     )
 
 
-def test_the_cloudflare_token_is_a_file_secret_not_an_environment_variable() -> None:
-    override = yaml.safe_load((BUNDLE / "compose.cloudflare.yml").read_text())
-    assert override["secrets"]["cf_tunnel_token"]["file"] == "./secrets/CF_TUNNEL_TOKEN"
-    command = _compose()["services"]["cloudflared"]["command"]
-    assert "--token-file /run/secrets/cf_tunnel_token" in command
-    assert "TUNNEL_TOKEN" not in (BUNDLE / "compose.yml").read_text().replace("TUNNEL_TOKEN_", "")
-
-
 def test_the_build_override_builds_both_images_from_the_uploaded_source() -> None:
     services = yaml.safe_load((BUNDLE / "compose.build.yml").read_text())["services"]
     assert services["adapter"]["build"]["context"] == "./src"
     assert services["guard"]["build"]["context"] == "./src/guard"
 
 
-def test_caddy_sends_security_headers_limits_bodies_and_logs_no_requests() -> None:
-    caddyfile = (BUNDLE / "Caddyfile").read_text()
-    for needle in (
-        "Strict-Transport-Security",
-        "nosniff",
-        "X-Frame-Options",
-        "max_size 1MB",
-        "admin off",
-    ):
-        assert needle in caddyfile
-    assert "-Server" in caddyfile
-    assert (
-        "\n\tlog" not in caddyfile and "\nlog" not in caddyfile
-    )  # no access log of connector URLs
-
-
 # ---- the environment and configuration the CLI renders --------------------------------------
-def test_the_environment_selects_the_ingress_and_pinned_images() -> None:
-    env = bundle.compose_env(
-        project="muse-adapter-a", ingress="caddy", hostname="a.example.com", build=True
-    )
-    assert env["COMPOSE_PROFILES"] == "caddy"
+def test_the_environment_names_the_images_and_leaves_no_profile_to_choose() -> None:
+    env = bundle.compose_env(project="muse-adapter-a", build=True)
     assert env["COMPOSE_FILE"] == "compose.yml:compose.build.yml"
+    assert "COMPOSE_PROFILES" not in env and "MMA_HOSTNAME" not in env
+    assert env["MMA_IMAGE"].startswith("muse-adapter-local/")
     assert env["MMA_IMAGE"].endswith(f":{bundle.__version__}") and ":latest" not in env["MMA_IMAGE"]
-    assert env["MMA_HOSTNAME"] == "a.example.com"
-
-
-def test_build_and_tunnel_modes_add_their_compose_files() -> None:
-    built = bundle.compose_env(project="p", ingress="caddy", hostname="h", build=True)
-    assert built["COMPOSE_FILE"] == "compose.yml:compose.build.yml"
-    assert built["MMA_IMAGE"].startswith("muse-adapter-local/")
-    tunnel = bundle.compose_env(project="p", ingress="cloudflare-tunnel", hostname="h", build=True)
-    assert tunnel["COMPOSE_FILE"] == "compose.yml:compose.build.yml:compose.cloudflare.yml"
 
 
 def test_images_from_your_own_registry_need_both_names() -> None:
     env = bundle.compose_env(
         project="p",
-        ingress="caddy",
-        hostname="h",
         build=False,
         image="registry.example.com/adapter@sha256:" + "a" * 64,
         guard_image="registry.example.com/guard@sha256:" + "b" * 64,
     )
     assert env["COMPOSE_FILE"] == "compose.yml" and "registry.example.com" in env["MMA_IMAGE"]
     with pytest.raises(SystemExit, match="--image and --guard-image"):
-        bundle.compose_env(project="p", ingress="caddy", hostname="h", build=False, image="x")
-
-
-def test_an_unknown_ingress_is_refused() -> None:
-    with pytest.raises(SystemExit, match="Unknown ingress"):
-        bundle.compose_env(project="p", ingress="carrier-pigeon", hostname="h", build=True)
+        bundle.compose_env(project="p", build=False, image="x")
 
 
 def test_a_multi_line_value_cannot_inject_another_variable() -> None:
@@ -189,7 +137,7 @@ def test_the_rendered_adapter_configuration_loads_and_holds_no_secret(tmp_path: 
 # ---- installing ------------------------------------------------------------------------------
 def test_install_writes_private_files_and_prepares_the_directories() -> None:
     target = FakeTarget()
-    env = bundle.compose_env(project="p", ingress="caddy", hostname="a.example.com", build=True)
+    env = bundle.compose_env(project="p", build=True)
     bundle.install(target, env, bundle.serve_config("a.example.com"))
 
     assert target.files[".env"].mode == 0o600

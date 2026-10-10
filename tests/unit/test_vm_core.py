@@ -143,29 +143,6 @@ def test_a_weak_passphrase_is_refused() -> None:
 
 
 # ---- ingress ----------------------------------------------------------------------------------
-def test_a_public_address_becomes_a_hostname_that_can_get_a_certificate() -> None:
-    assert ingress.sslip_name("203.0.113.7") == "203-0-113-7.sslip.io"
-    assert (
-        ingress.hostname_before_start("caddy", domain=None, public_ip="34.1.2.3")
-        == "34-1-2-3.sslip.io"
-    )
-    assert (
-        ingress.hostname_before_start("caddy", domain="adapter.me.dev", public_ip=None)
-        == "adapter.me.dev"
-    )
-
-
-@pytest.mark.parametrize("address", [None, "10.0.0.5", "192.168.1.9", "100.64.0.1", "127.0.0.1"])
-def test_caddy_without_a_public_address_is_refused_with_advice(address: str | None) -> None:
-    with pytest.raises(SystemExit, match="public IP"):
-        ingress.hostname_before_start("caddy", domain=None, public_ip=address)
-
-
-def test_a_cloudflare_tunnel_needs_its_hostname_up_front() -> None:
-    with pytest.raises(SystemExit, match="--domain"):
-        ingress.hostname_before_start("cloudflare-tunnel", domain=None, public_ip=None)
-
-
 def test_the_tailscale_hostname_is_learned_once_it_is_running() -> None:
     target = FakeTarget()
     target.answer("tailscale status", stdout=json.dumps({"BackendState": "NeedsLogin"}))
@@ -190,9 +167,7 @@ def test_the_tailscale_hostname_is_learned_once_it_is_running() -> None:
         return original(script, *a, **k)  # type: ignore[arg-type]
 
     target.sh = sh  # type: ignore[method-assign]
-    name = ingress.hostname_after_start(
-        target, "tailscale-funnel", say=seen.append, sleep=lambda _: None
-    )
+    name = ingress.hostname_after_start(target, say=seen.append, sleep=lambda _: None)
     assert name == "muse-adapter-muse.tail1.ts.net"
     assert any(
         "login.tailscale.com/a/abc123XYZ" in line for line in seen
@@ -203,7 +178,7 @@ def test_a_tailscale_that_never_signs_in_ends_with_a_clear_message() -> None:
     target = FakeTarget()
     target.answer("tailscale status", stdout=json.dumps({"BackendState": "NeedsLogin"}))
     with pytest.raises(SystemExit, match="did not appear"):
-        ingress.hostname_after_start(target, "tailscale-funnel", timeout=0.05, sleep=lambda _: None)
+        ingress.hostname_after_start(target, timeout=0.05, sleep=lambda _: None)
 
 
 # ---- dropped connections are retried ---------------------------------------------------------

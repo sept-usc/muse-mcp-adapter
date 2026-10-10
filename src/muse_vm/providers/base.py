@@ -25,9 +25,6 @@ class Provider:
         self.dep, self.runner, self.say, self.opts = dep, runner, say, opts or {}
 
     # ---- lifecycle (override) ---------------------------------------------------------------
-    def default_ingress(self) -> str:
-        return "caddy"
-
     def preflight(self) -> None:
         """Check tools, credentials and the machine before anything is created."""
 
@@ -37,9 +34,6 @@ class Provider:
 
     def target(self) -> Target:
         raise NotImplementedError
-
-    def public_ip(self) -> str | None:
-        return None
 
     def after_start(self, t: Target) -> None:
         """Provider extras once the adapter runs: idle stop, snapshots, a budget alert."""

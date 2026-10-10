@@ -130,7 +130,6 @@ def run(
     target: Target,
     base_url: str,
     *,
-    ingress: str,
     wait: float = 300,
     say: Callable[[str], None] = print,
 ) -> Report:
@@ -143,13 +142,11 @@ def run(
         return report
 
     _, headers, _ = _request("GET", base_url + "/health")
-    # Caddy adds these. A tunnel passes the adapter's own answer through, so there they only advise.
     report.add(
-        "security headers (HSTS, nosniff)",
+        "security headers (HSTS, nosniff, no-store)",
         "strict-transport-security" in headers
-        and headers.get("x-content-type-options") == "nosniff",
-        "" if ingress == "caddy" else f"set by Caddy only; ingress is {ingress}",
-        required=ingress == "caddy",
+        and headers.get("x-content-type-options") == "nosniff"
+        and headers.get("cache-control") == "no-store",
     )
     code, detail = _status("POST", base_url + "/c/selfcheck/operations/none", body=b"{}")
     report.add("a call without a token is refused", code == 401, detail)

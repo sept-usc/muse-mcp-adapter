@@ -11,17 +11,16 @@ from muse_vm.state import Deployment
 from tests.fixtures.vm_fakes import FakeRunner
 
 
-def _gcp(ingress: str = "caddy", **opts: Any) -> tuple[GcpProvider, Deployment, FakeRunner]:
+def _gcp(**opts: Any) -> tuple[GcpProvider, Deployment, FakeRunner]:
     runner = FakeRunner()
     # specific answers first: the first matching rule wins
-    runner.when("addresses describe", stdout="34.1.2.3")
     runner.when("config get-value project", stdout="my-proj")
     runner.when("config get-value compute/zone", stdout="us-central1-a")
     runner.when("auth list", stdout="me@example.com")
     runner.when("services list", stdout="compute.googleapis.com")
     runner.when("test -f /var/lib/muse-adapter/bootstrap-done", stdout="done")
     runner.when("describe", returncode=1, stderr="not found")  # nothing else exists yet
-    dep = Deployment(name="muse", provider="gcp", ingress=ingress)
+    dep = Deployment(name="muse", provider="gcp", ingress="tailscale-funnel")
     provider = GcpProvider(dep, runner, lambda _: None, {"yes": True, **opts})  # type: ignore[arg-type]
     return provider, dep, runner
 
@@ -49,41 +48,28 @@ def test_the_vm_gets_a_network_of_its_own_and_never_uses_the_default_one() -> No
     assert [r["kind"] for r in dep.resources][:2] == ["network", "subnet"]
 
 
-def test_ssh_is_open_only_to_googles_iap_range_and_https_only_for_caddy() -> None:
-    provider, _, runner = _gcp("caddy")
+def test_ssh_is_open_only_to_googles_iap_range_and_nothing_else_is() -> None:
+    provider, _, runner = _gcp()
     provider.preflight()
     provider.provision()
     rules = _created(runner, "firewall-rules")
-    ssh = next(r for r in rules if "-iap-ssh" in r)
+    assert len(rules) == 1  # no web ports: Muse arrives through Tailscale, not through the VM
+    ssh = rules[0]
+    assert "-iap-ssh" in ssh
     assert (
         f"--source-ranges={IAP_RANGE}" in ssh and "--rules=tcp:22" in ssh and "0.0.0.0/0" not in ssh
     )
-    https = next(r for r in rules if "-https" in r)
-    assert "--rules=tcp:80,tcp:443" in https and "--target-tags=mma-muse" in https
-    assert not any(
-        "tcp:22" in r and "0.0.0.0/0" in r for r in rules
-    )  # SSH is never open to the world
 
 
-def test_a_tunnel_ingress_gets_no_public_address_and_no_https_rule() -> None:
-    provider, dep, runner = _gcp("tailscale-funnel")
+def test_the_vm_has_no_public_address_and_reaches_out_through_cloud_nat() -> None:
+    provider, dep, runner = _gcp()
     provider.preflight()
     provider.provision()
     joined = "\n".join(runner.lines())
     assert "--no-address" in joined and "--address=" not in joined
     assert "routers create mma-muse" in joined and "nats create mma-muse" in joined
-    assert not any("-https" in r for r in _created(runner, "firewall-rules"))
     assert not _created(runner, "addresses")
     assert "address" not in [r["kind"] for r in dep.resources]
-
-
-def test_caddy_reserves_a_static_address_and_uses_it() -> None:
-    provider, dep, runner = _gcp("caddy")
-    provider.preflight()
-    provider.provision()
-    assert _created(runner, "addresses")
-    assert dep.extra["public_ip"] == "34.1.2.3"
-    assert "--address=34.1.2.3" in "\n".join(runner.lines())
 
 
 # ---- GCP: the VM -----------------------------------------------------------------------------
@@ -141,7 +127,7 @@ def test_preflight_stops_when_the_compute_api_is_off_unless_allowed_to_enable_it
     runner.when("config get-value project", stdout="p")
     runner.when("auth list", stdout="me@example.com")
     runner.when("services list", stdout="")
-    dep = Deployment(name="muse", provider="gcp", ingress="caddy")
+    dep = Deployment(name="muse", provider="gcp", ingress="tailscale-funnel")
     with pytest.raises(SystemExit, match="Compute Engine API"):
         GcpProvider(dep, runner, lambda _: None, {}).preflight()  # type: ignore[arg-type]
 
@@ -156,7 +142,7 @@ def test_preflight_refuses_a_name_that_is_already_taken() -> None:
 def test_preflight_needs_gcloud_and_a_login() -> None:
     runner = FakeRunner()
     runner.when("--version", returncode=127)
-    dep = Deployment(name="muse", provider="gcp", ingress="caddy")
+    dep = Deployment(name="muse", provider="gcp", ingress="tailscale-funnel")
     with pytest.raises(SystemExit, match="gcloud CLI is required"):
         GcpProvider(dep, runner, lambda _: None, {}).preflight()  # type: ignore[arg-type]
 
@@ -183,7 +169,7 @@ def test_snapshots_can_be_turned_off() -> None:
 
 
 def test_teardown_deletes_the_vm_first_and_the_network_last() -> None:
-    provider, dep, runner = _gcp("caddy", budget_usd=None)
+    provider, dep, runner = _gcp(budget_usd=None)
     provider.preflight()
     provider.provision()
     provider.after_start(provider.target())
@@ -260,7 +246,9 @@ def _ssh(**opts: Any) -> tuple[SSHProvider, FakeRunner]:
     runner = FakeRunner()
     runner.when("uname -s -m", stdout="Linux x86_64\n0\n")
     runner.when("test -f /opt/muse-adapter/compose.yml", stdout="no")
-    dep = Deployment(name="muse", provider="ssh", ingress="caddy", ssh_host="me@203.0.113.9")
+    dep = Deployment(
+        name="muse", provider="ssh", ingress="tailscale-funnel", ssh_host="me@203.0.113.9"
+    )
     return SSHProvider(dep, runner, lambda _: None, opts), runner  # type: ignore[arg-type]
 
 
@@ -282,30 +270,11 @@ def test_ssh_preflight_refuses_a_non_linux_host_and_an_existing_deployment() -> 
         provider.preflight()
 
 
-def test_ssh_preflight_refuses_caddy_when_the_web_ports_are_taken() -> None:
-    provider, runner = _ssh()
-    runner.when("ss -ltnH", stdout="0.0.0.0:443")
-    with pytest.raises(SystemExit, match="in use"):
-        provider.preflight()
-
-
 def test_ssh_without_passwordless_sudo_gets_a_clear_message() -> None:
     provider, runner = _ssh()
     runner.rules.insert(0, ("uname -s -m", Result(1, "", "sudo: a password is required")))
     with pytest.raises(SystemExit, match="passwordless sudo"):
         provider.preflight()
-
-
-def test_the_default_ingress_follows_whether_the_host_is_reachable_from_the_internet(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider, _ = _ssh()
-    provider.dep.extra["public_ip"] = "203.0.113.9"
-    # 203.0.113.0/24 is a documentation range, which is not "global"; use a real public address
-    provider.dep.extra["public_ip"] = "8.8.8.8"
-    assert provider.default_ingress() == "caddy"
-    provider.dep.extra["public_ip"] = "192.168.1.20"
-    assert provider.default_ingress() == "tailscale-funnel"
 
 
 def test_removing_an_ssh_host_stops_the_units_and_leaves_the_rest_of_the_machine_alone() -> None:

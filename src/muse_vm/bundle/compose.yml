@@ -1,6 +1,6 @@
 # Muse MCP Adapter deployment bundle. `muse-vm` writes the variables in .env for you.
 #
-# .env sets the images, the ingress profile (COMPOSE_PROFILES) and the public hostname. State lives
+# .env sets the images and the Tailscale settings. State lives
 # in ./data, the adapter's configuration in ./config, and server tokens as files in ./secrets.
 # Every image is pinned: the ones the adapter publishes by version, everything else by digest.
 name: ${MMA_PROJECT:-muse-adapter}
@@ -54,29 +54,8 @@ services:
     cpus: 1.0
     pids_limit: 256
 
-  # ---- ingress: exactly one profile is enabled ------------------------------------------------
-  caddy:
-    <<: *hardened
-    profiles: [caddy]
-    image: caddy:2.11.7@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772
-    cap_add: [NET_BIND_SERVICE]
-    read_only: true
-    tmpfs: [/tmp]
-    depends_on:
-      adapter: { condition: service_healthy }
-    ports: ["80:80", "443:443"]
-    environment:
-      MMA_HOSTNAME: ${MMA_HOSTNAME:-}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    networks: [mma]
-    mem_limit: 128m
-    pids_limit: 128
-
+  # ---- ingress: Tailscale Funnel publishes the adapter at https://<name>.<tailnet>.ts.net ----
   tailscale:
-    profiles: [tailscale-funnel]
     # Pinned: Tailscale 1.102.x drops some Funnel connections (tailscale/tailscale#20739), and
     # the public address stops answering. 1.98.10 is reported good; MMA_TS_IMAGE picks another.
     image: ${MMA_TS_IMAGE:-tailscale/tailscale:v1.98.10@sha256:cdf5612ded5be1344f1a704b8c5e53496db97376bb533e5e15f141e48bf60cc0}
@@ -102,21 +81,5 @@ services:
     mem_limit: 256m
     pids_limit: 256
 
-  cloudflared:
-    <<: *hardened
-    profiles: [cloudflare-tunnel]
-    image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
-    command: tunnel --no-autoupdate run --token-file /run/secrets/cf_tunnel_token
-    read_only: true
-    depends_on:
-      adapter: { condition: service_healthy }
-    networks: [mma]
-    mem_limit: 128m
-    pids_limit: 128
-
 networks:
   mma: {}
-
-volumes:
-  caddy-data: {}
-  caddy-config: {}
