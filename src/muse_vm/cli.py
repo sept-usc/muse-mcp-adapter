@@ -295,11 +295,14 @@ def cmd_add_server(args: argparse.Namespace) -> None:
     secret_name: str | None = None
     if args.credential == "env_token":
         chosen: str = args.secret_name or f"{args.server.upper().replace('-', '_')}_TOKEN"
-        value = _secret_value(chosen, f"The token for {server_id} ({chosen})")
-        assert value
-        bundle.set_secret(t, chosen, value)
         secret_name = chosen
-        say(f"  stored {chosen} on the VM (readable only by the adapter)")
+        if chosen in bundle.list_secrets(t):
+            say(f"  using the {chosen} already stored on the VM")
+        else:
+            value = _secret_value(chosen, f"The token for {server_id} ({chosen})")
+            assert value
+            bundle.set_secret(t, chosen, value)
+            say(f"  stored {chosen} on the VM (readable only by the adapter)")
     profile = {"none": "none", "env_token": "bearer", "oauth": "oauth"}[args.credential]
 
     say(f"registering {server_id} at {args.endpoint}")
