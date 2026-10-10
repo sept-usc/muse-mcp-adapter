@@ -10,10 +10,18 @@ from __future__ import annotations
 import base64
 import posixpath
 import shlex
+import time
 
 from .runner import CommandError, Result, Runner
 
 ROOT = "/opt/muse-adapter"
+
+# ssh (and `gcloud compute ssh`, which runs ssh) exits with 255 when the connection itself failed,
+# as opposed to the remote command failing. IAP tunnels and busy hosts drop connections now and
+# then, so such a failure is retried; every operation here is safe to run again.
+CONNECTION_FAILED = 255
+RETRY_DELAYS = (3.0, 8.0, 20.0)
+_pause = time.sleep
 
 
 class Target:
@@ -40,9 +48,16 @@ class Target:
         """Run a POSIX shell script as root, in the deployment directory unless told otherwise."""
         if cwd_root:
             script = f"cd {shlex.quote(self.root)} && {script}"
-        return self.runner(
-            self._argv(script), input=input, check=check, timeout=timeout, stream=stream
-        )
+        argv = self._argv(script)
+        result = Result(CONNECTION_FAILED, "", "")
+        for delay in (*RETRY_DELAYS, None):
+            result = self.runner(argv, input=input, check=False, timeout=timeout, stream=stream)
+            if result.returncode != CONNECTION_FAILED or delay is None:
+                break
+            _pause(delay)
+        if check and not result.ok:
+            raise CommandError(argv, result)
+        return result
 
     def put(
         self, relative: str, data: bytes | str, mode: int = 0o644, owner: str | None = None

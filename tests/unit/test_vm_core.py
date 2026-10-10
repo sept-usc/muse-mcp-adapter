@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from muse_vm import crypt, ingress
-from muse_vm.runner import CommandError, Runner
+from muse_vm.runner import CommandError, Result, Runner
 from muse_vm.state import Deployment, check_name
 from muse_vm.targets import GcloudTarget, SSHTarget
 from tests.fixtures.vm_fakes import FakeRunner, FakeTarget
@@ -204,3 +204,36 @@ def test_a_tailscale_that_never_signs_in_ends_with_a_clear_message() -> None:
     target.answer("tailscale status", stdout=json.dumps({"BackendState": "NeedsLogin"}))
     with pytest.raises(SystemExit, match="did not appear"):
         ingress.hostname_after_start(target, "tailscale-funnel", timeout=0.05, sleep=lambda _: None)
+
+
+# ---- dropped connections are retried ---------------------------------------------------------
+def test_a_dropped_connection_is_retried_but_a_failing_command_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from muse_vm import targets
+
+    pauses: list[float] = []
+    monkeypatch.setattr(targets, "_pause", pauses.append)
+
+    class Flaky(FakeRunner):
+        def __init__(self, codes: list[int]) -> None:
+            super().__init__()
+            self.codes = codes
+
+        def __call__(self, argv, input=None, check=True, timeout=None, stream=False):  # type: ignore[no-untyped-def]
+            self.calls.append({"argv": list(argv), "input": input, "check": check})
+            return Result(self.codes.pop(0) if self.codes else 0, "out", "err")
+
+    flaky = Flaky([255, 255, 0])
+    assert SSHTarget(flaky, "me@host").sh("true").stdout == "out"  # type: ignore[arg-type]
+    assert len(flaky.calls) == 3 and len(pauses) == 2
+
+    broken = Flaky([255] * 10)
+    with pytest.raises(CommandError, match="255"):
+        SSHTarget(broken, "me@host").sh("true")  # type: ignore[arg-type]
+    assert len(broken.calls) == len(targets.RETRY_DELAYS) + 1  # gives up, and says so
+
+    failing = Flaky([1])
+    with pytest.raises(CommandError, match="command failed"):
+        SSHTarget(failing, "me@host").sh("false")  # type: ignore[arg-type]
+    assert len(failing.calls) == 1  # a command that ran and failed is not repeated
