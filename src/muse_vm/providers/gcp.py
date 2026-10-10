@@ -378,6 +378,8 @@ class GcpProvider(Provider):
     # ---- removing it -------------------------------------------------------------------------
     def teardown(self, keep_data: bool = False) -> None:
         dep = self.dep
+        if any(item["kind"] == "instance" for item in dep.resources):
+            self.leave_tailnet()
         ordered = sorted(
             dep.resources,
             key=lambda item: (

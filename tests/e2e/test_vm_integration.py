@@ -473,7 +473,7 @@ def test_a_tailscale_auth_key_goes_into_the_private_environment_file_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    monkeypatch.setenv("TS_AUTHKEY", "tskey-auth-example")
+    monkeypatch.setenv("TS_AUTHKEY", "tskey-auth-kExampleKey123-abcdefghijklmnopqrstuvwx")
     monkeypatch.setattr(selfcheck, "run", _returning(_passing()))
     monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
     vm = ContainerTarget(tmp_path / "vm")
@@ -481,9 +481,9 @@ def test_a_tailscale_auth_key_goes_into_the_private_environment_file_only(
     assert cli.main(_up_args()) == 0
     env_file = tmp_path / "vm" / ".env"
     assert oct(env_file.stat().st_mode & 0o777) == "0o600"
-    assert "TS_AUTHKEY=tskey-auth-example" in env_file.read_text()
+    assert "TS_AUTHKEY=tskey-auth-kExampleKey123-abcdefghijklmnopqrstuvwx" in env_file.read_text()
     shown = capsys.readouterr()
-    assert "tskey-auth-example" not in shown.out + shown.err
+    assert "tskey-auth-kExampleKey123-abcdefghijklmnopqrstuvwx" not in shown.out + shown.err
     assert "tskey" not in Deployment.path_for("muse").read_text()  # not remembered on this computer
 
 
@@ -491,3 +491,13 @@ def _passing() -> Report:
     report = Report()
     report.add("public HTTPS /health answers", True)
     return report
+
+
+def test_a_malformed_tailscale_auth_key_is_refused_before_anything_is_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("TS_AUTHKEY", "tailx tskey-auth-kExampleKey123-abcdefghijklmnopqrstuvwx")
+    monkeypatch.setattr(cli, "provider_for", _returning(None))
+    _fails(_up_args(), capsys, "does not look like a Tailscale auth key")
+    assert Deployment.all() == []

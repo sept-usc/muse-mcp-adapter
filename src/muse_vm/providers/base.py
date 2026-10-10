@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -67,7 +68,17 @@ class Provider:
     def restart_adapter(self, t: Target) -> None:
         t.compose("up -d --force-recreate --no-deps adapter", stream=True)
 
+    def leave_tailnet(self) -> None:
+        """Sign the adapter's Tailscale device out, so it does not linger in the owner's tailnet.
+
+        Best effort: a machine that is already gone or stopped simply cannot be asked.
+        """
+        # nothing here may stop the removal that follows
+        with contextlib.suppress(Exception):
+            self.target().compose("exec -T tailscale tailscale logout", check=False, timeout=60)
+
     def remove_from_host(self, t: Target, keep_data: bool) -> None:
+        self.leave_tailnet()
         bundle.remove_units(t)
         images = " ".join(bundle.local_images())
         wipe = (
