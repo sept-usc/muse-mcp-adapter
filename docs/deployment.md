@@ -1,6 +1,6 @@
 # Deployment reference
 
-The [README](../README.md#install-it-on-a-vm) walks through installing the adapter on a VM. This page is the reference behind it: what is installed on the machine, every `muse-vm` command, and how the images are built.
+The [README](../README.md#step-by-step-setup) walks through installing the adapter on a VM. This page is the reference behind it: what is installed on the machine, every `muse-vm` command, and how the images are built.
 
 ## What is installed on the machine
 

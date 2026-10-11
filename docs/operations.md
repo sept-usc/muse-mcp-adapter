@@ -1,6 +1,6 @@
 # Running the adapter on a VM
 
-How it runs, how to look after it, and what to do when something is wrong. The [README](../README.md#install-it-on-a-vm) covers installation and the [deployment reference](deployment.md) lists every command.
+How it runs, how to look after it, and what to do when something is wrong. The [README](../README.md#step-by-step-setup) covers installation and the [deployment reference](deployment.md) lists every command.
 
 ## What runs
 

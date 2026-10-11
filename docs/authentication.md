@@ -8,7 +8,7 @@ This page lists every identity in a deployment, the credential each one uses, wh
 
 | Identity | What it is | How it is identified |
 |---|---|---|
-| **Owner** | You. One adapter serves one owner. | Operator access to the machine (see [Operator](#4-operator-to-the-machine)). There is no owner login on the HTTP service. |
+| **Owner** | You. One adapter serves one owner. | Operator access to the machine (see [Operator](#4-operator--the-machine)). There is no owner login on the HTTP service. |
 | **Connection** | One link between Muse and one MCP server. The unit of access: tokens, rate limits, idempotency keys, operations and artifacts are all scoped to it. | A connection id, a random connector address (`/c/<slug>`), and a bearer token. |
 | **Muse** | The caller. Muse has no identity of its own at the adapter; it is whoever holds a connection's token. | The connection's bearer token or an OAuth access token issued for that connection. |
 | **MCP server credential** | What the adapter presents to a server on your behalf. | None, a static token, or your own OAuth sign-in at that server. |
