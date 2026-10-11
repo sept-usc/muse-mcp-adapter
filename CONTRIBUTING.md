@@ -4,7 +4,7 @@ Thank you for helping. This page covers how to set up, what a change must pass, 
 
 ## Set up
 
-You need Python 3.12 or newer, Docker, and the [GitHub CLI](https://cli.github.com/) signed in (`gh auth login`).
+You need Python 3.12 or newer and Docker.
 
 ```bash
 git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter

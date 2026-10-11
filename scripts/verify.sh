@@ -26,7 +26,6 @@ fi
 
 step "preconditions"
 docker info >/dev/null 2>&1 || fail "Docker is not running (the gate needs it; start OrbStack or Docker Desktop)"
-gh auth status >/dev/null 2>&1 || fail "gh is not signed in (needed to check that every GitHub Action version exists)"
 git diff --quiet --exit-code -- . ':!.internal' || echo "note: unstaged changes are included in these checks"
 
 step "no credentials or private names in tracked files"
