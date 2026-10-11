@@ -35,7 +35,11 @@ class ProviderConformanceRunner:
         }
         raw_required = pack.conformance.get("requiredPrimitiveTypes", ())
         required = (
-            tuple(item for item in cast(Sequence[object], raw_required) if isinstance(item, str))
+            tuple(
+                item
+                for item in cast(Sequence[object], raw_required)
+                if isinstance(item, str)
+            )
             if isinstance(raw_required, Sequence)
             and not isinstance(raw_required, (str, bytes, bytearray))
             else ()

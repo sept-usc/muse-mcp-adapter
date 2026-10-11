@@ -47,7 +47,9 @@ class RequestConcurrencyLimiter:
     @contextmanager
     def slot(self, key: str, *, timeout_seconds: float = 0) -> Generator[None]:
         with self._lock:
-            semaphore = self._semaphores.setdefault(key, threading.BoundedSemaphore(self._limit))
+            semaphore = self._semaphores.setdefault(
+                key, threading.BoundedSemaphore(self._limit)
+            )
         if not semaphore.acquire(timeout=timeout_seconds):
             raise RateLimitExceededError(f"Concurrency limit exceeded for {key}")
         try:

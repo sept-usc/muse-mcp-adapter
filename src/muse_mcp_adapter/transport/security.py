@@ -93,7 +93,9 @@ class EndpointSecurityPolicy:
                     dict.fromkeys(_strip_zone(item) for item in self.resolver(host, port))
                 )
             except OSError as error:
-                raise UnsafeEndpointError(f"MCP endpoint host {host} did not resolve") from error
+                raise UnsafeEndpointError(
+                    f"MCP endpoint host {host} did not resolve"
+                ) from error
         if not addresses:
             raise UnsafeEndpointError(f"MCP endpoint host {host} did not resolve")
         if not self.allow_private_networks:

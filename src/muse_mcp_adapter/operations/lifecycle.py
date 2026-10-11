@@ -54,7 +54,9 @@ class OperationLifecycleService:
         )
         return operation
 
-    def resume(self, operation_id: str, *, inputs: Mapping[str, object]) -> OperationRecord:
+    def resume(
+        self, operation_id: str, *, inputs: Mapping[str, object]
+    ) -> OperationRecord:
         """Validate user input against the schema that was requested, then resume the operation."""
         schema = self._requested_schema(operation_id)
         try:
@@ -130,7 +132,10 @@ class OperationLifecycleService:
     ) -> None:
         if progress < 0 or (total is not None and (total < 0 or progress > total)):
             raise ValueError("Invalid operation progress")
-        if self._repository.count_operation_events(operation_id, "progress") >= MAX_PROGRESS_EVENTS:
+        if (
+            self._repository.count_operation_events(operation_id, "progress")
+            >= MAX_PROGRESS_EVENTS
+        ):
             return
         data: dict[str, object] = {"progress": progress}
         if total is not None:
