@@ -104,5 +104,7 @@ done
 step "muse-vm and the documentation"
 .venv/bin/python -m muse_vm --help >/dev/null || fail "muse-vm does not start"
 python3 scripts/check_docs.py || fail "documentation links"
+step "every Mermaid diagram renders"
+python3 scripts/check_mermaid.py || fail "a Mermaid diagram does not render"
 
 echo; printf '\033[32mAll checks passed. Safe to commit.\033[0m\n'

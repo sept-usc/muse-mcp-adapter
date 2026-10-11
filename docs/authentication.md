@@ -2,7 +2,31 @@
 
 This page lists every identity in a deployment, the credential each one uses, where that credential comes from, where it is kept, and what happens if it leaks. The adapter sits between three parties — **you (the owner)**, **Muse**, and **each MCP server** — and each pair uses a different credential. No credential is ever reused for another pair.
 
-![Authentication: Muse proves itself to the adapter with a token; the adapter proves you to the MCP server with its own credential](images/authentication.png)
+**Muse to the adapter**
+
+```mermaid
+flowchart LR
+    A1["<b>1 You run link</b><br/>the adapter generates<br/>a URL, a token and a code"] --> A2["<b>2 The adapter keeps hashes</b><br/>of the token and the code,<br/>never the values"] --> A3["<b>3 You give Muse the token</b><br/>paste it into Muse,<br/>or sign in with the code"] --> A4["<b>4 Every call carries it</b><br/>the URL picks the connection,<br/>the token proves the caller"]
+
+    classDef key stroke:#4f8fd6,stroke-width:2px;
+    class A2,A4 key;
+```
+
+**Adapter to the MCP server**
+
+```mermaid
+flowchart LR
+    Adapter["<b>Adapter</b><br/>holds the credential for<br/>this one connection"]
+    Adapter --> O1["<b>None</b><br/>public servers,<br/>such as Microsoft Learn"]
+    Adapter --> O2["<b>A token</b><br/>read from a root-only file,<br/>never saved in the database"]
+    Adapter --> O3["<b>Your own sign-in (OAuth)</b><br/>approved once; the tokens are<br/>kept encrypted and refreshed"]
+    O1 --> Server["<b>MCP server</b>"]
+    O2 --> Server
+    O3 --> Server
+
+    classDef key stroke:#4f8fd6,stroke-width:2px;
+    class O3 key;
+```
 
 ## Who is who
 

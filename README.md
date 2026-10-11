@@ -2,7 +2,43 @@
 
 **Let Muse use any MCP server, safely.** The adapter sits between Muse and the MCP servers you rely on. It shows Muse only what you approve, keeps your credentials to itself, and makes sure a write runs once or says it may not have.
 
-![Architecture: Muse talks REST to the adapter, which holds one connection per MCP server and talks MCP to each server](docs/images/architecture.png)
+```mermaid
+flowchart LR
+    Muse["<b>Muse</b><br/>your personal agent asks,<br/>and confirms writes with you"]
+    Owner["<b>You, the owner</b><br/>register servers,<br/>choose what Muse may use"]
+
+    subgraph Adapter["Muse MCP Adapter"]
+        direction TB
+        subgraph C1["Connection 1"]
+            direction LR
+            U1["<b>Own URL and token</b><br/>Muse reaches only<br/>this connection"] --> P1["<b>Own policy</b><br/>only the operations<br/>you approved"] --> K1["<b>Own credential</b><br/>none, a token, or<br/>your own sign-in"]
+        end
+        subgraph C2["Connection 2"]
+            direction LR
+            U2["<b>Own URL and token</b><br/>Muse reaches only<br/>this connection"] --> P2["<b>Own policy</b><br/>only the operations<br/>you approved"] --> K2["<b>Own credential</b><br/>none, a token, or<br/>your own sign-in"]
+        end
+        subgraph C3["Connection 3"]
+            direction LR
+            U3["<b>Own URL and token</b><br/>Muse reaches only<br/>this connection"] --> P3["<b>Own policy</b><br/>only the operations<br/>you approved"] --> K3["<b>Own credential</b><br/>none, a token, or<br/>your own sign-in"]
+        end
+        Shared["<b>Shared by every connection</b><br/>validation, size and time limits, operation log, encrypted token store"]
+    end
+
+    S1["<b>Microsoft Learn</b><br/>MCP server"]
+    S2["<b>Linear</b><br/>MCP server"]
+    S3["<b>Internal server</b><br/>MCP server"]
+
+    Muse -- "REST over HTTPS" --> U1
+    Muse --> U2
+    Muse --> U3
+    Owner -. "administers" .-> Shared
+    K1 -- MCP --> S1
+    K2 -- MCP --> S2
+    K3 -- MCP --> S3
+
+    classDef policy stroke:#4f8fd6,stroke-width:2px;
+    class P1,P2,P3 policy;
+```
 
 ## Contents
 
@@ -54,14 +90,40 @@ The trade-off is one more service to run. For a single simple, stable MCP server
 
 ## How it works
 
-![Setup flow: register, discover, policy, publish, link, add to Muse](docs/images/setup-flow.png)
+```mermaid
+flowchart LR
+    A["<b>1 Create the deployment</b><br/>muse-vm up<br/>builds and starts the adapter,<br/>gives it a public address"] --> B["<b>2 Connect a server</b><br/>muse-vm add-server<br/>registers it and discovers<br/>what it offers"]
+    B --> C["<b>3 Policy</b><br/>read-only tools are approved,<br/>everything else waits<br/>for you"]
+    C --> D["<b>4 Publish</b><br/>the approved catalog goes live;<br/>you get a connector URL<br/>and a token"]
+    D --> E["<b>5 Add to Muse</b><br/>tell Muse the URL,<br/>paste the token"]
+    D -. "when the server changes:<br/>discover again, review, expose" .-> C
+
+    classDef you stroke:#4f8fd6,stroke-width:2px;
+    class C you;
+```
 
 1. **You run the adapter on a small Linux machine you control.** One command, `muse-vm up`, builds it from this repository and starts it. The machine gets a public HTTPS address through Tailscale Funnel, and nothing on it accepts inbound connections.
 2. **You connect an MCP server.** `muse-vm add-server` registers the server, looks at what it offers, and drafts a policy that exposes only its read-only tools. You decide whether to expose more.
 3. **You add the connector to Muse.** You give Muse a connector address and a token. Muse reads the API description and can now use the tools you approved.
 4. **Every call is checked.** When Muse calls a tool, the adapter confirms who is calling, that the operation is on your list, and that the input is valid. It then calls the MCP server with its own credential, checks the answer, records the call, and replies.
 
-![Request path: who is calling, is it allowed, is it valid, run before, call the server, check the answer, record, reply](docs/images/request-path.png)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Muse
+    participant A as Adapter
+    participant S as MCP server
+    M->>A: call an operation, with the connection's token
+    Note over A: Who is calling? The token identifies one connection
+    Note over A: Is it allowed? The operation is in your approved policy
+    Note over A: Is it valid? The request matches the published schema
+    Note over A: Run before? A repeated write is never run twice
+    A->>S: call the server over MCP, with this connection's credential
+    S-->>A: the answer
+    Note over A: Check the answer: type, size, schema. Content is only data
+    Note over A: Record: audit entry and operation state
+    A-->>M: the result, or a clear reason it was refused
+```
 
 You run the adapter in your own environment, on your own machine and with your own accounts. There is no shared service in the middle, and no one else holds your credentials.
 
@@ -338,7 +400,23 @@ A single entry, taken from a real Microsoft Learn policy:
 
 The adapter enforces this on every request:
 
-![Request path: who is calling, is it allowed, is it valid, run before, call the server, check the answer, record, reply](docs/images/request-path.png)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Muse
+    participant A as Adapter
+    participant S as MCP server
+    M->>A: call an operation, with the connection's token
+    Note over A: Who is calling? The token identifies one connection
+    Note over A: Is it allowed? The operation is in your approved policy
+    Note over A: Is it valid? The request matches the published schema
+    Note over A: Run before? A repeated write is never run twice
+    A->>S: call the server over MCP, with this connection's credential
+    S-->>A: the answer
+    Note over A: Check the answer: type, size, schema. Content is only data
+    Note over A: Record: audit entry and operation state
+    A-->>M: the result, or a clear reason it was refused
+```
 
 If the server changes later, run `discover-remote` again and then `drift` to see what was added, removed, or altered. Muse keeps seeing the published catalog until you review the change and publish a new version, and `rollback` returns to the previous one. See the [policy reference](docs/usage.md#2-policy-file) for every field.
 
@@ -454,7 +532,31 @@ Every operation answers with the same result shape: the content the server retur
 
 There are two separate sign-ins, and they never mix. Muse never sees the credential for the MCP server, and the server never sees Muse's token.
 
-![Authentication: Muse proves itself to the adapter with a token; the adapter proves you to the MCP server with its own credential](docs/images/authentication.png)
+**Muse to the adapter**: proves Muse may use this connection.
+
+```mermaid
+flowchart LR
+    A1["<b>1 You run link</b><br/>the adapter generates<br/>a URL, a token and a code"] --> A2["<b>2 The adapter keeps hashes</b><br/>of the token and the code,<br/>never the values"] --> A3["<b>3 You give Muse the token</b><br/>paste it into Muse,<br/>or sign in with the code"] --> A4["<b>4 Every call carries it</b><br/>the URL picks the connection,<br/>the token proves the caller"]
+
+    classDef key stroke:#4f8fd6,stroke-width:2px;
+    class A2,A4 key;
+```
+
+**Adapter to the MCP server**: proves who you are to the server. Neither side's credential is ever sent to the other.
+
+```mermaid
+flowchart LR
+    Adapter["<b>Adapter</b><br/>holds the credential for<br/>this one connection"]
+    Adapter --> O1["<b>None</b><br/>public servers,<br/>such as Microsoft Learn"]
+    Adapter --> O2["<b>A token</b><br/>read from a root-only file,<br/>never saved in the database"]
+    Adapter --> O3["<b>Your own sign-in (OAuth)</b><br/>approved once; the tokens are<br/>kept encrypted and refreshed"]
+    O1 --> Server["<b>MCP server</b>"]
+    O2 --> Server
+    O3 --> Server
+
+    classDef key stroke:#4f8fd6,stroke-width:2px;
+    class O3 key;
+```
 
 ### Muse to the adapter
 
@@ -595,4 +697,4 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'
 git config core.hooksPath .githooks     # run the full gate before every commit
 ```
 
-Nothing is committed unless the whole gate passes. `scripts/verify.sh` runs everything CI runs, locally and first: workflow syntax and a check that every GitHub Action version exists; lint, type-check and the full test suite on Linux with Python 3.12, and again in your own virtualenv; a build of both container images with a start-up check; a vulnerability scan of the images; and a check that every link in the documentation resolves. It needs Docker running and `gh` signed in, and it fails rather than skipping a step when they are missing. For quick feedback while you work, `scripts/verify.sh --quick` runs lint, types and tests on your machine only; it is not the commit gate.
+Nothing is committed unless the whole gate passes. `scripts/verify.sh` runs everything CI runs, locally and first: workflow syntax and a check that every GitHub Action version exists; lint, type-check and the full test suite on Linux with Python 3.12, and again in your own virtualenv; a build of both container images with a start-up check; a vulnerability scan of the images; a check that every link in the documentation resolves; and a render of every Mermaid diagram. It needs Docker running and `gh` signed in, and it fails rather than skipping a step when they are missing. Diagrams are written in Mermaid (a fenced `mermaid` block), not as images, so they render on GitHub, diff in a pull request and cannot go stale as a separate file. For quick feedback while you work, `scripts/verify.sh --quick` runs lint, types and tests on your machine only; it is not the commit gate.
