@@ -123,6 +123,11 @@ def _response_limit_hook(
     return hook
 
 
+# How long to wait for one address when others are left to try (a host can have addresses it
+# cannot reach, typically IPv6 where the machine has no route).
+FALLBACK_CONNECT_SECONDS = 5.0
+
+
 class _PinnedAsyncTransport(httpx.AsyncBaseTransport):
     """Connects to a policy-checked IP while retaining the original Host and TLS SNI."""
 
@@ -135,6 +140,7 @@ class _PinnedAsyncTransport(httpx.AsyncBaseTransport):
     ) -> None:
         self._inner = inner
         self._policy = policy
+        self._preferred: dict[tuple[str, str, int], str] = {}
         parsed = httpx.URL(initial_endpoint)
         self._targets: dict[tuple[str, str, int], ResolvedEndpoint] = {
             (
@@ -155,21 +161,49 @@ class _PinnedAsyncTransport(httpx.AsyncBaseTransport):
             origin = f"{request.url.scheme}://{host}:{port}"
             target = await anyio.to_thread.run_sync(self._policy.resolve_endpoint, origin)
             self._targets[key] = target
-        address = target.addresses[0]
-        headers = request.headers.copy()
         default_port = 443 if request.url.scheme == "https" else 80
         host_header = host if port == default_port else f"{host}:{port}"
+        headers = request.headers.copy()
         headers["Host"] = host_header
-        extensions = dict(request.extensions)
-        extensions["sni_hostname"] = host
-        pinned = httpx.Request(
-            request.method,
-            request.url.copy_with(host=address),
-            headers=headers,
-            stream=request.stream,
-            extensions=extensions,
-        )
-        return await self._inner.handle_async_request(pinned)
+        addresses = self._ordered(key, target.addresses)
+        last_error: Exception | None = None
+        for position, address in enumerate(addresses):
+            extensions = dict(request.extensions)
+            extensions["sni_hostname"] = host
+            if position < len(addresses) - 1:
+                # Give up on an address that does not answer quickly: another one may.
+                timeouts = dict(cast(dict[str, float | None], extensions.get("timeout") or {}))
+                current = timeouts.get("connect")
+                timeouts["connect"] = (
+                    FALLBACK_CONNECT_SECONDS
+                    if current is None
+                    else min(current, FALLBACK_CONNECT_SECONDS)
+                )
+                extensions["timeout"] = timeouts
+            pinned = httpx.Request(
+                request.method,
+                request.url.copy_with(host=address),
+                headers=headers,
+                stream=request.stream,
+                extensions=extensions,
+            )
+            try:
+                response = await self._inner.handle_async_request(pinned)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+                # Nothing was sent yet, so trying the next address cannot repeat a request.
+                last_error = error
+                continue
+            self._preferred[key] = address
+            return response
+        assert last_error is not None
+        raise last_error
+
+    def _ordered(self, key: tuple[str, str, int], addresses: tuple[str, ...]) -> list[str]:
+        """The checked addresses, the one that worked last time first."""
+        first = self._preferred.get(key)
+        if first in addresses:
+            return [first, *(item for item in addresses if item != first)]
+        return list(addresses)
 
     async def aclose(self) -> None:
         await self._inner.aclose()
