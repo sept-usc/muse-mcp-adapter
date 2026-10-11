@@ -8,6 +8,29 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
+
+
+
+def exists(owner_repo: str, ref: str) -> str:
+    """"found", "missing" (a definite 404) or "unknown" (the API failed every attempt).
+
+    A network or API hiccup must not be mistaken for a missing action, and must not make a
+    required check flaky, so anything other than a 404 is retried.
+    """
+    for attempt in range(5):
+        done = subprocess.run(
+            ["gh", "api", f"repos/{owner_repo}/commits/{ref}", "--silent"],
+            capture_output=True,
+            text=True,
+        )
+        if done.returncode == 0:
+            return "found"
+        if "404" in done.stderr or "Not Found" in done.stderr:
+            return "missing"
+        time.sleep(2 * (attempt + 1))
+    return "unknown"
+
 
 problems: list[str] = []
 for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
@@ -20,11 +43,11 @@ for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
         if not re.fullmatch(r"[0-9a-f]{40}", ref):
             problems.append(f"{path}:{number}: {repo}@{ref} is not pinned to a commit SHA")
             continue
-        found = subprocess.run(
-            ["gh", "api", f"repos/{owner_repo}/commits/{ref}", "--silent"], capture_output=True
-        )
-        if found.returncode != 0:
+        outcome = exists(owner_repo, ref)
+        if outcome == "missing":
             problems.append(f"{path}:{number}: {repo}@{ref} does not exist")
+        elif outcome == "unknown":
+            problems.append(f"{path}:{number}: could not check {repo}@{ref} (the GitHub API kept failing)")
 if problems:
     print("\n".join(problems))
     sys.exit(1)
