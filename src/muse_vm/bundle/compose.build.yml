@@ -1,0 +1,8 @@
+# Build the images on the VM from the uploaded source (the default for `muse-vm up`) instead of pulling from a registry.
+services:
+  guard:
+    build: { context: ./src/guard }
+    image: muse-adapter-local/guard:${MMA_VERSION:-dev}
+  adapter:
+    build: { context: ./src, args: { VERSION: "${MMA_VERSION:-dev}", REVISION: "${MMA_REVISION:-unknown}" } }
+    image: muse-adapter-local/adapter:${MMA_VERSION:-dev}

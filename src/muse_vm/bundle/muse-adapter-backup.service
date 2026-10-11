@@ -1,0 +1,12 @@
+[Unit]
+Description=Back up the Muse MCP Adapter's state
+Requires=muse-adapter.service
+After=muse-adapter.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/muse-adapter
+ExecStart=/bin/sh /opt/muse-adapter/backup.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

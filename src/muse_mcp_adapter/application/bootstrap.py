@@ -40,7 +40,7 @@ def build_http_application(
     rate_limit: int = 60,
     rate_window_seconds: float = 60,
     per_server_concurrency: int = 8,
-    idempotency_window_seconds: int = 300,
+    idempotency_window_seconds: int = 30,
 ) -> Starlette:
     """Build the supported request path so its controls cannot be left disconnected."""
     repository.initialize()

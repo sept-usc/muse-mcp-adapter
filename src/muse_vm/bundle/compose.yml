@@ -1,0 +1,85 @@
+# Muse MCP Adapter deployment bundle. `muse-vm` writes the variables in .env for you.
+#
+# .env sets the images and the Tailscale settings. State lives
+# in ./data, the adapter's configuration in ./config, and server tokens as files in ./secrets.
+# Every image is pinned: the ones the adapter publishes by version, everything else by digest.
+name: ${MMA_PROJECT:-muse-adapter}
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }   # logs rotate, so they cannot fill the disk
+
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging: *logging
+  restart: unless-stopped
+
+services:
+  # Owns the network namespace of the adapter and installs the egress rules before it starts:
+  # defence in depth behind the adapter's own refusal to call private or metadata addresses.
+  guard:
+    <<: *hardened
+    image: ${MMA_GUARD_IMAGE}
+    cap_add: [NET_ADMIN]
+    read_only: true
+    tmpfs: [/run]
+    environment:
+      MMA_EGRESS_ALLOW: ${MMA_EGRESS_ALLOW:-}
+    networks:
+      mma:
+        aliases: [adapter]
+    mem_limit: 64m
+    pids_limit: 64
+
+  adapter:
+    <<: *hardened
+    image: ${MMA_IMAGE}
+    network_mode: service:guard
+    depends_on:
+      guard: { condition: service_healthy }
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777,noexec,nosuid"]
+    environment:
+      MUSE_ADAPTER_SECRETS_DIR: /run/secrets
+      TZ: ${MMA_TZ:-UTC}
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+      - ./secrets:/run/secrets:ro
+      - ./backups:/backups
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+
+  # ---- ingress: Tailscale Funnel publishes the adapter at https://<name>.<tailnet>.ts.net ----
+  tailscale:
+    # Pinned: Tailscale 1.102.x drops some Funnel connections (tailscale/tailscale#20739), and
+    # the public address stops answering. 1.98.10 is reported good; MMA_TS_IMAGE picks another.
+    image: ${MMA_TS_IMAGE:-tailscale/tailscale:v1.98.10@sha256:cdf5612ded5be1344f1a704b8c5e53496db97376bb533e5e15f141e48bf60cc0}
+    hostname: ${MMA_TS_HOSTNAME:-muse-adapter}
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    restart: unless-stopped
+    depends_on:
+      adapter: { condition: service_healthy }
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+      TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
+      # containerboot gives up, and restarts with a new login link, if an interactive login takes
+      # longer than this; its default of 60 seconds is too short for a person in a browser.
+      TS_BOOT_TIMEOUT: ${TS_BOOT_TIMEOUT:-15m}
+    volumes:
+      - ./ts-state:/var/lib/tailscale
+      - ./tailscale-serve.json:/config/serve.json:ro
+    networks: [mma]
+    mem_limit: 256m
+    pids_limit: 256
+
+networks:
+  mma: {}

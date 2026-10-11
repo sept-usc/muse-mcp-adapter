@@ -8,9 +8,11 @@ from typing import Protocol, cast
 
 import anyio
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..catalog.canonical import thaw_json
 from ..data_plane.serde import response_to_dict
@@ -46,6 +48,40 @@ from ..domain.models import OperationEvent, OperationRecord
 from .runtime import AdapterRuntime, Principal, payload_object
 
 MAX_INGRESS_BYTES = 1024 * 1024
+
+# Added to every response unless a route already set the header itself. The adapter is always
+# served over HTTPS by whatever sits in front of it, so it states the policy itself instead of
+# relying on that proxy to.
+SECURITY_HEADERS = (
+    (b"strict-transport-security", b"max-age=31536000"),
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"DENY"),
+    (b"referrer-policy", b"no-referrer"),
+    (b"cache-control", b"no-store"),
+)
+
+
+class SecurityHeaders:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def add(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                present = {name.lower() for name, _ in message.get("headers", [])}
+                message["headers"] = [
+                    *message.get("headers", []),
+                    *((n, v) for n, v in SECURITY_HEADERS if n not in present),
+                ]
+            await send(message)
+
+        await self.app(scope, receive, add)
+
+
 MAX_JSON_DEPTH = 64
 
 
@@ -188,6 +224,7 @@ def create_http_app(
             ControlPlaneError: error_handler,
         },
         lifespan=lifespan,
+        middleware=[Middleware(SecurityHeaders)],
     )
 
 

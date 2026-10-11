@@ -24,6 +24,8 @@ Global options go before the command: `--database <path>` (default `adapter.db`)
 | `login` | Print a one-time sign-in link for a connection that uses OAuth to its MCP server. |
 | `reconcile` | Settle a write whose outcome is unknown after you have checked the downstream system. |
 | `server-enable` / `server-disable` | Resume or stop all traffic for a server. |
+| `backup --to DIR [--keep N]` | Copy the database (a consistent copy, taken while the service runs), key file, token store, and artifacts to a new folder under `DIR`, with a manifest of hashes. The folder is owner-only and holds secrets. `--keep N` removes all but the newest N backups. |
+| `restore --from BACKUP [--force]` | Put a backup back. Stop the service first. Every hash is checked before anything is replaced, and existing data is moved to `pre-restore-<time>` instead of being deleted. Without `--force` it refuses to touch existing data. |
 | `serve` | Run the Muse-facing HTTP service. |
 
 For local testing against a plain-HTTP or loopback server, add `--allow-http` and/or `--allow-private-network` before the command. They are off by default and meant for development only.
@@ -102,6 +104,7 @@ Rules enforced when you publish:
 | `limits` | Per-connection request rate and per-server concurrency. |
 | `approvalMode` | `muse` (default): Muse confirms writes with you. `signed`: additionally require signed approval evidence (needs `approvalSecretEnv`). |
 | `integrityKeyEnv` | Optional key that signs stored catalogs so tampering is detected. Use the same config for every command that publishes. |
+| `secretsDir` | Optional directory of secret files, one file per name (for example a Docker or Compose secrets mount). A secret that is not in the environment is read from `<secretsDir>/<NAME>` when it is needed, so it stays out of the process environment and can be added without a restart. `MUSE_ADAPTER_SECRETS_DIR` sets the same thing. |
 | `oauthClients` | For an OAuth provider without dynamic client registration: `{"<serverId>": {"clientId": "...", "clientSecretEnv": "..."}}`. |
 | `allowPrivateNetworks`, `allowInsecureHttp` | Development only: allow loopback/private MCP servers and plain HTTP. |
 
@@ -152,7 +155,7 @@ Sign-in endpoints (`/oauth/authorize`, `/oauth/token`, `/oauth/register`, `/oaut
 
 The caller is identified by the bearer token: it fixes the owner, the connection, and the server. Nothing about those is sent in a request.
 
-**Writes** are confirmed by Muse with you before it calls them. Send an optional `Idempotency-Key` header when retrying. If you do not, identical writes sent within five minutes are treated as one, so a retried write runs once.
+**Writes** are confirmed by Muse with you before it calls them. Send an optional `Idempotency-Key` header when retrying. If you do not, an identical write sent while the first is still running, or within 30 seconds of it finishing (`idempotencyWindowSeconds`), is treated as a retry and returns the first result with `idempotentReplay: true`. Sent later, it is a new action and runs again. A write whose outcome is unknown is never run again until you settle it.
 
 **Statuses:** `200` success, `400` invalid request, `401` not authenticated (or the linked account must be reconnected: the body then carries an `authorizationUrl`), `403` not allowed or connector disabled, `404` unknown, `409` input needed, still running, conflicting key, or unknown outcome, `413` body too large, `429` rate limited, `502` downstream failure.
 

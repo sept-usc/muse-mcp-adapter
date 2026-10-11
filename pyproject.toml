@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 muse-mcp-adapter = "muse_mcp_adapter.cli:main"
+muse-vm = "muse_vm.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -28,6 +29,7 @@ dev = [
   "pyright",
   "pytest",
   "pytest-cov",
+  "pyyaml",
   "ruff",
 ]
 
@@ -36,6 +38,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 muse_mcp_adapter = ["provider_packs/*.json"]
+muse_vm = ["bundle/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "examples"]

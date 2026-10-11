@@ -6,9 +6,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
+from .application import backup as backups
 from .application.control_plane_service import ControlPlaneService
 from .application.oauth_web import OAuthWebFlow, runtime_auth_factory
 from .application.policy_template import draft_policies
+from .application.secret_source import SecretSource
 from .application.serve import (
     ServeConfig,
     endpoint_policy,
@@ -49,7 +51,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = _config(args)
         if args.command == "serve":
             return _serve(args, config)
-        with open_repository(args.database, config, os.environ) as repository:
+        if args.command in ("backup", "restore"):
+            print(json.dumps(_archive(args, config), indent=2, sort_keys=True))
+            return 0
+        with open_repository(args.database, config, _environment(config)) as repository:
             repository.initialize()
             result = _execute(args, repository, config)
         if result is not None:
@@ -73,6 +78,32 @@ def _config(args: argparse.Namespace) -> ServeConfig:
     return ServeConfig(public_url=args.public_url or _DEFAULT_PUBLIC_URL)
 
 
+def _archive(args: argparse.Namespace, config: ServeConfig) -> object:
+    database = Path(args.database)
+    if args.command == "restore":
+        return backups.restore_backup(
+            Path(args.source),
+            database,
+            artifact_root=config.artifact_root,
+            force=args.force,
+        )
+    info = backups.create_backup(database, Path(args.to), artifact_root=config.artifact_root)
+    removed = backups.prune(Path(args.to), args.keep) if args.keep else []
+    return {
+        "backup": str(info.path),
+        "files": info.files,
+        "bytes": info.bytes,
+        "removedOld": [str(path) for path in removed],
+    }
+
+
+def _environment(config: ServeConfig) -> Mapping[str, str]:
+    """The environment, plus secrets kept as files in the configured secrets directory."""
+    configured = os.environ.get("MUSE_ADAPTER_SECRETS_DIR")
+    directory = config.secrets_dir or (Path(configured) if configured else None)
+    return SecretSource(os.environ, directory)
+
+
 def _policy(args: argparse.Namespace, config: ServeConfig) -> EndpointSecurityPolicy:
     base = endpoint_policy(config)
     return EndpointSecurityPolicy(
@@ -88,9 +119,10 @@ def _serve(args: argparse.Namespace, config: ServeConfig) -> int:
 
     if not (args.config or os.environ.get("MUSE_ADAPTER_CONFIG")):
         raise ControlPlaneError("serve needs --config (or MUSE_ADAPTER_CONFIG)")
-    with open_repository(args.database, config, os.environ) as repository:
+    environ = _environment(config)
+    with open_repository(args.database, config, environ) as repository:
         repository.initialize()
-        application = build_application(repository, config, os.environ, database=args.database)
+        application = build_application(repository, config, environ, database=args.database)
         uvicorn.run(application, host=config.host, port=config.port, log_level="info")
     return 0
 
@@ -130,7 +162,7 @@ def _execute(
                     repository, open_oauth_backend(args.database), public_url=config.public_url
                 ),
             ),
-            discovery_credential=_discovery_credential(args, repository),
+            discovery_credential=_discovery_credential(args, repository, _environment(config)),
         )
         return _snapshot_dict(service.discover(args.server_id, client, actor=actor))
 
@@ -279,18 +311,18 @@ def _flow(
 
 
 def _discovery_credential(
-    args: argparse.Namespace, repository: SqliteControlPlaneRepository
+    args: argparse.Namespace, repository: SqliteControlPlaneRepository, environ: Mapping[str, str]
 ) -> ResolvedCredential | None:
     if args.connection_id:
         connection = repository.get_connection(args.connection_id)
-        return ConnectionCredentialResolver(repository, os.environ).resolve(
+        return ConnectionCredentialResolver(repository, environ).resolve(
             local_identity_id=connection.identity_id,
             connection_id=connection.connection_id,
             server_id=args.server_id,
             required_scopes=frozenset(),
         )
     if args.token_env:
-        token = os.environ.get(args.token_env)
+        token = environ.get(args.token_env)
         if not token:
             raise ControlPlaneError(f"Environment variable {args.token_env} is not set")
         return ResolvedCredential(
@@ -386,6 +418,18 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("server-list", help="List registered MCP servers")
     commands.add_parser("serve", help="Run the Muse-facing HTTP service")
+
+    backup = commands.add_parser(
+        "backup", help="Copy the database, key file, token store and artifacts to a folder"
+    )
+    backup.add_argument("--to", required=True, help="Folder that holds the backups")
+    backup.add_argument("--keep", type=int, default=0, help="Keep only the newest N backups")
+
+    restore = commands.add_parser(
+        "restore", help="Put a backup back (stop the service first; existing data is moved aside)"
+    )
+    restore.add_argument("--from", dest="source", required=True, help="A backup folder")
+    restore.add_argument("--force", action="store_true", help="Replace existing data")
 
     discover = server_command("discover", "Record primitives from a manifest file")
     discover.add_argument("--manifest", required=True)
