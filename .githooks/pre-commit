@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Runs the whole local gate before every commit. Nothing is committed unless it all passes.
+exec "$(git rev-parse --show-toplevel)/scripts/verify.sh"

@@ -591,8 +591,8 @@ These are starting points, not a claim that everything a provider offers is safe
 ## Development
 
 ```bash
-.venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/pytest
-.venv/bin/ruff check --no-cache src tests
-.venv/bin/pyright
+python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'
+git config core.hooksPath .githooks     # run the full gate before every commit
 ```
+
+Nothing is committed unless the whole gate passes. `scripts/verify.sh` runs everything CI runs, locally and first: workflow syntax and a check that every GitHub Action version exists; lint, type-check and the full test suite on Linux with Python 3.12, and again in your own virtualenv; a build of both container images with a start-up check; a vulnerability scan of the images; and a check that every link in the documentation resolves. It needs Docker running and `gh` signed in, and it fails rather than skipping a step when they are missing. For quick feedback while you work, `scripts/verify.sh --quick` runs lint, types and tests on your machine only; it is not the commit gate.
