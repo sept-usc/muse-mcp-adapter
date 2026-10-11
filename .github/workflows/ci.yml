@@ -1,22 +1,110 @@
 name: ci
+# The gate for every pull request. `gate` is the one check that must pass before a merge:
+# it succeeds only if every job below succeeded. There are no path filters on purpose, so
+# a required check is never left waiting for a job that was skipped.
 on:
+  pull_request:
+  merge_group:
   push:
     branches: [main]
-  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"   # weekly: new advisories appear without any change to the code
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
+  workflows:
+    name: workflows
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Workflow syntax
+        run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.7 -color
+      - name: Every action is pinned to a commit that exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check_workflows.py
+
+  static:
+    name: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: No credentials are tracked
+        run: scripts/check_secrets.sh
+      - name: Documentation links and anchors resolve
+        run: python3 scripts/check_docs.py
+      - name: Every Mermaid diagram renders
+        run: python3 scripts/check_mermaid.py
+
+  test:
+    name: test (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
           cache: pip
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
       - run: pyright
       - run: pytest -q
+
+  images:
+    name: image (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: adapter, context: . }
+          - { name: guard, context: deploy/guard }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ matrix.context }}
+          load: true
+          push: false
+          tags: mma-${{ matrix.name }}:ci
+          build-args: REVISION=${{ github.sha }}
+      - name: The adapter image starts as the unprivileged user
+        if: matrix.name == 'adapter'
+        run: |
+          test "$(docker run --rm --entrypoint id mma-adapter:ci -u)" = 10001
+          docker run --rm mma-adapter:ci --help > /dev/null
+      - name: No known high or critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: mma-${{ matrix.name }}:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Software bill of materials
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: mma-${{ matrix.name }}:ci
+          artifact-name: sbom-${{ matrix.name }}.spdx.json
+
+  gate:
+    name: gate
+    if: always()
+    needs: [workflows, static, test, images]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job succeeded
+        run: |
+          echo '${{ toJSON(needs) }}'
+          [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = "false" ]

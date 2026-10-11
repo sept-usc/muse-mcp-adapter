@@ -680,6 +680,7 @@ These are starting points, not a claim that everything a provider offers is safe
 
 ## Documentation
 
+- [Contributing](CONTRIBUTING.md) and [security policy](SECURITY.md)
 - [Usage guide](docs/usage.md): configuration, policy reference, API, and operations
 - [Deploying on a VM](docs/deployment.md): one command to host the adapter on Google Cloud or any Linux machine
 - [Running on a VM](docs/operations.md): prerequisites, how it runs, and troubleshooting
@@ -697,4 +698,4 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'
 git config core.hooksPath .githooks     # run the full gate before every commit
 ```
 
-Nothing is committed unless the whole gate passes. `scripts/verify.sh` runs everything CI runs, locally and first: workflow syntax and a check that every GitHub Action version exists; lint, type-check and the full test suite on Linux with Python 3.12, and again in your own virtualenv; a build of both container images with a start-up check; a vulnerability scan of the images; a check that every link in the documentation resolves; and a render of every Mermaid diagram. It needs Docker running and `gh` signed in, and it fails rather than skipping a step when they are missing. Diagrams are written in Mermaid (a fenced `mermaid` block), not as images, so they render on GitHub, diff in a pull request and cannot go stale as a separate file. For quick feedback while you work, `scripts/verify.sh --quick` runs lint, types and tests on your machine only; it is not the commit gate.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute. Nothing is committed unless the whole gate passes. `scripts/verify.sh` runs everything CI runs, locally and first: workflow syntax and a check that every GitHub Action version exists; lint, type-check and the full test suite on Linux with Python 3.12, and again in your own virtualenv; a build of both container images with a start-up check; a vulnerability scan of the images; a check that every link in the documentation resolves; and a render of every Mermaid diagram. It needs Docker running and `gh` signed in, and it fails rather than skipping a step when they are missing. Diagrams are written in Mermaid (a fenced `mermaid` block), not as images, so they render on GitHub, diff in a pull request and cannot go stale as a separate file. For quick feedback while you work, `scripts/verify.sh --quick` runs lint, types and tests on your machine only; it is not the commit gate.

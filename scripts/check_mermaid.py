@@ -11,7 +11,7 @@ import tempfile
 
 IMAGE = "minlag/mermaid-cli:11.4.2"
 
-files = ["README.md"] + [f"docs/{n}" for n in sorted(os.listdir("docs")) if n.endswith(".md")]
+files = [n for n in ("README.md", "CONTRIBUTING.md", "SECURITY.md") if os.path.exists(n)] + [f"docs/{n}" for n in sorted(os.listdir("docs")) if n.endswith(".md")]
 blocks: list[tuple[str, int, str]] = []
 for file in files:
     text = open(file, encoding="utf-8").read()
