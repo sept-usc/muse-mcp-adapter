@@ -155,7 +155,7 @@ Sign-in endpoints (`/oauth/authorize`, `/oauth/token`, `/oauth/register`, `/oaut
 
 The caller is identified by the bearer token: it fixes the owner, the connection, and the server. Nothing about those is sent in a request.
 
-**Writes** are confirmed by Muse with you before it calls them. Send an optional `Idempotency-Key` header when retrying. If you do not, identical writes sent within five minutes are treated as one, so a retried write runs once.
+**Writes** are confirmed by Muse with you before it calls them. Send an optional `Idempotency-Key` header when retrying. If you do not, an identical write sent while the first is still running, or within 30 seconds of it finishing (`idempotencyWindowSeconds`), is treated as a retry and returns the first result with `idempotentReplay: true`. Sent later, it is a new action and runs again. A write whose outcome is unknown is never run again until you settle it.
 
 **Statuses:** `200` success, `400` invalid request, `401` not authenticated (or the linked account must be reconnected: the body then carries an `authorizationUrl`), `403` not allowed or connector disabled, `404` unknown, `409` input needed, still running, conflicting key, or unknown outcome, `413` body too large, `429` rate limited, `502` downstream failure.
 

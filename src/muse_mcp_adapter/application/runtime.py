@@ -72,7 +72,7 @@ class AdapterRuntime:
         public_url: str,
         monotonic: Callable[[], float] = time.monotonic,
         artifact_store: FileArtifactStore | None = None,
-        idempotency_window_seconds: int = 300,
+        idempotency_window_seconds: int = 30,
         reauthorization_link: Callable[[str], str] | None = None,
     ) -> None:
         self._repository = repository
@@ -253,20 +253,41 @@ class AdapterRuntime:
     def _derive_key(
         self, principal: Principal, operation_id: str, arguments: Mapping[str, object]
     ) -> str:
-        """Deduplicate identical writes retried close together when Muse sends no key."""
-        now = datetime.fromisoformat(self._clock().replace("Z", "+00:00"))
-        bucket = int(now.timestamp() // self._window)
+        """Pick the idempotency key for a write when Muse sends none.
+
+        An identical request is treated as a retry only while it could still be one: the first is
+        still running, its outcome is unknown, or it finished a moment ago (so the caller may
+        simply not have received the answer). After that window an identical request is a new,
+        deliberate action and runs again; the same applies after a failure, which is safe to
+        retry. Keys the caller supplies are never touched: they are honoured for as long as the
+        operation is stored.
+        """
         digest = hashlib.sha256(
             canonical_json(
                 {
                     "connection": principal.connection_id,
                     "operation": operation_id,
                     "arguments": arguments,
-                    "bucket": bucket,
                 }
             ).encode()
         ).hexdigest()
-        return f"auto-{digest[:40]}"
+        now = datetime.fromisoformat(self._clock().replace("Z", "+00:00"))
+        for generation in range(10_000):
+            key = f"auto-{digest[:36]}-{generation}"
+            earlier = self._repository.find_operation_by_idempotency(
+                server_id=principal.server_id,
+                public_operation_id=operation_id,
+                local_identity_id=principal.identity_id,
+                connection_id=principal.connection_id,
+                idempotency_key=key,
+            )
+            if earlier is None or earlier.status not in ("COMPLETED", "FAILED"):
+                return key  # new, or still in flight / of unknown outcome: stay on this one
+            if earlier.status == "COMPLETED":
+                finished = datetime.fromisoformat(earlier.updated_at.replace("Z", "+00:00"))
+                if (now - finished).total_seconds() <= self._window:
+                    return key  # a retry of something that just finished: replay its result
+        raise RequestValidationError("Too many identical requests; send an Idempotency-Key")
 
     def _with_link(
         self, principal: Principal, error: ReauthorizationRequiredError

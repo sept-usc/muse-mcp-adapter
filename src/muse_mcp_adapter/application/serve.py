@@ -57,7 +57,7 @@ class ServeConfig:
     rate_limit: int = 60
     rate_window_seconds: float = 60.0
     per_server_concurrency: int = 8
-    idempotency_window_seconds: int = 300
+    idempotency_window_seconds: int = 30
     oauth_clients: Mapping[str, OAuthClientSetting] = field(
         default_factory=dict[str, OAuthClientSetting]
     )
@@ -123,7 +123,7 @@ def load_serve_config(path: Path) -> ServeConfig:
         rate_limit=_int(limits, "rateLimit", 60),
         rate_window_seconds=float(_int(limits, "rateWindowSeconds", 60)),
         per_server_concurrency=_int(limits, "perServerConcurrency", 8),
-        idempotency_window_seconds=_int(config, "idempotencyWindowSeconds", 300),
+        idempotency_window_seconds=_int(config, "idempotencyWindowSeconds", 30),
         oauth_clients=clients,
     )
 

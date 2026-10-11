@@ -164,9 +164,7 @@ class ControlPlaneService:
         actor: str = "local-administrator",
     ) -> CatalogActivation:
         activated_at = self._clock()
-        activation = self._repository.activate_catalog(
-            server_id, catalog_version, activated_at
-        )
+        activation = self._repository.activate_catalog(server_id, catalog_version, activated_at)
         self._audit(
             actor,
             "catalog.activate",
