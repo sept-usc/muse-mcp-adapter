@@ -434,3 +434,67 @@ def test_the_tailscale_auth_key_is_forgotten_once_the_device_has_joined() -> Non
     assert "TS_AUTHKEY" not in target.text(".env") and "tskey" not in target.text(".env")
     assert target.files[".env"].mode == 0o600
     assert bundle.forget_auth_key(target) is False  # nothing left to remove
+
+
+# ---- what the bootstrap changes on a host -----------------------------------------------------
+def _run_bootstrap(tmp_path: Path, *, docker_present: bool, updates_present: bool) -> list[str]:
+    """Run the real bootstrap with stand-ins for the system commands; returns what was called."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    log = tmp_path / "calls.log"
+    prefix = str(tmp_path / "root")
+    for name in ("apt-get", "systemctl", "python3"):
+        (fake / name).write_text(f'#!/bin/sh\necho "{name} $*" >> {log}\n')
+    (fake / "docker").write_text(
+        f'#!/bin/sh\necho "docker $*" >> {log}\n'
+        + ("exit 0\n" if docker_present else f"[ -e {tmp_path}/docker-installed ] || exit 1\n")
+    )
+    (fake / "dpkg").write_text(f"#!/bin/sh\nexit {0 if updates_present else 1}\n")
+    # "apt-get install docker.io" is what makes docker appear on a fresh host
+    (fake / "apt-get").write_text(
+        f'#!/bin/sh\necho "apt-get $*" >> {log}\n'
+        f'case "$*" in *docker.io*) touch {tmp_path}/docker-installed;; esac\n'
+    )
+    for stub in fake.iterdir():
+        stub.chmod(0o755)
+    script = (BUNDLE / "bootstrap.sh").read_text()
+    script = script.replace("/etc/", f"{prefix}/etc/").replace("/var/lib/", f"{prefix}/var/lib/")
+    (tmp_path / "root" / "etc" / "apt" / "apt.conf.d").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "root" / "var" / "lib").mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "bootstrap.sh"
+    path.write_text(script)
+    done = subprocess.run(
+        ["sh", str(path)],
+        env={"PATH": f"{fake}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_a_host_that_already_runs_docker_is_not_touched(tmp_path: Path) -> None:
+    calls = _run_bootstrap(tmp_path, docker_present=True, updates_present=True)
+    assert not any("apt-get" in c or "systemctl" in c or c.startswith("python3") for c in calls)
+    assert not (tmp_path / "root" / "etc" / "docker").exists()  # daemon.json is left alone
+    assert not (tmp_path / "root" / "etc" / "apt" / "apt.conf.d" / "20auto-upgrades").exists()
+    assert (tmp_path / "root" / "var" / "lib" / "muse-adapter" / "bootstrap-done").exists()
+
+
+def test_an_existing_update_policy_is_never_overwritten(tmp_path: Path) -> None:
+    (tmp_path / "root" / "etc" / "apt" / "apt.conf.d").mkdir(parents=True)
+    custom = tmp_path / "root" / "etc" / "apt" / "apt.conf.d" / "20auto-upgrades"
+    custom.write_text("// the owner's own policy\n")
+    # unattended-upgrades missing but a policy file exists: install the package, keep the file
+    calls = _run_bootstrap(tmp_path, docker_present=True, updates_present=False)
+    assert any("install -y -q unattended-upgrades" in c for c in calls)
+    assert custom.read_text() == "// the owner's own policy\n"
+
+
+def test_a_fresh_host_gets_docker_updates_and_log_limits(tmp_path: Path) -> None:
+    calls = _run_bootstrap(tmp_path, docker_present=False, updates_present=False)
+    assert any("install -y -q docker.io" in c for c in calls)
+    assert any("install -y -q unattended-upgrades" in c for c in calls)
+    assert any(c.startswith("python3") for c in calls)  # daemon.json log limits
+    assert "systemctl restart docker" in calls  # nothing runs on a fresh host to disturb
+    assert (tmp_path / "root" / "etc" / "apt" / "apt.conf.d" / "20auto-upgrades").exists()
