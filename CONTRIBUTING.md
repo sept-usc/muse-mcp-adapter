@@ -29,7 +29,7 @@ It checks, in order:
 4. both container images build, start as the unprivileged user, and have no known high or critical vulnerabilities;
 5. every link in the documentation resolves, and every Mermaid diagram renders.
 
-If Docker is not running the gate fails; it never skips a step. On GitHub the same checks run for every pull request as the `gate` check, and a pull request can be merged only when `gate` passes.
+Timing measurements are not part of the gate, because they depend on how busy the machine is; run them with `pytest -m performance` (CI runs them weekly). If Docker is not running the gate fails; it never skips a step. On GitHub the same checks run for every pull request as the `gate` check, and a pull request can be merged only when `gate` passes.
 
 ## Making a change
 
