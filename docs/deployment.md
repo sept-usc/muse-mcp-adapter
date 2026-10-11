@@ -1,83 +1,56 @@
-# Deploying on a VM
+# Deployment reference
 
-`muse-vm` puts the adapter on a Linux machine and looks after it from your own computer. The adapter is installed inside the VM, runs in a locked-down container, and is reachable by Muse over HTTPS. Nothing else on the machine is exposed.
+The [README](../README.md#install-it-on-a-vm) walks through installing the adapter on a VM. This page is the reference behind it: what is installed on the machine, every `muse-vm` command, and how the images are built.
 
-```
-git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter
-pip install .                        # provides the muse-vm command
-muse-vm up --cloud gcp --project my-project
-muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp
-```
+## What is installed on the machine
 
-`add-server` prints a connector URL and a token. Paste both into Muse.
+Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings are added only when they are missing.
 
-## Where it can run
-
-| Target | Command | Notes |
+| What | Where | Notes |
 |---|---|---|
-| Google Cloud VM | `muse-vm up --cloud gcp --project P` | Creates a dedicated network, the VM, and the rules around it. Needs the `gcloud` CLI, signed in. |
-| Any Linux machine | `muse-vm up --ssh user@host` | Debian/Ubuntu, x86_64 or aarch64, key-based SSH and passwordless `sudo`. |
+| Compose project: `guard`, `adapter`, `tailscale` | `/opt/muse-adapter/compose.yml` | Three containers, no published ports |
+| Adapter configuration | `config/serve.json` | Names where secrets are; holds none |
+| Database, key file, token store, artifacts | `data/` (mode 700, owned by the container user) | The adapter's state |
+| Secrets for MCP servers | `secrets/` (mode 700, one file per secret, mode 400) | Mounted read-only into the container |
+| Backups the adapter makes of itself | `backups/` | Daily, owner-only |
+| Tailscale device state | `ts-state/` | The device's own credentials |
+| Compose variables | `.env` (mode 600) | Image names and settings; no secrets once the device has joined |
+| systemd units | `muse-adapter.service`, `muse-adapter-backup.timer`, `muse-adapter-heal.timer`, optional `muse-adapter-idle.timer` | Start at boot, back up, restart an unhealthy adapter, optionally stop when idle |
+| Docker, with the compose plugin | The distribution's `docker.io` | **Installed only if missing.** An existing Docker is never restarted or reconfigured |
+| Automatic security updates | `unattended-upgrades` | **Enabled only if the machine has none.** An existing update policy is never overwritten |
+| Docker log rotation | `/etc/docker/daemon.json` | Only on a machine where Docker was just installed. The adapter's containers rotate their own logs in either case |
 
-## How Muse reaches it
+`muse-vm down` removes `/opt/muse-adapter`, the units and the images it built. It does not remove Docker or the update settings.
 
-| Ingress | What it needs | Inbound ports |
-|---|---|---|
-| `caddy` | A public IP. Gets a certificate automatically for `<ip>.sslip.io`, or for `--domain`. | 80, 443 |
-| `tailscale-funnel` | A Tailscale account. | none |
-| `cloudflare-tunnel` | A Cloudflare tunnel token and hostname (`--domain`). | none |
+## How the containers are hardened
 
-On Google Cloud, tunnel ingress creates a VM with no public IP at all. If you do not pick one, a public address means `caddy` and anything else means `tailscale-funnel`.
+- **Adapter:** runs as an unprivileged user (uid 10001), read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, memory, CPU and process limits, bounded logs, a health check.
+- **Egress guard:** a small container that owns the adapter's network namespace and installs firewall rules before the adapter starts. The adapter cannot reach the cloud metadata server, private address ranges, carrier-grade NAT or link-local addresses, even if the adapter were compromised. `--egress-allow CIDR` adds a deliberate exception for an MCP server you run on a private network; the default is none.
+- **Tailscale:** pinned to a version, by digest, that is known to publish Funnel reliably.
+- **Images:** base images pinned by digest, Python packages installed from a hash-locked file, so the build is repeatable and a tampered package is refused.
 
-## What `up` sets up
-
-- Docker, automatic security updates, and log rotation on the host.
-- The adapter container: pinned by digest, non-root, read-only filesystem, all capabilities dropped, memory/CPU/process limits.
-- An **egress guard**: the adapter cannot reach the cloud metadata server, private ranges, or link-local addresses. Add exceptions with `--egress-allow`.
-- A health check, a timer that restarts anything unhealthy, a daily backup, and optional idle shutdown (`--idle-stop-hours`).
-- On Google Cloud: its own network (the default network is not used), SSH only through Identity-Aware Proxy, a shielded VM with no service account, OS Login, daily disk snapshots (kept 7 days), and an optional budget alert (`--budget-usd`).
-
-It then runs a self-check against the live address (health, security headers, rejection of requests without a valid token, the egress guard, the container's user and filesystem) and prints the result. `muse-vm selfcheck` repeats it any time.
-
-If anything fails part way, what was created is removed again, unless `--keep-on-failure`.
-
-## Connecting servers
-
-```
-muse-vm add-server linear --endpoint https://mcp.linear.app/mcp --credential env_token
-muse-vm secret set LINEAR_TOKEN
-```
-
-`add-server` registers the server, discovers its tools, drafts a policy (read-only tools approved, everything else held back — use `--allow TOOL` or `--policy FILE` to change that), publishes it, links it to Muse, and prints the connector URL and token. For servers that sign in with OAuth, use `--credential oauth` and follow the sign-in link it prints.
-
-Secrets are read from files in a root-only directory on the VM, never from the command line, the environment, or the image.
+## Commands
 
 | Command | Purpose |
 |---|---|
-| `servers` | Connected servers and their connections |
-| `rotate-token SERVER` | Issue a new token (the old one stops working) |
-| `unlink SERVER` | Stop Muse using a server |
-| `secret set NAME` / `secret list` | Manage secrets (values are never shown) |
+| `up --cloud gcp --project P` | Create a Google Cloud VM and install the adapter. Options: `--zone`, `--machine-type`, `--budget-usd N`, `--idle-stop-hours N`, `--no-snapshots` |
+| `up --ssh USER@HOST` | Install on a machine you have. Option: `--ssh-opt` for extra ssh options (a key, a port) |
+| `up` common options | `--name` (default `muse`), `--egress-allow CIDR`, `--tz`, `--keep-on-failure`, `--allow-dirty`, `-v` (print every command), `--yes` |
+| `add-server ID --endpoint URL` | Register, discover, draft a policy, publish and link a server; prints the connector address, token and connection code. `--credential none\|env_token\|oauth`, `--secret-name`, `--allow TOOL`, `--policy FILE`, `--no-reads` |
+| `expose SERVER --allow TOOL --deny TOOL` | Publish a new version that changes which tools Muse can use; existing settings are kept |
+| `servers`, `rotate-token SERVER`, `unlink SERVER` | See connections, replace a token, stop Muse using a server |
+| `secret set NAME`, `secret list` | Store or list the secrets servers need (values are never shown) |
+| `list`, `status`, `logs [SERVICE]`, `selfcheck` | Look at deployments and their health |
+| `start`, `stop` | Start or stop the adapter (on Google Cloud, the VM) |
+| `upgrade` | Rebuild from your updated checkout and restart; the address, connections and data stay |
+| `backup --out FILE`, `restore FILE` | Encrypted backup and restore. Set `MUSE_VM_BACKUP_PASSPHRASE` to avoid the prompt |
+| `down [--keep-data]` | Sign the device out of Tailscale and remove everything that was created |
 
-## Day to day
+Deployment details are kept on your computer under `~/.config/muse-vm/` (set `MUSE_VM_HOME` to move it). They hold no secrets.
 
-| Command | Purpose |
-|---|---|
-| `list`, `status`, `logs` | See deployments, health, and container logs |
-| `stop`, `start` | Stop the adapter (on a cloud VM, the VM itself, so billing pauses) |
-| `upgrade` | Move to this version; address, connections, and data stay |
-| `backup --out FILE` | Download an encrypted backup (passphrase of at least 12 characters) |
-| `restore FILE` | Restore onto the deployment; current data is moved aside, not deleted |
-| `down` | Remove the deployment and everything it created |
+## How the images are built
 
-Deployment details are kept on your computer under `~/.config/muse-vm/` (no secrets in them).
-
-## Using Terraform instead
-
-`deploy/terraform/gcp` creates the same network, VM, and snapshot schedule declaratively. Run `muse-vm up --ssh ...` against the VM afterwards to install the adapter.
-
-## Building from source
-
-The images are always built on the target machine from your checkout of this repository, so you run exactly the code you have reviewed and nothing is pulled from a registry we operate. The build uses the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`) and base images pinned by digest, and records the commit it was built from in the image. `up` and `upgrade` refuse a checkout with uncommitted changes (`--allow-dirty` overrides).
+The images are always built on the target machine from your checkout of this repository, so you run exactly the code you reviewed and nothing is pulled from a registry we operate. The build uses the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`) and base images pinned by digest, and records the commit it was built from in the image. `up` and `upgrade` refuse a checkout with uncommitted changes (`--allow-dirty` overrides).
 
 To get a new version: `git pull`, review what changed, then `muse-vm upgrade`.
 
