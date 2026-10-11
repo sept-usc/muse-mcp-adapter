@@ -26,48 +26,14 @@ fi
 
 step "preconditions"
 docker info >/dev/null 2>&1 || fail "Docker is not running (the gate needs it; start OrbStack or Docker Desktop)"
-gh auth status >/dev/null 2>&1 || fail "gh is not signed in (needed to check that every GitHub Action version exists)"
 git diff --quiet --exit-code -- . ':!.internal' || echo "note: unstaged changes are included in these checks"
 
-step "no secrets or private details in tracked files"
-if git grep -n -I -E 'github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{30,}|tskey-(auth|api)-[A-Za-z0-9]{8,}-[A-Za-z0-9]{12,}|mcpa_(at_|rt_)?[A-Za-z0-9_-]{30,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY' -- . ':!tests'; then
-  fail "something that looks like a credential is tracked"
-fi
-# Account names, projects and hostnames you never want in the public repo go, one regular
-# expression per line, in .internal/private-patterns (not tracked, so it cannot leak them itself).
-if [ -f .internal/private-patterns ]; then
-  if git grep -n -I -i -E -f .internal/private-patterns -- . ':!tests'; then
-    fail "a private account, project or hostname is tracked"
-  fi
-else
-  echo "note: no .internal/private-patterns, so private names were not checked"
-fi
+step "no credentials or private names in tracked files"
+scripts/check_secrets.sh || fail "a credential or private name is tracked"
 
-step "GitHub workflows: syntax, and every action version exists"
+step "GitHub workflows: syntax, and every action is pinned to a commit that exists"
 docker run --rm -v "$PWD":/repo -w /repo "$ACTIONLINT_IMAGE" -color || fail "actionlint"
-python3 - <<'PY' || fail "an action reference does not resolve"
-import re, subprocess, sys, pathlib
-bad = []
-for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
-    for number, line in enumerate(path.read_text().splitlines(), 1):
-        match = re.search(r"uses:\s*([\w.-]+/[\w./-]+)@([\w.-]+)", line)
-        if not match:
-            continue
-        repo, ref = match.group(1), match.group(2)
-        owner_repo = "/".join(repo.split("/")[:2])
-        for kind in ("tags", "heads"):
-            found = subprocess.run(
-                ["gh", "api", f"repos/{owner_repo}/git/ref/{kind}/{ref}", "--silent"],
-                capture_output=True,
-            )
-            if found.returncode == 0:
-                break
-        else:
-            bad.append(f"{path}:{number}: {repo}@{ref} does not exist")
-if bad:
-    print("\n".join(bad)); sys.exit(1)
-print("all action references resolve")
-PY
+python3 scripts/check_workflows.py || fail "an action reference is not pinned or does not exist"
 
 step "lint, types and the full test suite, on Linux with Python 3.12 (as CI does)"
 volume=muse-verify-pip

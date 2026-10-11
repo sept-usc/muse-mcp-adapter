@@ -1,0 +1,37 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include tokens, connector addresses, account names or hostnames. For a security problem, see SECURITY.md instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands, with secrets removed.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where is the adapter running?
+      options: [Google Cloud VM created by muse-vm, A machine reached over SSH, By hand (no muse-vm), Other]
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output of `muse-vm status` and `muse-vm selfcheck`
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version

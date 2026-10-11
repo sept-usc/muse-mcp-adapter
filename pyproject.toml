@@ -43,10 +43,10 @@ muse_vm = ["bundle/*"]
 [tool.pytest.ini_options]
 pythonpath = ["src", "examples"]
 testpaths = ["tests"]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider -m 'not performance'"
 markers = [
   "validation: product validation suite driven by the Atlas MCP server",
-  "performance: timing measurements (not run by default)",
+  "performance: timing measurements, skipped by default (run them with: pytest -m performance)",
 ]
 
 [tool.ruff]

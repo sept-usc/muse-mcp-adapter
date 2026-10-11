@@ -22,7 +22,7 @@ def anchors(path: str) -> set[str]:
     return found
 
 
-files = ["README.md"] + [f"docs/{name}" for name in sorted(os.listdir("docs")) if name.endswith(".md")]
+files = [n for n in ("README.md", "CONTRIBUTING.md", "SECURITY.md") if os.path.exists(n)] + [f"docs/{name}" for name in sorted(os.listdir("docs")) if name.endswith(".md")]
 problems: list[str] = []
 for file in files:
     text = open(file, encoding="utf-8").read()
