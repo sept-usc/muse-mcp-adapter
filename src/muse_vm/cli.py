@@ -202,6 +202,9 @@ def cmd_up(args: argparse.Namespace) -> None:
         if not report.ok:
             _show_logs(t)
             raise SystemExit("The self-check failed.")
+        if bundle.forget_auth_key(t):
+            say("  removing the Tailscale auth key from the machine (the device has joined)")
+            t.compose("up -d --no-deps tailscale", stream=True)
         provider.after_start(t)
         dep.status = "ready"
         dep.save()
@@ -506,6 +509,8 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     bundle.install(t, env, t.get("config/serve.json") or bundle.serve_config(str(dep.hostname)))
     bundle.install_units(t, idle_hours=dep.extra.get("idle_stop_hours"))
     t.compose("up -d --remove-orphans", stream=True)
+    if bundle.forget_auth_key(t):  # deployments made before this was cleaned up after joining
+        t.compose("up -d --no-deps tailscale", stream=True)
     dep.save()
     report = selfcheck.run(t, str(dep.base_url), wait=300, say=say)
     for line in report.lines():

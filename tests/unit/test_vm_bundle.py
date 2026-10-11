@@ -419,3 +419,18 @@ def test_every_host_script_is_valid_shell_and_executable_in_the_bundle() -> None
     assert subprocess.run(["sh", "-n", str(ROOT / "deploy" / "guard" / "guard.sh")]).returncode == 0
     for name in [*bundle.SCRIPTS, "bootstrap.sh"]:
         assert stat.S_IMODE((BUNDLE / name).stat().st_mode) & 0o111, name
+
+
+def test_the_tailscale_auth_key_is_forgotten_once_the_device_has_joined() -> None:
+    target = FakeTarget()
+    env = bundle.compose_env(
+        project="p",
+        build=True,
+        ingress_secrets={"TS_AUTHKEY": "tskey-auth-kExample-aaaaaaaaaaaaaaaa"},
+    )
+    bundle.install(target, env, bundle.serve_config("a.example.com"))
+    assert "TS_AUTHKEY" in target.text(".env")
+    assert bundle.forget_auth_key(target) is True
+    assert "TS_AUTHKEY" not in target.text(".env") and "tskey" not in target.text(".env")
+    assert target.files[".env"].mode == 0o600
+    assert bundle.forget_auth_key(target) is False  # nothing left to remove

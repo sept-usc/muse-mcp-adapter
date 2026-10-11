@@ -481,7 +481,9 @@ def test_a_tailscale_auth_key_goes_into_the_private_environment_file_only(
     assert cli.main(_up_args()) == 0
     env_file = tmp_path / "vm" / ".env"
     assert oct(env_file.stat().st_mode & 0o777) == "0o600"
-    assert "TS_AUTHKEY=tskey-auth-kExampleKey123-abcdefghijklmnopqrstuvwx" in env_file.read_text()
+    # it is needed only to join the tailnet: once the device has joined it is removed again
+    assert "TS_AUTHKEY" not in env_file.read_text()
+    assert "tskey" not in env_file.read_text()
     shown = capsys.readouterr()
     assert "tskey-auth-kExampleKey123-abcdefghijklmnopqrstuvwx" not in shown.out + shown.err
     assert "tskey" not in Deployment.path_for("muse").read_text()  # not remembered on this computer

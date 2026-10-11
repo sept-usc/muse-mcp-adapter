@@ -286,6 +286,21 @@ def set_version(target: Target) -> str | None:
     return previous
 
 
+def forget_auth_key(target: Target) -> bool:
+    """Remove the Tailscale auth key from the environment file once the device has joined.
+
+    The device keeps its own credentials in its state directory, so the key is no longer needed,
+    and a reusable key left on disk is a standing way to add devices to the owner's tailnet.
+    True if there was one to remove.
+    """
+    env = parse_env(target.get(".env"))
+    if "TS_AUTHKEY" not in env:
+        return False
+    del env["TS_AUTHKEY"]
+    target.put(".env", render_env(env), 0o600)
+    return True
+
+
 def set_hostname(target: Target, hostname: str) -> bool:
     """Record the public hostname once Tailscale has assigned it. True if it changed."""
     wanted = serve_config(hostname)
