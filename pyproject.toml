@@ -7,6 +7,8 @@ name = "muse-mcp-adapter"
 version = "0.1.0"
 description = "Customer-owned gateway between Muse Custom Connectors and MCP servers"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   "anyio",
   "cryptography",
