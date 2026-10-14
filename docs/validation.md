@@ -15,7 +15,7 @@ The adapter exists so that an MCP server behaves the same through Muse as it doe
 
 ## The question being answered
 
-Muse speaks OpenAPI; MCP servers speak MCP. The adapter sits between them, so every MCP feature has to be carried across, translated, deliberately restricted, or declared out of scope. The validation answers three questions:
+Muse adds services as OpenAPI-described connectors; MCP servers speak MCP. The adapter sits between them, so every MCP feature has to be carried across, translated, deliberately restricted, or declared out of scope. The validation answers three questions:
 
 1. **Parity**: for every MCP feature, does the connector give Muse the same information and results as a direct MCP client gets? Where it differs, is the difference intended and visible?
 2. **Safety**: do writes run exactly once, fail clearly, and never get repeated when the outcome is uncertain? Can hostile input or a hostile server make the adapter do something the owner did not allow?
