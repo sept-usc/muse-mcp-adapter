@@ -13,7 +13,7 @@ The first implementation runs both planes in one modular gateway service.
 
 ## 2. Problem and objective
 
-Customers increasingly expose application capabilities through MCP servers. Muse integrates services through approved Connectors or user-created Custom Connectors rather than through a documented native MCP-client setup.
+Customers increasingly expose application capabilities through MCP servers. Muse integrates services through approved Connectors or user-created Custom Connectors.
 
 Onboarding each MCP server as an unrelated Custom Connector duplicates protocol, authentication, lifecycle, policy, and drift-handling work. It can also change the Muse-facing contract unexpectedly when an MCP server changes.
 
