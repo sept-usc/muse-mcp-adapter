@@ -40,8 +40,8 @@ def missing_capabilities(status: dict[str, Any]) -> list[str]:
     return [capability for capability in FUNNEL_CAPS if capability not in have]
 
 
-def enable_message(target: Target, missing: list[str]) -> str:
-    """How to allow HTTPS/Funnel: Tailscale's own one-click link when it gives one."""
+def enable_link(target: Target) -> str:
+    """Tailscale's own one-click link that allows HTTPS and Funnel, or "" when it gives none."""
     result = target.compose(
         "exec -T tailscale tailscale debug localapi POST 'query-feature?feature=funnel'",
         check=False,
@@ -50,8 +50,14 @@ def enable_message(target: Target, missing: list[str]) -> str:
     try:
         url = str(cast(dict[str, Any], json.loads(result.stdout)).get("URL") or "")
     except (ValueError, AttributeError):
-        url = ""
-    if url.startswith("https://"):
+        return ""
+    return url if url.startswith("https://") else ""
+
+
+def enable_message(target: Target, missing: list[str], url: str | None = None) -> str:
+    """How to allow HTTPS/Funnel: Tailscale's own one-click link when it gives one."""
+    url = enable_link(target) if url is None else url
+    if url:
         return (
             "  Tailscale: your tailnet does not allow HTTPS and Funnel yet (a one-time setting).\n"
             f"    Open {url}\n  and approve it; waiting…"
@@ -113,11 +119,13 @@ def hostname_after_start(
     timeout: float = 600,
     say: Callable[[str], None] = print,
     sleep: Callable[[float], None] = time.sleep,
+    open_link: Callable[[str], bool] | None = None,
 ) -> str:
     """Learn the public hostname once Tailscale runs and Funnel is on for it.
 
     The owner may have to sign in, approve the device, or allow HTTPS and Funnel in the tailnet;
-    each is explained once, and the wait is extended while they do it.
+    each is explained once, and the wait is extended while they do it. When `open_link` is given
+    it is called with each link the owner has to click, so their browser can open it for them.
     """
     deadline = time.monotonic() + timeout
     shown_login = ""
@@ -132,7 +140,10 @@ def hostname_after_start(
                 missing = missing_capabilities(status)
                 if missing:
                     if not shown_enable:
-                        say(enable_message(target, missing))
+                        link = enable_link(target)
+                        say(enable_message(target, missing, link))
+                        if link and open_link:
+                            open_link(link)
                         shown_enable = True
                         deadline = max(deadline, time.monotonic() + EXTENSION)
                 elif funnel_published(target, name):
@@ -150,6 +161,8 @@ def hostname_after_start(
                 if match and match.group(0) != shown_login:
                     shown_login = match.group(0)
                     say(f"  Sign in to Tailscale to give the adapter its address: {shown_login}")
+                    if open_link:
+                        open_link(shown_login)
                     deadline = max(deadline, time.monotonic() + EXTENSION)
         sleep(5)
     if shown_enable:

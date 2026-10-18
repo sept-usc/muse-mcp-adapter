@@ -33,7 +33,7 @@ Start with `muse-vm selfcheck`; each line names what failed. `-v` on any command
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| `up` says the tailnet does not allow HTTPS and Funnel | The one-time Tailscale settings are missing | Follow the steps it prints: enable HTTPS certificates, and add `"nodeAttrs": [{"target": ["autogroup:member"], "attr": ["funnel"]}]` to the access controls |
+| `up` says the tailnet does not allow HTTPS and Funnel | Your Tailscale network has not used Funnel before | Open the approval link it prints (it also opens in your browser). If it printed steps instead: enable HTTPS certificates under DNS in the Tailscale console, and add `"nodeAttrs": [{"target": ["autogroup:member"], "attr": ["funnel"]}]` to the access controls |
 | `up` prints a Tailscale sign-in link and then times out | The link expired before it was opened (links last a few minutes) | Use an auth key (`TS_AUTHKEY`), or open the newest link as soon as it is printed |
 | `up` says the device needs approval | Your tailnet requires device approval | Approve it under Machines in the Tailscale console |
 | The address does not resolve, or the self-check waits a long time | A first-time Funnel name can take up to ten minutes to reach public DNS | Wait; `muse-vm selfcheck` checks again. It asks a public resolver too, so a computer that is itself in your tailnet is not misled |
