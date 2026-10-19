@@ -42,6 +42,10 @@ jobs:
         run: python3 scripts/check_docs.py
       - name: Every Mermaid diagram renders
         run: python3 scripts/check_mermaid.py
+      - name: Shell scripts are clean
+        run: scripts/check_shell.sh
+      - name: The Cloud Shell helper works with an old and a new Python
+        run: scripts/check_cloudshell.sh
 
   test:
     name: test (python ${{ matrix.python }})

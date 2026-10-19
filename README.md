@@ -146,6 +146,8 @@ pipx install git+https://github.com/sept-usc/muse-mcp-adapter    # or: pip insta
 muse-vm setup
 ```
 
+**On Google Cloud with nothing installed locally:** [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/sept-usc/muse-mcp-adapter.git&cloudshell_tutorial=docs/cloudshell-tutorial.md&cloudshell_workspace=.) walks you through it in your browser: `gcloud` is already signed in there, and the tutorial's helper installs everything else.
+
 (No `pipx`? `python3 -m pip install --user pipx`, or use a virtual environment and `pip install` the same address. To review the code first, or to pin a commit, [clone it](#step-1--get-the-code) instead.)
 
 `muse-vm setup` is a guided run. It checks that everything is in place, asks where the adapter should run, creates it, opens the two Tailscale links you need to click, lets you pick the MCP servers Muse should use, and prints what to give Muse. It asks only for what it cannot work out itself, and it takes 10 to 20 minutes, most of it building.
