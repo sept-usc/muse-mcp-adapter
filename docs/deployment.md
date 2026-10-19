@@ -50,6 +50,10 @@ Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings a
 | `backup --out FILE`, `restore FILE` | Encrypted backup and restore. Set `MUSE_VM_BACKUP_PASSPHRASE` to avoid the prompt |
 | `down [--keep-data]` | Sign the device out of Tailscale and remove everything that was created |
 
+## The Terraform module
+
+`deploy/terraform/gcp` is the Google Cloud setup as Terraform (see the README for a complete example). It creates the network, firewall rule (SSH from Identity-Aware Proxy only), Cloud NAT, a shielded VM with no public address, the snapshot schedule, and a service account that can read one Secret Manager secret. The VM's startup script reads its settings from instance metadata (name, install source, the secret's name, egress ranges), fetches the Tailscale auth key from Secret Manager, installs `muse-vm` with pip, and runs `muse-vm up --local --yes`. The log is `/var/log/muse-vm-install.log` on the VM. Inputs: `project`, `name`, `region`, `zone`, `machine_type`, `disk_gb`, `install_source`, `tailscale_auth_key_secret` (or `tailscale_auth_key`), `egress_allow`, `snapshots`, `iap_ssh_ranges`.
+
 ## The settings file
 
 `muse-vm setup` reads `muse-vm.toml` from the folder you run it in (or `--config FILE`). Every key is optional; flags override the file; unknown keys are rejected. Keys: `name`, `cloud`, `ssh`, `local`, `ssh_opts`, `project`, `zone`, `machine_type`, `budget_usd`, `idle_stop_hours`, `egress_allow`, `tz`, `tailscale_authkey_file`, `yes`, and a `[[servers]]` table per server with `preset` (or `id` and `endpoint`), `credential`, `secret_name`, `token_file`, `allow`, `no_reads`. Secrets are never in the file: `tailscale_authkey_file` and `token_file` are paths to files that hold them. The README has a full example.
