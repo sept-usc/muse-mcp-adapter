@@ -204,6 +204,10 @@ def cmd_up(args: argparse.Namespace) -> None:
         bundle.install(t, env, bundle.serve_config("pending.invalid"))
         _fetch_images(t, dep, env, source, say)
         say("4/6 start")
+        if "TS_AUTHKEY" not in ingress_secrets:
+            ingress.interactive_login(
+                t, say=say, open_link=None if args.no_browser else browser.open_link
+            )
         provider.start_stack(t)
         dep.hostname = ingress.hostname_after_start(
             t, say=say, open_link=None if args.no_browser else browser.open_link

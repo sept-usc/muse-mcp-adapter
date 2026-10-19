@@ -24,6 +24,8 @@ def tailscale_status(target: Target) -> dict[str, Any] | None:
         return None
 
 
+LOGIN_SERVICE = "tailscale-login"
+LOGIN_TIMEOUT = 1800  # half an hour for a person to find the link and click it
 TS_ADMIN = "https://login.tailscale.com/admin"
 FUNNEL_CAPS = ("https", "funnel")
 # A first-time name can take minutes to reach public DNS, and a person may need to approve a
@@ -111,6 +113,50 @@ def ensure_certificate(
             time.sleep(5)
     say(f"  ! no HTTPS certificate for {dns} yet: {last}")
     return False
+
+
+def interactive_login(
+    target: Target,
+    *,
+    timeout: float = LOGIN_TIMEOUT,
+    say: Callable[[str], None] = print,
+    sleep: Callable[[float], None] = time.sleep,
+    open_link: Callable[[str], bool] | None = None,
+) -> None:
+    """Sign the machine in to the owner's Tailscale account, with a link that stays valid.
+
+    Runs the one-time login service, shows its link (and opens it when it can), and waits until
+    the owner has approved it. The login is stored in the state directory the normal Tailscale
+    service uses, so that service only has to reconnect.
+    """
+    target.compose(f"up -d {LOGIN_SERVICE}", stream=True)
+    deadline = time.monotonic() + timeout
+    shown = ""
+    try:
+        while time.monotonic() < deadline:
+            logs = target.compose(f"logs --no-color {LOGIN_SERVICE}", check=False)
+            text = logs.stdout + logs.stderr
+            if "Login complete" in text:
+                return
+            links = TS_LOGIN.findall(text)
+            if links and links[-1] != shown:
+                shown = links[-1]
+                say(f"  Sign in to Tailscale to give the adapter its address: {shown}")
+                if open_link:
+                    open_link(shown)
+            exited = target.compose(
+                f"ps -a --status exited -q {LOGIN_SERVICE}", check=False
+            ).stdout.strip()
+            if exited:
+                tail = "\n    ".join(text.strip().splitlines()[-6:])
+                raise SystemExit(f"The Tailscale sign-in stopped before it finished:\n    {tail}")
+            sleep(3)
+        raise SystemExit(
+            "The Tailscale sign-in was not completed in time. Run `muse-vm up` again and open "
+            "the link as soon as it appears."
+        )
+    finally:
+        target.compose(f"rm -f -s {LOGIN_SERVICE}", check=False)
 
 
 def hostname_after_start(

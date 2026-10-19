@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, doctor, presets
+from . import browser, config, doctor, presets
 from .providers.gcp import MONTHLY_USD
 from .runner import Runner
 from .selfcheck import Report
@@ -209,10 +209,12 @@ def run(
         if "TS_AUTHKEY" in os.environ:
             io.say("Creating the deployment (10 to 20 minutes: it builds the images)…")
         else:
+            opens = browser.interactive()
             io.say(
                 "Creating the deployment (10 to 20 minutes). Tailscale gives the adapter its\n"
-                "public address: you will be shown up to two links (a sign-in and an approval)\n"
-                "and they open in your browser. Click approve in each."
+                "public address: you will be shown up to two links (a sign-in and an approval)"
+                + (" and they\nopen in your browser." if opens else ".")
+                + " Click approve in each."
             )
         code = run_command(_up_argv(plan, name))
         if code != 0:

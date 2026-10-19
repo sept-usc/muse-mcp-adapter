@@ -23,6 +23,21 @@ from tests.validation.env import atlas_server
 pytestmark = pytest.mark.validation
 
 
+def _no_login(*_args: Any, **_kwargs: Any) -> None:
+    return None
+
+
+def _record_login(calls: list[str]) -> Any:
+    def record(*_args: Any, **_kwargs: Any) -> None:
+        calls.append("login")
+
+    return record
+
+
+def _must_not_run(*_args: Any, **_kwargs: Any) -> None:
+    raise AssertionError("the interactive sign-in must be skipped when an auth key is given")
+
+
 def _returning(value: Any) -> Any:
     def call(*_args: Any, **_kwargs: Any) -> Any:
         return value
@@ -388,7 +403,10 @@ def test_up_installs_the_bundle_starts_it_and_leaves_a_ready_deployment(
 
     monkeypatch.setattr(cli, "provider_for", make)
     monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
+    logins: list[str] = []
+    monkeypatch.setattr(ingress, "interactive_login", _record_login(logins))
     assert cli.main(_up_args()) == 0
+    assert logins == ["login"]  # no auth key was given, so the person signs in once
 
     dep = Deployment.load("muse")
     assert dep.status == "ready" and dep.hostname == "adapter.tail1.ts.net"
@@ -426,6 +444,7 @@ def test_up_rolls_back_everything_when_the_self_check_fails(
         return holder["p"]
 
     monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "interactive_login", _no_login)
     monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
     _fails(_up_args(), capsys, "self-check failed")
     assert holder["p"].torn_down is True
@@ -447,6 +466,7 @@ def test_up_keeps_a_failed_deployment_when_asked_to_for_debugging(
         return provider_holder["p"]
 
     monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "interactive_login", _no_login)
     monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
     assert cli.main(_up_args("--keep-on-failure")) == 1
     capsys.readouterr()
@@ -478,7 +498,8 @@ def test_a_tailscale_auth_key_goes_into_the_private_environment_file_only(
     monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
     vm = ContainerTarget(tmp_path / "vm")
     monkeypatch.setattr(cli, "provider_for", _fake_for(vm))
-    assert cli.main(_up_args()) == 0
+    monkeypatch.setattr(ingress, "interactive_login", _must_not_run)
+    assert cli.main(_up_args()) == 0  # with an auth key there is nothing to sign in to
     env_file = tmp_path / "vm" / ".env"
     assert oct(env_file.stat().st_mode & 0o777) == "0o600"
     # it is needed only to join the tailnet: once the device has joined it is removed again
