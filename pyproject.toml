@@ -67,6 +67,16 @@ markers = [
   "performance: timing measurements, skipped by default (run them with: pytest -m performance)",
 ]
 
+[tool.coverage.run]
+source = ["muse_mcp_adapter", "muse_vm"]
+omit = ["*/__main__.py"]
+
+# A floor, not a target: coverage may go up but not down. Raise it when it has risen.
+[tool.coverage.report]
+fail_under = 87
+show_missing = false
+skip_covered = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
