@@ -41,9 +41,7 @@ def load_provider_pack(pack_id: str) -> ProviderPack:
         display_name=_string(data, "displayName"),
         documentation_url=_https_url(data, "documentationUrl"),
         endpoint=_https_url(data, "endpoint"),
-        profiles=cast(
-            Mapping[str, str], freeze_json(_string_mapping(data.get("profiles", {})))
-        ),
+        profiles=cast(Mapping[str, str], freeze_json(_string_mapping(data.get("profiles", {})))),
         auth_modes=_string_sequence(data, "authModes"),
         required_options=_string_sequence(data, "requiredOptions"),
         allowed_options=_string_sequence(data, "allowedOptions"),
@@ -51,9 +49,7 @@ def load_provider_pack(pack_id: str) -> ProviderPack:
             Mapping[str, str],
             freeze_json(_string_mapping(data.get("defaultOptions", {}))),
         ),
-        safety=cast(
-            Mapping[str, object], freeze_json(_mapping(data.get("safety"), "safety"))
-        ),
+        safety=cast(Mapping[str, object], freeze_json(_mapping(data.get("safety"), "safety"))),
         conformance=cast(
             Mapping[str, object],
             freeze_json(_mapping(data.get("conformance"), "conformance")),
@@ -73,9 +69,7 @@ def build_endpoint(
     provided = dict(options or {})
     unknown = set(provided) - set(pack.allowed_options)
     if unknown:
-        raise RequestValidationError(
-            "Unknown provider options: " + ", ".join(sorted(unknown))
-        )
+        raise RequestValidationError("Unknown provider options: " + ", ".join(sorted(unknown)))
     values = dict(pack.default_options)
     values.update(provided)
     if (
@@ -88,9 +82,7 @@ def build_endpoint(
         )
     missing = [key for key in pack.required_options if not values.get(key)]
     if missing:
-        raise RequestValidationError(
-            "Missing provider options: " + ", ".join(sorted(missing))
-        )
+        raise RequestValidationError("Missing provider options: " + ", ".join(sorted(missing)))
     if profile == "default":
         endpoint = pack.endpoint
     else:
@@ -105,9 +97,7 @@ def build_endpoint(
     )
 
 
-def validate_provider_registration(
-    pack: ProviderPack, *, endpoint: str, auth_mode: str
-) -> None:
+def validate_provider_registration(pack: ProviderPack, *, endpoint: str, auth_mode: str) -> None:
     if auth_mode not in pack.auth_modes:
         raise RequestValidationError(
             f"Authentication mode {auth_mode} is not supported by provider pack {pack.pack_id}"
@@ -128,9 +118,7 @@ def validate_provider_registration(
         None,
     )
     if profile is None:
-        raise RequestValidationError(
-            f"Endpoint does not match provider pack {pack.pack_id}"
-        )
+        raise RequestValidationError(f"Endpoint does not match provider pack {pack.pack_id}")
     options = dict(parse_qsl(parsed.query, keep_blank_values=True))
     expected = build_endpoint(pack, profile=profile, options=options)
     if dict(parse_qsl(urlsplit(expected).query, keep_blank_values=True)) != options:
@@ -155,9 +143,7 @@ def _validate_pack(pack: ProviderPack, *, expected_id: str) -> None:
     ).issubset({"tool", "resource", "resource_template", "prompt"}):
         issues.append("conformance.requiredPrimitiveTypes is invalid")
     if issues:
-        raise InvalidStateError(
-            f"Provider pack {expected_id} is invalid: " + "; ".join(issues)
-        )
+        raise InvalidStateError(f"Provider pack {expected_id} is invalid: " + "; ".join(issues))
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:

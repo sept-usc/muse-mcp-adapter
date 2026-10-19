@@ -128,11 +128,11 @@ def cmd_up(args: argparse.Namespace) -> None:
             f"A deployment named {name!r} already exists (`muse-vm status --name {name}`, "
             f"or `muse-vm down --name {name}` first)."
         )
-    provider_name = "ssh" if args.ssh else args.cloud
+    provider_name = "local" if args.local else "ssh" if args.ssh else args.cloud
     if not provider_name:
         raise SystemExit(
-            "Choose where to run the adapter: --ssh user@host or --cloud gcp. "
-            "(`muse-vm setup` asks you instead.)"
+            "Choose where to run the adapter: --ssh user@host, --cloud gcp, or --local for this "
+            "machine. (`muse-vm setup` asks you instead.)"
         )
     build = not args.image
     if args.image and not args.guard_image:
@@ -416,10 +416,11 @@ def _plan_from(args: argparse.Namespace) -> tuple[config.Plan, Path | None]:
         plan.ssh_opts = list(args.ssh_opt)
     if args.egress_allow:
         plan.egress_allow = [item for item in args.egress_allow.split(",") if item]
-    if args.cloud and not args.ssh:
-        plan.ssh = None
-    if args.ssh and not args.cloud:
-        plan.cloud = None
+    if args.cloud or args.ssh or args.local:
+        # choosing on the command line replaces whatever the file chose
+        plan.cloud = args.cloud
+        plan.ssh = args.ssh
+        plan.local = bool(args.local)
     if args.yes:
         plan.yes = True
     if args.server:
@@ -449,7 +450,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     report = Report()
     runner = _runner(args)
     doctor.local_checks(report)
-    if args.ssh:
+    if args.local:
+        doctor.local_machine_checks(report, runner)
+    elif args.ssh:
         doctor.ssh_checks(report, runner, args.ssh, args.ssh_opt or [])
     elif args.cloud == "gcp" or (not args.ssh and doctor.gcloud_facts(runner)):
         doctor.gcp_checks(report, runner, args.project, args.zone)
@@ -707,7 +710,10 @@ def build_parser() -> argparse.ArgumentParser:
     where = up.add_mutually_exclusive_group()
     where.add_argument("--ssh", metavar="USER@HOST", help="use an existing Linux machine over SSH")
     where.add_argument(
-        "--cloud", choices=sorted(set(PROVIDERS) - {"ssh"}), help="create a cloud VM"
+        "--local", action="store_true", help="install on this machine (Linux, root or sudo)"
+    )
+    where.add_argument(
+        "--cloud", choices=sorted(set(PROVIDERS) - {"ssh", "local"}), help="create a cloud VM"
     )
     up.add_argument("--tz", default=os.environ.get("MMA_TZ", "UTC"))
     up.add_argument(
@@ -792,6 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--cloud", choices=("gcp",), help="create a Google Cloud VM")
     sp.add_argument("--ssh", metavar="USER@HOST", help="use an existing Linux machine over SSH")
+    sp.add_argument("--local", action="store_true", help="install on this machine (Linux)")
     sp.add_argument("--ssh-opt", action="append", metavar="OPT")
     sp.add_argument("--project", help="GCP project (default: gcloud's)")
     sp.add_argument("--zone")
@@ -815,6 +822,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_setup)
     sp = common(commands.add_parser("doctor", help="check what would stop a deployment"))
     sp.add_argument("--ssh", metavar="USER@HOST", help="check this machine too")
+    sp.add_argument("--local", action="store_true", help="check this machine as the target")
     sp.add_argument("--cloud", choices=("gcp",), help="check Google Cloud access")
     sp.add_argument("--project")
     sp.add_argument("--zone")

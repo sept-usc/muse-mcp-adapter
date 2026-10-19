@@ -27,9 +27,7 @@ def canonicalize(value: object, path: str = "$") -> object:
 
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         sequence = cast(Sequence[object], value)
-        return [
-            canonicalize(item, f"{path}[{index}]") for index, item in enumerate(sequence)
-        ]
+        return [canonicalize(item, f"{path}[{index}]") for index, item in enumerate(sequence)]
 
     raise TypeError(f"Unsupported value at {path}")
 

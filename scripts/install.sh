@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Install muse-vm and start the guided setup, on a machine that may have an old or no suitable
-# Python: Google Cloud Shell is the main case. Everything it does is in your home directory.
+# Python. Two cases: Google Cloud Shell (to create a VM from there), and the Linux VM the adapter
+# should run on (the setup then offers "this machine"). Everything it installs goes in your home
+# directory; nothing needs root until the setup installs the adapter itself.
 #
-#   scripts/cloudshell-setup.sh [muse-vm setup options]      e.g.  --cloud gcp --project my-project
+#   bash install.sh [muse-vm setup options]      e.g.  --cloud gcp --project my-project
+#   bash install.sh --local                      install on this machine, without asking
 #
 # MUSE_VM_SOURCE overrides what is installed (a path or a pip address); the default is the
 # project's repository.

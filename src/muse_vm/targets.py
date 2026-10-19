@@ -8,6 +8,7 @@ host over SSH and for a cloud VM reached through a cloud-provided tunnel.
 from __future__ import annotations
 
 import base64
+import os
 import posixpath
 import shlex
 import time
@@ -26,6 +27,7 @@ _pause = time.sleep
 
 class Target:
     kind = "?"
+    retries = True  # a dropped connection is worth retrying (not for commands on this machine)
 
     def __init__(self, runner: Runner, root: str = ROOT) -> None:
         self.runner, self.root = runner, root
@@ -54,7 +56,7 @@ class Target:
             script = f"cd {shlex.quote(self.root)} && {script}"
         argv = self._argv(script)
         result = Result(CONNECTION_FAILED, "", "")
-        for delay in (*RETRY_DELAYS, None) if retry else (None,):
+        for delay in (*RETRY_DELAYS, None) if (retry and self.retries) else (None,):
             result = self.runner(argv, input=input, check=False, timeout=timeout, stream=stream)
             if result.returncode != CONNECTION_FAILED or delay is None:
                 break
@@ -141,6 +143,20 @@ class SSHTarget(Target):
 
     def describe(self) -> str:
         return f"{self.host}:{self.root}"
+
+
+class LocalTarget(Target):
+    """The machine muse-vm is running on: Linux, as root or through passwordless sudo."""
+
+    kind = "local"
+    retries = False
+
+    def _argv(self, script: str) -> list[str]:
+        prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+        return [*prefix, "sh", "-c", script]
+
+    def describe(self) -> str:
+        return f"this machine:{self.root}"
 
 
 class GcloudTarget(Target):

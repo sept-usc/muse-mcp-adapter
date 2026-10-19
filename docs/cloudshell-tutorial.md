@@ -27,7 +27,7 @@ touch anything else in the project.
 Copy this command into Cloud Shell and press Enter:
 
 ```bash
-scripts/cloudshell-setup.sh --cloud gcp --project <walkthrough-project-id/>
+bash scripts/install.sh --cloud gcp --project <walkthrough-project-id/>
 ```
 
 It installs `muse-vm`, checks that everything is in place, and asks you which MCP servers Muse

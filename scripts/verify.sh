@@ -66,8 +66,8 @@ docker run --rm mma-adapter:verify --help >/dev/null || fail "adapter image does
 step "the release wheel installs on its own and builds the images from what it carries"
 python3 scripts/check_package.py || fail "the release wheel does not work on its own"
 
-step "the Cloud Shell helper works with an old and a new Python"
-scripts/check_cloudshell.sh || fail "the Cloud Shell helper"
+step "the installer works with an old and a new Python"
+scripts/check_install.sh || fail "the installer"
 
 step "no known high or critical vulnerabilities in the images (as CI scans them)"
 for image in mma-adapter:verify mma-guard:verify; do

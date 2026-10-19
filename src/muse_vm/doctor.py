@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from . import bundle
 from .runner import Runner
 from .selfcheck import Report
-from .targets import SSHTarget
+from .targets import LocalTarget, SSHTarget, Target
 
 MIN_PYTHON = (3, 12)
 
@@ -143,18 +143,30 @@ def gcp_checks(report: Report, runner: Runner, project: str | None, zone: str | 
 
 
 def ssh_checks(report: Report, runner: Runner, host: str, options: list[str]) -> None:
-    target = SSHTarget(runner, host, options)
+    machine_checks(report, SSHTarget(runner, host, options), host)
+
+
+def local_machine_checks(report: Report, runner: Runner) -> None:
+    report.add(
+        "this machine is Linux (--local installs on the machine you are on)",
+        sys.platform.startswith("linux"),
+        "" if sys.platform.startswith("linux") else "use --ssh user@host or --cloud gcp instead",
+    )
+    machine_checks(report, LocalTarget(runner), "this machine")
+
+
+def machine_checks(report: Report, target: Target, label: str) -> None:
     probe = target.sh("uname -s -m && id -u", cwd_root=False, check=False, timeout=60, retry=False)
     if not probe.ok:
         report.add(
-            f"{host} accepts key-based ssh with passwordless sudo",
+            f"{label} accepts commands as root (passwordless sudo)",
             False,
-            f"`ssh {host} sudo -n true` must work: {(probe.stderr or probe.stdout).strip()[:160]}",
+            f"{(probe.stderr or probe.stdout).strip()[:160]}",
         )
         return
     system, architecture = probe.stdout.split()[:2]
     supported = system == "Linux" and architecture in ("x86_64", "aarch64")
-    report.add(f"{host} is reachable with passwordless sudo", True)
+    report.add(f"{label} can run commands as root", True)
     report.add("Linux on x86_64 or arm64", supported, f"{system} {architecture}")
     out = target.sh(
         "curl -fsS -m 10 -o /dev/null https://registry-1.docker.io/v2/ ; "

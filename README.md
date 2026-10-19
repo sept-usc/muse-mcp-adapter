@@ -146,7 +146,7 @@ pipx install git+https://github.com/sept-usc/muse-mcp-adapter    # or: pip insta
 muse-vm setup
 ```
 
-**On Google Cloud with nothing installed locally:** [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/sept-usc/muse-mcp-adapter.git&cloudshell_tutorial=docs/cloudshell-tutorial.md&cloudshell_workspace=.) walks you through it in your browser: `gcloud` is already signed in there, and the tutorial's helper installs everything else.
+**On Google Cloud with nothing installed locally:** [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/sept-usc/muse-mcp-adapter.git&cloudshell_tutorial=docs/cloudshell-tutorial.md&cloudshell_workspace=.) walks you through it in your browser: `gcloud` is already signed in there, and the tutorial's installer handles the rest.
 
 (No `pipx`? `python3 -m pip install --user pipx`, or use a virtual environment and `pip install` the same address. To review the code first, or to pin a commit, [clone it](#step-1--get-the-code) instead.)
 
@@ -211,6 +211,18 @@ From a checkout, `muse-vm` builds from that checkout and records the commit. It 
 
 **You will know it worked when** `setup` ends with `The adapter is running at https://…`, eleven green checks during Create, and a connector address for each server.
 
+### Installing from the VM itself
+
+If you would rather log in to the Linux VM and run everything there, with no second computer involved:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sept-usc/muse-mcp-adapter/main/scripts/install.sh -o install.sh
+less install.sh              # it is short: read it before you run it
+bash install.sh --local
+```
+
+It needs a Debian or Ubuntu VM, a user with passwordless `sudo` (or root), and outbound HTTPS. The installer puts `muse-vm` in your home directory (fetching a suitable Python itself if the VM's is too old), then runs the same guided setup against this machine: only what is missing is installed, and an existing Docker is never restarted. The Tailscale links are printed in the terminal, so open them in your own browser. The same script is what the Google Cloud Shell button uses.
+
 ### Step 3 · Connect Muse and try it
 
 1. Open a **new side chat** in Muse (not your main chat) and send: `Create a connector called GitHub from the API spec at <the connector address>`.
@@ -238,7 +250,7 @@ Everything `setup` asks can also be written down once in `muse-vm.toml` in the f
 
 ```toml
 name = "prod"                    # deployment name (default: muse)
-cloud = "gcp"                    # or: ssh = "deploy@203.0.113.7"
+cloud = "gcp"                    # or: ssh = "deploy@203.0.113.7", or: local = true
 project = "my-project"           # default: gcloud's
 zone = "us-central1-a"           # default: gcloud's, else us-central1-a
 machine_type = "e2-small"
@@ -282,7 +294,7 @@ A saved file holds no secrets: only the paths of files that do. Flags override t
 .venv/bin/muse-vm expose github --allow issue_write
 ```
 
-`up` takes many more options (`--zone`, `--machine-type`, `--budget-usd`, `--idle-stop-hours`, `--egress-allow`, `--ssh-opt`, `--image`, `--keep-on-failure`, `--no-browser`) and, if you prefer not to click a Tailscale sign-in link, a Tailscale auth key in `TS_AUTHKEY`: a single-use, untagged key that expires in a day, generated under **Settings, Keys** in the Tailscale console. The key is removed from the machine as soon as the device has joined.
+`up` also takes `--local` to install on the machine you are on, and many more options (`--zone`, `--machine-type`, `--budget-usd`, `--idle-stop-hours`, `--egress-allow`, `--ssh-opt`, `--image`, `--keep-on-failure`, `--no-browser`) and, if you prefer not to click a Tailscale sign-in link, a Tailscale auth key in `TS_AUTHKEY`: a single-use, untagged key that expires in a day, generated under **Settings, Keys** in the Tailscale console. The key is removed from the machine as soon as the device has joined.
 
 ## Troubleshooting
 
