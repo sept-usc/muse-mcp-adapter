@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
@@ -28,6 +29,7 @@ from ..domain.errors import (
     DownstreamConnectionLostError,
     DownstreamContentError,
     DownstreamToolError,
+    DownstreamUnavailableError,
     EntityNotFoundError,
     IdempotencyConflictError,
     InputRequiredError,
@@ -193,6 +195,11 @@ def create_http_app(
         if isinstance(error, ReauthorizationRequiredError) and error.authorization_url:
             payload["authorizationUrl"] = error.authorization_url
         headers: dict[str, str] = {}
+        advice = retry_guidance(error)
+        payload["retryable"] = advice.retryable
+        payload.setdefault("nextStep", advice.next_step)
+        if advice.retry_after is not None:
+            headers["Retry-After"] = str(advice.retry_after)
         if isinstance(error, AuthenticationError):
             # Lets an OAuth-capable client discover how to sign in (RFC 9728).
             challenge = 'Bearer realm="muse-mcp-adapter"'
@@ -302,6 +309,72 @@ def _operation_dict(operation: OperationRecord) -> dict[str, object]:
     }
 
 
+@dataclass(frozen=True)
+class RetryGuidance:
+    """What a caller should do next. Muse retries what it is not told is final, so say it."""
+
+    retryable: bool
+    next_step: str
+    retry_after: int | None = None
+
+
+def retry_guidance(error: Exception) -> RetryGuidance:
+    if isinstance(error, RateLimitExceededError):
+        return RetryGuidance(
+            True, "Too many requests. Wait a few seconds, then repeat the same call.", 5
+        )
+    if isinstance(error, DownstreamUnavailableError | DownstreamConnectionLostError):
+        return RetryGuidance(
+            True,
+            "The MCP server could not be reached and nothing was done. Repeating the same call "
+            "is safe; if it keeps failing, tell the user the server is unavailable.",
+            5,
+        )
+    if isinstance(error, UnknownOutcomeError):
+        return RetryGuidance(
+            False,
+            "Do not repeat this call: it may already have happened. Tell the user, who can "
+            "check the other system and settle the operation.",
+        )
+    if isinstance(error, OperationInProgressError):
+        return RetryGuidance(
+            False,
+            "The same request is already running. Wait, then check its status; do not resend.",
+        )
+    if isinstance(error, DownstreamToolError):
+        return RetryGuidance(
+            False,
+            "The MCP server refused or failed this call. Do not repeat it unchanged: tell the "
+            "user what the message says.",
+        )
+    if isinstance(error, DownstreamAuthRejectedError | CredentialResolutionError):
+        return RetryGuidance(
+            False,
+            "The adapter's credential for this server was rejected or is missing. Repeating will "
+            "not help: tell the user the owner must renew it.",
+        )
+    if isinstance(error, ReauthorizationRequiredError):
+        return RetryGuidance(
+            False,
+            "The owner must sign in again (see authorizationUrl), then the call can be repeated.",
+        )
+    if isinstance(error, AuthenticationError | AuthorizationError | ServerDisabledError):
+        return RetryGuidance(
+            False, "This connector is not allowed to do that. Do not repeat the call."
+        )
+    if isinstance(error, RequestValidationError | UnsupportedPrimitiveError | RequestTooLargeError):
+        return RetryGuidance(
+            False, "The request is invalid. Fix the arguments before trying again."
+        )
+    if isinstance(error, ApprovalRequiredError | InputRequiredError):
+        return RetryGuidance(False, "More is needed from the user before this can run.")
+    if isinstance(error, OperationNotFoundError | EntityNotFoundError):
+        return RetryGuidance(False, "There is no such operation. Do not repeat the call.")
+    if isinstance(error, DataPlaneError) and _status(error) >= 500:
+        return RetryGuidance(True, "An internal error occurred. Repeating once may succeed.", 5)
+    return RetryGuidance(False, "Do not repeat this call unchanged.")
+
+
 def _status(error: Exception) -> int:
     """Map adapter errors to HTTP statuses a Muse connector can act on."""
     if isinstance(error, AuthenticationError | ReauthorizationRequiredError):
@@ -314,6 +387,8 @@ def _status(error: Exception) -> int:
         return 413
     if isinstance(error, RateLimitExceededError):
         return 429
+    if isinstance(error, DownstreamUnavailableError):
+        return 503
     if isinstance(
         error,
         ApprovalRequiredError

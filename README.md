@@ -480,6 +480,9 @@ The routes never change. What the server offers is reflected in the generated de
 | `413` | The request body is too large. |
 | `429` | Too many requests. |
 | `502` | The MCP server failed, timed out, or returned something outside your limits. The message says which. |
+| `503` | The MCP server could not be reached, so nothing was sent. Safe to repeat after the `Retry-After` delay. |
+
+Every error body carries `retryable` (true when repeating the same call can succeed) and `nextStep` (what to do instead when it cannot). Retryable errors also send a `Retry-After` header.
 
 ### How MCP behaviour shows up through the API
 

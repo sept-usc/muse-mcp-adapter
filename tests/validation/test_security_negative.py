@@ -23,7 +23,7 @@ def test_a_redirecting_server_is_not_followed(world: World) -> None:
     atlas, conn = world
     atlas.control("redirect", {"to": "http://127.0.0.1:1/elsewhere"})
     response = conn.call("get_issue", {"issue_id": "ISSUE-1"})
-    assert response.status_code == 502
+    assert response.status_code == 503
     atlas.control("redirect", {"to": None})
     assert conn.call("get_issue", {"issue_id": "ISSUE-1"}).status_code == 200
 

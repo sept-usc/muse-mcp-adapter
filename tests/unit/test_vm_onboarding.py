@@ -297,6 +297,7 @@ class _Commands:
 def _wizard_environment(monkeypatch: pytest.MonkeyPatch) -> Any:
     # The menu offers "this machine" only on Linux: tests must not depend on where they run.
     monkeypatch.setattr(wizard.sys, "platform", "darwin")
+
     def passing(report: Report) -> None:
         report.add("this computer is ready", True)
 

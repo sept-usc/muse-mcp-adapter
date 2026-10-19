@@ -34,7 +34,7 @@ def test_a_server_that_goes_away_and_returns_is_retried_safely(tmp_path: Path) -
 
         stack.close()  # the MCP server stops
         down = conn.call("create_issue", BODY, **{"Idempotency-Key": "k"})
-        assert down.status_code == 502
+        assert down.status_code == 503
         operation = (
             conn.status(down.json().get("operationId", ""))
             if "operationId" in down.json()
@@ -47,7 +47,7 @@ def test_a_server_that_goes_away_and_returns_is_retried_safely(tmp_path: Path) -
             ).fetchone()
         )
         assert (row["status"], row["retryable"]) == ("FAILED", 1)  # nothing was sent: safe to retry
-        assert conn.call("get_issue", {"issue_id": "ISSUE-1"}).status_code == 502
+        assert conn.call("get_issue", {"issue_id": "ISSUE-1"}).status_code == 503
 
         with atlas_server(port=port) as returned:  # the same address comes back
             retried = conn.call("create_issue", BODY, **{"Idempotency-Key": "k"})

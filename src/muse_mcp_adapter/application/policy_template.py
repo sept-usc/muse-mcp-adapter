@@ -1,7 +1,8 @@
 """Draft an exposure policy from a discovery snapshot for the owner to review.
 
 The draft is deliberately conservative: nothing is exposed unless asked for, tools the server
-did not mark read-only are drafted as writes, and the owner edits and publishes the result.
+did not mark read-only are drafted as writes (destructive ones as sensitive writes), and the
+owner edits and publishes the result.
 """
 
 from __future__ import annotations
@@ -16,6 +17,30 @@ from ..domain.models import DiscoverySnapshot
 from ..policy.validate_policy import RESERVED_OPERATION_IDS
 
 DEFAULT_RESULT_BYTES = 262_144
+# Words in a tool's name that mean it removes, overwrites or hands over something that cannot be
+# put back. Such a tool is drafted as a sensitive write (a shorter approval window, and a signal to
+# the owner to think twice) even if the server does not say so.
+_DESTRUCTIVE_WORDS = frozenset(
+    {
+        "delete",
+        "remove",
+        "destroy",
+        "drop",
+        "purge",
+        "truncate",
+        "wipe",
+        "erase",
+        "revoke",
+        "terminate",
+        "merge",
+        "force",
+        "overwrite",
+        "reset",
+        "transfer",
+        "deactivate",
+    }
+)
+_NAME_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
 _URI_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
 
 
@@ -69,7 +94,23 @@ def _classification(primitive: Mapping[str, object]) -> str:
         if isinstance(annotations, Mapping)
         else False
     )
-    return "read" if hinted else "write"
+    if hinted:
+        return "read"
+    if _destructive(primitive):
+        return "sensitive_write"
+    return "write"
+
+
+def _destructive(primitive: Mapping[str, object]) -> bool:
+    """The server says so (destructiveHint), or the name says so (delete_file, mergePullRequest)."""
+    annotations = primitive.get("annotations")
+    if (
+        isinstance(annotations, Mapping)
+        and cast(Mapping[str, object], annotations).get("destructiveHint") is True
+    ):
+        return True
+    words = {word.lower() for word in _NAME_WORDS.findall(str(primitive.get("name", "")))}
+    return bool(words & _DESTRUCTIVE_WORDS)
 
 
 def _scopes(primitive: Mapping[str, object]) -> list[str]:
