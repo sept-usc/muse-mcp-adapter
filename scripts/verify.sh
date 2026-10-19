@@ -60,6 +60,9 @@ docker build -q -t mma-guard:verify deploy/guard >/dev/null || fail "guard image
 docker run --rm --entrypoint id mma-adapter:verify -u | grep -qx 10001 || fail "adapter image does not run as uid 10001"
 docker run --rm mma-adapter:verify --help >/dev/null || fail "adapter image does not start"
 
+step "the release wheel installs on its own and builds the images from what it carries"
+python3 scripts/check_package.py || fail "the release wheel does not work on its own"
+
 step "no known high or critical vulnerabilities in the images (as CI scans them)"
 for image in mma-adapter:verify mma-guard:verify; do
   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v muse-verify-trivy:/root/.cache \

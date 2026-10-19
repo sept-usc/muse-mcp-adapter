@@ -403,6 +403,7 @@ def test_up_installs_the_bundle_starts_it_and_leaves_a_ready_deployment(
 
     monkeypatch.setattr(cli, "provider_for", make)
     monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
+    monkeypatch.delenv("TS_AUTHKEY", raising=False)
     logins: list[str] = []
     monkeypatch.setattr(ingress, "interactive_login", _record_login(logins))
     assert cli.main(_up_args()) == 0

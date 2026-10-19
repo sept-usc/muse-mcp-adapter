@@ -57,8 +57,8 @@ Deployment details are kept on your computer under `~/.config/muse-vm/` (set `MU
 
 ## How the images are built
 
-The images are always built on the target machine from your checkout of this repository, so you run exactly the code you reviewed and nothing is pulled from a registry we operate. The build uses the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`) and base images pinned by digest, and records the commit it was built from in the image. `up` and `upgrade` refuse a checkout with uncommitted changes (`--allow-dirty` overrides).
+The images are always built on the target machine, from your checkout of this repository or from the release you installed (the container recipe, the hash-locked dependency list and the egress guard travel inside the package), so you run exactly the code you chose and nothing is pulled from a registry we operate. The build uses the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`) and base images pinned by digest, and records the commit it was built from in the image. `up` and `upgrade` refuse a checkout with uncommitted changes (`--allow-dirty` overrides).
 
-To get a new version: `git pull`, review what changed, then `muse-vm upgrade`.
+To get a new version: `pipx upgrade muse-mcp-adapter` (or `git pull` in your checkout, and review what changed), then `muse-vm upgrade`.
 
 If your organisation requires images from its own registry, build and scan them yourself from the same `Dockerfile` and `deploy/guard/Dockerfile`, push them to your registry, and run `muse-vm up --image REF --guard-image REF`. The machine must be able to pull from it.
