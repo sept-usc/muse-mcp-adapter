@@ -9,10 +9,12 @@ do by hand.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import browser, config, doctor, presets
 from .providers.gcp import MONTHLY_USD
@@ -32,8 +34,28 @@ class Io:
     interactive: bool
 
     def confirm(self, question: str, default: bool = True) -> bool:
-        answer = self.ask(f"{question} [{'Y/n' if default else 'y/N'}] ").strip().lower()
-        return default if not answer else answer in ("y", "yes")
+        for _ in range(3):
+            answer = self.ask(f"{question} [{'Y/n' if default else 'y/N'}] ").strip().lower()
+            if not answer:
+                return default
+            if answer in ("y", "yes"):
+                return True
+            if answer in ("n", "no"):
+                return False
+            self.say("  Please answer y or n.")
+        return default
+
+
+def ask_at_terminal(question: str) -> str:
+    """input(), after discarding anything typed while the wizard was busy (an Enter pressed to
+    see if it was still working must not answer the next question)."""
+    try:
+        import termios
+
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except (ImportError, OSError, ValueError):  # not a terminal, or no termios (Windows)
+        pass
+    return input(question)
 
 
 def _read_secret_file(path: str) -> str:
@@ -132,22 +154,48 @@ def _up_argv(plan: config.Plan, name: str) -> list[str]:
     return argv
 
 
+def _own_server(url: str, io: Io) -> config.ServerPlan:
+    """A server that is not in the list, given by its address."""
+    host = urlsplit(url).hostname or ""
+    slug = re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")
+    if not slug:
+        raise ValueError(f"{url!r} is not an address")
+    plan = config.ServerPlan(server=slug, endpoint=url, credential="none")
+    if io.confirm(f"Does {host} need a token?", default=False):
+        plan.credential = "env_token"
+        plan.secret_name = slug.upper().replace("-", "_") + "_TOKEN"
+    return plan
+
+
 def _choose_servers(io: Io) -> list[config.ServerPlan]:
     io.say("")
     io.say("Which MCP servers should Muse be able to use? (you can add more later)")
     names = list(presets.PRESETS)
     for number, line in enumerate(presets.describe(), 1):
         io.say(f"  {number}  {line}")
-    answer = io.ask("Numbers or names, separated by commas (Enter to skip): ").strip()
-    chosen: list[config.ServerPlan] = []
-    for part in (item.strip() for item in answer.replace(" ", ",").split(",")):
-        if not part:
-            continue
-        name = names[int(part) - 1] if part.isdigit() and 0 < int(part) <= len(names) else part
-        if presets.find(name) is None:
-            raise SystemExit(f"{part!r} is not one of the servers listed.")
-        chosen.append(config.ServerPlan(server=name))
-    return chosen
+    io.say("  or paste the address of your own server, such as https://mcp.example.com/mcp")
+    for _ in range(3):
+        answer = io.ask("Numbers, names or addresses, separated by commas (Enter to skip): ")
+        chosen: list[config.ServerPlan] = []
+        unknown: list[str] = []
+        for part in (item.strip() for item in answer.replace(" ", ",").split(",")):
+            if not part:
+                continue
+            if part.lower().startswith(("http://", "https://")):
+                try:
+                    chosen.append(_own_server(part, io))
+                except ValueError:
+                    unknown.append(part)
+                continue
+            name = names[int(part) - 1] if part.isdigit() and 0 < int(part) <= len(names) else part
+            if presets.find(name) is None:
+                unknown.append(part)
+            else:
+                chosen.append(config.ServerPlan(server=name))
+        if not unknown:
+            return chosen
+        io.say(f"  Not in the list: {', '.join(unknown)}. Try again, or press Enter to skip.")
+    return []
 
 
 def _connect(
@@ -220,11 +268,11 @@ def run(
     else:
         io.say("")
         if "TS_AUTHKEY" in os.environ:
-            io.say("Creating the deployment (10 to 20 minutes: it builds the images)…")
+            io.say("Creating the deployment (about 5 to 10 minutes: it builds the images)…")
         else:
             opens = browser.interactive()
             io.say(
-                "Creating the deployment (10 to 20 minutes). Tailscale gives the adapter its\n"
+                "Creating the deployment (about 5 to 10 minutes). Tailscale gives the adapter its\n"
                 "public address: you will be shown up to two links (a sign-in and an approval)"
                 + (" and they\nopen in your browser." if opens else ".")
                 + " Click approve in each."

@@ -58,6 +58,8 @@ Muse ──(token or OAuth)──▶ Adapter ──(policy-checked, your credent
 
 ## Your responsibilities
 
+- The policy governs what passes through the adapter. It does not limit what Muse can do with its other tools: a tool the adapter does not publish cannot be called through it, but Muse may offer another route, such as its own browser. Limit that in Muse.
+
 - Provide secrets (downstream tokens, provider client secrets, optional integrity or approval keys) through environment variables or your secret manager, and rotate them.
 - Run the service behind TLS and restrict network access to it. The sign-in pages must be served over HTTPS in production.
 - Keep the connection code and bearer token private: give them only to Muse, and run `rotate-token` if they leak.

@@ -433,6 +433,36 @@ def _up_args(*extra: str) -> list[str]:
     return ["up", "--cloud", "gcp", "--yes", "--allow-dirty", "--name", "muse", *extra]
 
 
+def test_the_guided_flow_does_not_ask_a_person_for_a_tailscale_auth_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(selfcheck, "run", _returning(_passing()))
+    vm = ContainerTarget(tmp_path / "vm")
+
+    def make(dep: Deployment, runner: Any, say: Any, opts: Any) -> _FakeProvider:
+        return _FakeProvider(dep, vm)
+
+    monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
+    monkeypatch.setattr(ingress, "interactive_login", _record_login([]))
+    monkeypatch.delenv("TS_AUTHKEY", raising=False)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)  # a person at a terminal
+    asked: list[str] = []
+
+    def ask(prompt: str) -> str:
+        asked.append(prompt)
+        return ""
+
+    monkeypatch.setattr(cli.getpass, "getpass", ask)
+
+    assert cli.main(_up_args()) == 0  # --yes: straight to the sign-in link
+    assert asked == []
+
+    assert cli.main(["up", "--cloud", "gcp", "--allow-dirty", "--name", "other"]) in (0, 1)
+    assert any("Tailscale auth key" in prompt for prompt in asked)  # plain `up` still asks
+
+
 def test_up_installs_the_bundle_starts_it_and_leaves_a_ready_deployment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

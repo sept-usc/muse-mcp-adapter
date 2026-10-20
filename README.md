@@ -150,7 +150,7 @@ muse-vm setup
 
 (No `pipx`? `python3 -m pip install --user pipx`, or use a virtual environment and `pip install` the same address. To review the code first, or to pin a commit, [clone it](#step-1--get-the-code) instead.)
 
-`muse-vm setup` is a guided run. It checks that everything is in place, asks where the adapter should run, creates it, opens the two Tailscale links you need to click, lets you pick the MCP servers Muse should use, and prints what to give Muse. It asks only for what it cannot work out itself, and it takes 10 to 20 minutes, most of it building.
+`muse-vm setup` is a guided run. It checks that everything is in place, asks where the adapter should run, creates it, opens the two Tailscale links you need to click, lets you pick the MCP servers Muse should use, and prints what to give Muse. It asks only for what it cannot work out itself, and it takes about 5 to 10 minutes, most of it building.
 
 Then tell Muse: *"Create a connector called GitHub from the API spec at `<the connector address setup printed>`"*, click **Connect**, and paste the token. That's it.
 
@@ -200,7 +200,7 @@ From a checkout, `muse-vm` builds from that checkout and records the commit. It 
 | **Where** | Pick *a new Google Cloud VM* or *a Linux machine I already have*. If `gcloud` is signed in, your project is already chosen for you. For your own machine, type its SSH address (`user@host`). | It shows what the choice costs, and asks before creating anything billable. |
 | **Check** | Nothing. | The doctor runs against the target: tools, credentials, SSH and `sudo`, a supported Linux, reachability of Docker Hub and PyPI. If something is wrong it says what and how to fix it, and stops before creating anything. |
 | **Create** | Click the Tailscale links (next section). | Google Cloud: a network of its own, a shielded VM with no service account and no public IP, SSH only through Identity-Aware Proxy, daily snapshots. Your own machine: only what is missing is installed (an existing Docker is never restarted). Then the images are built from your checkout and the adapter starts. A self-check tests it from outside and inside. |
-| **Servers** | Choose from the well-known servers by number or name, or press Enter to skip. Paste a token if a server needs one. | Each server is connected, its tools are discovered, and only the read-only ones are exposed. You get a connector address and token for each. |
+| **Servers** | Choose from the well-known servers by number or name, paste the address of your own, or press Enter to skip. Paste a token if a server needs one. | Each server is connected, its tools are discovered, and only the read-only ones are exposed. You get a connector address and token for each. |
 | **Save** | Say yes to save your answers. | They are written to `muse-vm.toml` (no secrets in it), so the next run needs no questions. |
 
 **The Tailscale links.** Tailscale gives the adapter its public HTTPS address (`https://<name>.<your-tailnet>.ts.net`) without opening a single port, owning a domain, or giving the machine a public IP. There is nothing to prepare in the Tailscale console: during **Create**, `muse-vm` opens up to two links in your browser. The first signs the machine in to your Tailscale account. The second, shown only if your tailnet has not used Funnel before, is Tailscale's own one-click approval for HTTPS certificates and Funnel. Click approve in each and the run carries on by itself. If your tailnet requires device approval, approve the new device under Machines.
@@ -362,7 +362,8 @@ Add `-v` to any `muse-vm` command to print every command it runs. If `up` fails 
 |---|---|---|
 | `The server offers no such tool` | A tool name in `--allow` or `--deny` is misspelled | The message lists the tools the server offers |
 | It refuses a private or `http://` address | By design: the adapter only calls public HTTPS servers | Use the server's public HTTPS address. A server on a private network needs `--egress-allow` and a deliberate policy decision |
-| The server returns an authentication error | The token is wrong, expired, or lacks permission | `muse-vm secret set NAME` again with a correct token. For GitHub, check the token's repository access and permissions |
+| The server returns an authentication error | The token is wrong, expired, or lacks permission | Run the same `add-server` (or `muse-vm setup`) again with a correct token: it replaces the stored one and finishes the half-done connection. For GitHub, check the token's repository access and permissions |
+| `… is already connected` | The server already has a connection | Nothing to do. `muse-vm servers` lists it; `rotate-token` issues a new token if you lost it |
 | An OAuth server shows "reconnect" | The sign-in expired | Open the link it prints and approve again |
 
 ### While connecting or using Muse

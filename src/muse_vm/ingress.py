@@ -142,6 +142,7 @@ def interactive_login(
             if links and links[-1] != shown:
                 shown = links[-1]
                 say(f"  Sign in to Tailscale to give the adapter its address: {shown}")
+                say("  Approve it in your browser; the install carries on by itself.")
                 if open_link:
                     open_link(shown)
             exited = target.compose(

@@ -31,7 +31,7 @@ bash scripts/install.sh --cloud gcp --project <walkthrough-project-id/>
 ```
 
 It installs `muse-vm`, checks that everything is in place, and asks you which MCP servers Muse
-should use. Building takes 10 to 20 minutes.
+should use. Building takes about 5 to 10 minutes.
 
 **The Tailscale links.** Tailscale gives the adapter its public address. `muse-vm` prints a
 sign-in link: open it, sign in and approve the new device. If your Tailscale network has not used
