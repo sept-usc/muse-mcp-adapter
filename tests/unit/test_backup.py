@@ -5,6 +5,7 @@ import os
 import sqlite3
 import stat
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -91,11 +92,14 @@ def test_a_backup_taken_while_the_service_writes_is_consistent(tmp_path: Path) -
     writer = threading.Thread(target=write)
     writer.start()
     try:
+        deadline = time.monotonic() + 10
+        while written[0] < 20 and time.monotonic() < deadline:  # busy before the first backup
+            time.sleep(0.01)
         infos = [create_backup(database, tmp_path / "backups", now=_at(h)) for h in (1, 2, 3)]
     finally:
         stop.set()
         writer.join()
-    assert written[0] > 10  # the writer really was busy while the backups were taken
+    assert written[0] >= 20  # the writer really was busy while the backups were taken
     for info in infos:
         verify_backup(info.path)  # integrity check passes on every copy
 

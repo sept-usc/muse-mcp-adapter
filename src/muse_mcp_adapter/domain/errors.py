@@ -67,6 +67,12 @@ class DownstreamToolError(DataPlaneError):
     code = "DOWNSTREAM_TOOL_ERROR"
 
 
+class DownstreamUnavailableError(DataPlaneError):
+    """The MCP server could not be reached, before anything was sent: safe to try again."""
+
+    code = "DOWNSTREAM_UNAVAILABLE"
+
+
 class UnknownOutcomeError(DataPlaneError):
     code = "UNKNOWN_OUTCOME"
 

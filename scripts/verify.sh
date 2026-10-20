@@ -52,13 +52,13 @@ COPYFILE_DISABLE=1 tar --exclude='._*' --exclude=.DS_Store --exclude=.git --excl
     pip install -q -e ".[dev]"
     echo "-- ruff";    ruff check src tests
     echo "-- pyright"; pyright
-    echo "-- pytest";  pytest -q
+    echo "-- pytest";  pytest -q --cov
   ' || fail "lint, types or tests failed on Linux/Python 3.12"
 
 step "this machine's own virtualenv: the same checks (catches a newer Python's differences)"
 .venv/bin/ruff check src tests || fail "ruff (local)"
 .venv/bin/pyright || fail "pyright (local)"
-.venv/bin/pytest -q || fail "pytest (local)"
+.venv/bin/pytest -q --cov || fail "pytest (local)"
 
 step "the images build"
 docker build -q -t mma-adapter:verify . >/dev/null || fail "adapter image build"
@@ -72,6 +72,9 @@ python3 scripts/check_package.py || fail "the release wheel does not work on its
 step "the installer works with an old and a new Python"
 scripts/check_install.sh || fail "the installer"
 
+step "the shipped stack works end to end (real images, guard, secrets, a real MCP server)"
+.venv/bin/python scripts/check_stack.py || fail "the shipped stack"
+
 step "no known high or critical vulnerabilities in the images (as CI scans them)"
 for image in mma-adapter:verify mma-guard:verify; do
   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v muse-verify-trivy:/root/.cache \
@@ -82,6 +85,7 @@ done
 step "muse-vm and the documentation"
 .venv/bin/python -m muse_vm --help >/dev/null || fail "muse-vm does not start"
 python3 scripts/check_docs.py || fail "documentation links"
+.venv/bin/python scripts/check_doc_commands.py || fail "a command in the documentation does not exist"
 step "every Mermaid diagram renders"
 python3 scripts/check_mermaid.py || fail "a Mermaid diagram does not render"
 

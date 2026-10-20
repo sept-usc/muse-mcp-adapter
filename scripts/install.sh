@@ -17,6 +17,37 @@ BIN="$HOME/.local/bin"
 mkdir -p "$BIN" "$HOME_DIR"
 export PATH="$BIN:$PATH"
 
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi
+}
+
+# Can this python create a virtual environment? (Stock Debian and Ubuntu ship python3 without it.)
+venv_works() {
+  local probe
+  probe="$(mktemp -d)"
+  if "$1" -m venv "$probe/v" >/dev/null 2>&1; then
+    rm -rf "$probe"
+    return 0
+  fi
+  rm -rf "$probe"
+  return 1
+}
+
+ensure_python() {
+  if command -v python3 >/dev/null 2>&1 && venv_works python3; then
+    return 0
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "Installing python3 and python3-venv with apt (this needs root or passwordless sudo)…"
+    run_privileged env DEBIAN_FRONTEND=noninteractive apt-get update -q
+    run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3 python3-venv
+  fi
+  if ! command -v python3 >/dev/null 2>&1 || ! venv_works python3; then
+    echo "This machine needs python3 with venv support. On Debian or Ubuntu: sudo apt install python3 python3-venv." >&2
+    exit 1
+  fi
+}
+
 python_ok() { "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; }
 
 install_with_venv() {
@@ -37,9 +68,10 @@ if command -v muse-vm >/dev/null 2>&1; then
   echo "muse-vm is already installed: $(command -v muse-vm)"
 else
   echo "Installing muse-vm…"
+  ensure_python
   chosen=""
   for candidate in python3.13 python3.12 python3; do
-    if command -v "$candidate" >/dev/null 2>&1 && python_ok "$candidate"; then
+    if command -v "$candidate" >/dev/null 2>&1 && python_ok "$candidate" && venv_works "$candidate"; then
       chosen="$candidate"
       break
     fi

@@ -171,8 +171,14 @@ def cmd_up(args: argparse.Namespace) -> None:
     say(f"muse-vm {__version__}: deploying {name!r} to {provider_name}")
 
     ingress_secrets: dict[str, str] = {}
-    key = _secret_value(
-        "TS_AUTHKEY", "Tailscale auth key (empty: sign in with a link)", required=False
+    # With --yes (the guided setup, scripts) nobody is asked: a key comes from the environment,
+    # otherwise the person signs in with a link.
+    key = (
+        os.environ.get("TS_AUTHKEY")
+        if args.yes
+        else _secret_value(
+            "TS_AUTHKEY", "Tailscale auth key (empty: sign in with a link)", required=False
+        )
     )
     if key:
         if not re.fullmatch(r"tskey-[A-Za-z0-9_-]{20,}", key):
@@ -277,7 +283,7 @@ def _fetch_images(
         t.compose("build", stream=True, timeout=3600)
         return
     try:
-        t.compose("pull", stream=True, timeout=1800)
+        t.compose("pull --quiet", stream=True, timeout=1800)
     except CommandError as error:
         raise SystemExit(
             f"The images could not be pulled ({env['MMA_IMAGE']}, {env['MMA_GUARD_IMAGE']}). "
@@ -323,7 +329,13 @@ def cmd_add_server(args: argparse.Namespace) -> None:
     if args.credential == "env_token":
         chosen: str = args.secret_name or f"{args.server.upper().replace('-', '_')}_TOKEN"
         secret_name = chosen
-        if chosen in bundle.list_secrets(t):
+        supplied = os.environ.get(chosen)
+        if supplied:  # a token given now replaces one stored earlier, such as a rejected one
+            replacing = chosen in bundle.list_secrets(t)
+            bundle.set_secret(t, chosen, supplied)
+            verb = "replaced" if replacing else "stored"
+            say(f"  {verb} {chosen} on the VM (readable only by the adapter)")
+        elif chosen in bundle.list_secrets(t):
             say(f"  using the {chosen} already stored on the VM")
         else:
             if getattr(args, "token_help", None) and sys.stdin.isatty():
@@ -334,8 +346,24 @@ def cmd_add_server(args: argparse.Namespace) -> None:
             say(f"  stored {chosen} on the VM (readable only by the adapter)")
     profile = {"none": "none", "env_token": "bearer", "oauth": "oauth"}[args.credential]
 
-    say(f"registering {server_id} at {args.endpoint}")
-    admin.register(server_id, args.display_name or server_id, args.endpoint, profile)
+    known = {str(item.get("serverId")): item for item in admin.servers()}
+    if server_id in known:
+        if known[server_id].get("endpoint") != args.endpoint:
+            raise SystemExit(
+                f"{server_id} is already registered at {known[server_id].get('endpoint')}. "
+                "Use another --name for the new address, or remove it first."
+            )
+        connections = [c for c in admin.links() if c.get("serverId") == server_id]
+        if connections:
+            say(
+                f"{server_id} is already connected ({len(connections)} connection(s)): "
+                "nothing to do. See them with `muse-vm servers`."
+            )
+            return
+        say(f"{server_id} was registered earlier but never finished: continuing")
+    else:
+        say(f"registering {server_id} at {args.endpoint}")
+        admin.register(server_id, args.display_name or server_id, args.endpoint, profile)
     linked: Linked | None = None
     if args.credential == "oauth":
         linked = admin.link(server_id, label, "oauth", None)
@@ -434,7 +462,9 @@ def cmd_setup(args: argparse.Namespace) -> None:
     plan, path = _plan_from(args)
     name = check_name(plan.name or DEFAULT_NAME)
     terminal = sys.stdin.isatty() and sys.stdout.isatty()
-    wizard_io = wizard.Io(say=say, ask=input, interactive=terminal and not args.non_interactive)
+    wizard_io = wizard.Io(
+        say=say, ask=wizard.ask_at_terminal, interactive=terminal and not args.non_interactive
+    )
     wizard.run(
         plan,
         name=name,
@@ -618,7 +648,7 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
         say(f"  building from commit {revision}")
         t.compose("build", stream=True, timeout=3600)
     else:
-        t.compose("pull", stream=True, timeout=1800)
+        t.compose("pull --quiet", stream=True, timeout=1800)
     env = bundle.parse_env(t.get(".env"))
     bundle.install(t, env, t.get("config/serve.json") or bundle.serve_config(str(dep.hostname)))
     bundle.install_units(t, idle_hours=dep.extra.get("idle_stop_hours"))
@@ -629,10 +659,8 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     report = selfcheck.run(t, str(dep.base_url), wait=300, say=say)
     for line in report.lines():
         say(line)
-    say(
-        f"Upgraded from {previous or 'the same version'} to {__version__}. "
-        "The address, the connections and the data are unchanged."
-    )
+    moved = f"Upgraded from {previous} to {__version__}" if previous else f"Rebuilt {__version__}"
+    say(f"{moved}. The address, the connections and the data are unchanged.")
 
 
 def cmd_backup(args: argparse.Namespace) -> None:

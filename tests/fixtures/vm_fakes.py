@@ -145,8 +145,10 @@ class ContainerTarget(Target):
         path = self.dir / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         raw = data.encode() if isinstance(data, str) else data
-        path.write_bytes(raw)
-        path.chmod(mode)
+        temporary = path.with_name(path.name + ".tmp")  # as the real target: write, then rename
+        temporary.write_bytes(raw)
+        temporary.chmod(mode)
+        temporary.replace(path)
 
     def get(self, relative: str) -> str | None:
         path = self.dir / relative
@@ -169,6 +171,10 @@ class ContainerTarget(Target):
                 ["sh", "-c", script], cwd=self.dir, capture_output=True, text=True
             )
             return Result(done.returncode, done.stdout, done.stderr)
+        if script.startswith("ls -1 secrets"):
+            folder = self.dir / "secrets"
+            names = sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+            return Result(0, "\n".join(names), "")
         return Result(0, "", "")
 
     def compose(  # type: ignore[override]

@@ -217,6 +217,17 @@ def wait_healthy(
     return False, last
 
 
+def _headers(url: str) -> dict[str, str]:
+    for attempt in range(4):  # the address can blip right after it first answered
+        try:
+            return _request("GET", url)[1]
+        except OSError:
+            if attempt == 3:
+                return {}
+            time.sleep(3)
+    return {}
+
+
 def _status(method: str, url: str, **kwargs: object) -> tuple[int | None, str]:
     for attempt in range(4):  # a tunnel drops a connection now and then; retry before it counts
         try:
@@ -244,7 +255,7 @@ def run(
         report.checks.extend(inside_checks(target).checks)
         return report
 
-    _, headers, _ = _request("GET", base_url + "/health")
+    headers = _headers(base_url + "/health")
     report.add(
         "security headers (HSTS, nosniff, no-store)",
         "strict-transport-security" in headers

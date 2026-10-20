@@ -297,6 +297,7 @@ class _Commands:
 def _wizard_environment(monkeypatch: pytest.MonkeyPatch) -> Any:
     # The menu offers "this machine" only on Linux: tests must not depend on where they run.
     monkeypatch.setattr(wizard.sys, "platform", "darwin")
+
     def passing(report: Report) -> None:
         report.add("this computer is ready", True)
 
@@ -359,6 +360,28 @@ def test_a_script_must_say_where_and_must_accept_the_cost() -> None:
     commands = _Commands()
     _run(config.Plan(cloud="gcp", yes=True), _Terminal(interactive=False), commands)
     assert len(commands.calls) == 1  # no servers listed and nobody to ask: just the deployment
+
+
+class _RejectsGithub(_Commands):
+    def __call__(self, argv: list[str]) -> int:
+        super().__call__(argv)
+        return 1 if argv[:2] == ["add-server", "github"] else 0
+
+
+def test_a_rejected_server_does_not_hide_that_the_install_worked() -> None:
+    plan = config.Plan(
+        cloud="gcp",
+        yes=True,
+        servers=[config.ServerPlan(server="github"), config.ServerPlan(server="learn")],
+    )
+    term, commands = _Terminal(interactive=False), _RejectsGithub()
+    with pytest.raises(SystemExit) as stopped:
+        _run(plan, term, commands)
+    assert stopped.value.code == 1  # a script still sees that something needs attention
+    assert [c[1] for c in commands.calls[1:]] == ["github", "learn"]  # the others were not skipped
+    assert "installed and running" in term.text
+    assert "muse-vm add-server github --name muse" in term.text
+    assert "Not connected: learn" not in term.text
 
 
 def test_declining_the_cost_creates_nothing() -> None:
@@ -456,9 +479,48 @@ def test_a_tailscale_key_file_is_used_and_a_bad_one_is_refused(tmp_path: Path) -
         )
 
 
-def test_an_unknown_server_choice_is_refused() -> None:
-    with pytest.raises(SystemExit, match="not one of the servers"):
-        _run(config.Plan(cloud="gcp", yes=True), _Terminal("nonsense"), _Commands())
+def test_a_mistyped_server_choice_is_asked_again_not_fatal() -> None:
+    commands = _Commands()
+    term = _Terminal("nonsense", "learn")  # a typo after the VM exists must not throw it away
+    _run(config.Plan(cloud="gcp", yes=True), term, commands)
+    assert "Not in the list: nonsense" in term.text
+    assert [c[:2] for c in commands.calls[1:]] == [["add-server", "learn"]]
+
+
+def test_giving_up_on_the_server_choice_skips_servers() -> None:
+    commands = _Commands()
+    term = _Terminal("x", "y", "z")
+    _run(config.Plan(cloud="gcp", yes=True), term, commands)
+    assert len(commands.calls) == 1  # only the deployment
+
+
+def test_a_server_of_your_own_can_be_given_by_address() -> None:
+    commands = _Commands()
+    term = _Terminal("https://mcp.example.com/mcp", "y")  # the address, then "needs a token"
+    _run(config.Plan(cloud="gcp", yes=True), term, commands)
+    add = commands.calls[1]
+    assert add[:3] == ["add-server", "mcp-example-com", "--name"]
+    assert add[add.index("--endpoint") + 1] == "https://mcp.example.com/mcp"
+    assert add[add.index("--credential") + 1] == "env_token"
+    assert add[add.index("--secret-name") + 1] == "MCP_EXAMPLE_COM_TOKEN"
+
+
+def test_a_yes_or_no_question_is_asked_again_on_a_stray_answer() -> None:
+    term = _Terminal("1,2,4", "maybe", "n")
+    assert term.io.confirm("Save?") is False
+    assert "Please answer y or n." in term.text
+    assert _Terminal("whatever", "x", "z").io.confirm("Save?", default=False) is False  # gives up
+
+
+def test_typed_ahead_keys_are_discarded_before_a_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io as stdio
+    import sys
+
+    monkeypatch.setattr(sys, "stdin", stdio.StringIO("answer\n"))
+    monkeypatch.setattr("builtins.input", lambda _q: "typed")
+    assert wizard.ask_at_terminal("? ") == "typed"  # not a terminal: nothing to flush, no crash
 
 
 def test_the_choices_can_be_saved_for_next_time(tmp_path: Path) -> None:
@@ -537,3 +599,23 @@ def test_the_doctor_checks_this_machine(monkeypatch: pytest.MonkeyPatch) -> None
     mac = Report()
     doctor.local_machine_checks(mac, _ssh_ok())
     assert not mac.ok and "--ssh" in " ".join(mac.lines())
+
+
+def test_a_blip_after_the_address_first_answers_does_not_abort_the_self_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from muse_vm import selfcheck
+
+    calls: list[int] = []
+
+    def flaky(method: str, url: str, **kwargs: object) -> tuple[int, dict[str, str], str]:
+        calls.append(1)
+        if len(calls) < 3:
+            raise OSError("Name or service not known")
+        return 200, {"cache-control": "no-store"}, "{}"
+
+    monkeypatch.setattr(selfcheck, "_request", flaky)
+    monkeypatch.setattr(selfcheck.time, "sleep", lambda _s: None)
+    assert selfcheck._headers("https://x/health") == {"cache-control": "no-store"}  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(selfcheck, "_request", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    assert selfcheck._headers("https://x/health") == {}  # pyright: ignore[reportPrivateUsage]
