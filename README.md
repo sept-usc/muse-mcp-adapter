@@ -36,6 +36,16 @@ The adapter does that work once. Toward Muse it is an ordinary REST API with an 
 - **The whole of MCP, tested.** Tools, resources, prompts, structured and multimedia results, progress, and mid-call questions are carried into one REST contract and validated against a purpose-built server.
 - **You keep custody.** You host it, keep the credentials, and keep the audit trail. Muse holds one revocable token per connector.
 
+**What Muse already does, and what this adds.** Muse can add services as Custom Connectors, keeps credentials away from the agent, confirms consequential actions with you, and keeps an activity history. The adapter does not replace any of that. It covers what a connector built for each server, one at a time, does not:
+
+| When this happens | Connecting each server by hand | Through the adapter |
+| --- | --- | --- |
+| A server adds, removes or changes a tool | The connector breaks, or quietly exposes the change | The published contract stays fixed. You see the difference, then publish a new version or roll back |
+| Someone must limit what the agent can do | Rules live in the agent platform | A second policy, owned by whoever owns the system, enforced on every call, whatever the agent does |
+| A write times out and nobody knows if it happened | A retry may do it twice | The write is recorded. A repeat is replayed, and an unknown outcome blocks a blind retry |
+| You use more than a server's tools: resources, prompts, progress, questions mid-call | You write and maintain each one | Carried into one REST contract and tested against a validation server |
+| You need to show where credentials and audit records live | With the agent platform | On a machine you run |
+
 The trade-off is one more service to run. For a single simple, stable MCP server you may not need it. It pays off with several servers behind one reviewed boundary, or when a write must never be done twice.
 
 ## Get started
