@@ -25,6 +25,8 @@ _ERROR_RESPONSES: Mapping[str, str] = {
     "413": "The request body is too large.",
     "429": "Too many requests. Retry later.",
     "502": "The underlying service failed or returned an unusable result.",
+    "503": "The underlying service could not be reached and nothing was sent. Safe to repeat "
+    "after the Retry-After delay.",
 }
 
 

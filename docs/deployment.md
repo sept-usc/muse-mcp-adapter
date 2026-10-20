@@ -1,6 +1,6 @@
 # Deployment reference
 
-The [README](../README.md#step-by-step-setup) walks through installing the adapter on a VM. This page is the reference behind it: what is installed on the machine, every `muse-vm` command, and how the images are built.
+The [README](getting-started.md) walks through installing the adapter on a VM. This page is the reference behind it: what is installed on the machine, every `muse-vm` command, and how the images are built.
 
 ## What is installed on the machine
 
@@ -8,7 +8,7 @@ Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings a
 
 | What | Where | Notes |
 |---|---|---|
-| Compose project: `guard`, `adapter`, `tailscale` | `/opt/muse-adapter/compose.yml` | Three containers, no published ports |
+| Compose project: `guard`, `adapter`, `tailscale` | `/opt/muse-adapter/compose.yml` | Three containers, no published ports. A fourth, `tailscale-login`, exists only while you approve the sign-in link during setup |
 | Adapter configuration | `config/serve.json` | Names where secrets are; holds none |
 | Database, key file, token store, artifacts | `data/` (mode 700, owned by the container user) | The adapter's state |
 | Secrets for MCP servers | `secrets/` (mode 700, one file per secret, mode 400) | Mounted read-only into the container |
@@ -46,9 +46,9 @@ Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings a
 | `secret set NAME`, `secret list` | Store or list the secrets servers need (values are never shown) |
 | `list`, `status`, `logs [SERVICE]`, `selfcheck` | Look at deployments and their health |
 | `start`, `stop` | Start or stop the adapter (on Google Cloud, the VM) |
-| `upgrade` | Rebuild from your updated checkout and restart; the address, connections and data stay |
-| `backup --out FILE`, `restore FILE` | Encrypted backup and restore. Set `MUSE_VM_BACKUP_PASSPHRASE` to avoid the prompt |
-| `down [--keep-data]` | Sign the device out of Tailscale and remove everything that was created |
+| `upgrade` | Rebuild from your updated checkout or installed release and restart; the address, connections and data stay |
+| `backup --out FILE`, `restore FILE` | Encrypted backup and restore. Set `MUSE_VM_BACKUP_PASSPHRASE` to avoid the prompt. The tokens for MCP servers are not in a backup: set them again with `secret set` after restoring onto a new machine |
+| `down [--keep-data]` | Sign the device out of Tailscale and remove everything that was created. Tailscale keeps the signed-out device's entry until you delete it under Machines |
 
 ## The Terraform module
 

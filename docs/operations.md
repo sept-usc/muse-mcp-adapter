@@ -1,6 +1,6 @@
 # Running the adapter on a VM
 
-How it runs, how to look after it, and what to do when something is wrong. The [README](../README.md#step-by-step-setup) covers installation and the [deployment reference](deployment.md) lists every command.
+How it runs, how to look after it, and what to do when something is wrong. The [README](getting-started.md) covers installation and the [deployment reference](deployment.md) lists every command.
 
 ## What runs
 
@@ -9,6 +9,7 @@ How it runs, how to look after it, and what to do when something is wrong. The [
 | `guard` | Owns the adapter's network; blocks the cloud metadata server and private ranges | Always |
 | `adapter` | The service | Always; a timer also restarts it if its health check fails |
 | `tailscale` | Publishes the adapter at its public HTTPS address (Funnel) | Always |
+| `tailscale-login` | Signs the machine in to Tailscale once, during setup, then exits and is removed | Never: it exists only while you approve the sign-in link |
 
 On the host: a daily backup timer, a health timer, optional idle shutdown, and automatic security updates. Everything lives in `/opt/muse-adapter`. After a reboot everything starts again without help, usually within a minute.
 
@@ -34,10 +35,10 @@ Start with `muse-vm selfcheck`; each line names what failed. `-v` on any command
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | `up` says the tailnet does not allow HTTPS and Funnel | Your Tailscale network has not used Funnel before | Open the approval link it prints (it also opens in your browser). If it printed steps instead: enable HTTPS certificates under DNS in the Tailscale console, and add `"nodeAttrs": [{"target": ["autogroup:member"], "attr": ["funnel"]}]` to the access controls |
-| `up` prints a Tailscale sign-in link and then times out | The link expired before it was opened (links last a few minutes) | Use an auth key (`TS_AUTHKEY`), or open the newest link as soon as it is printed |
+| `up` prints a Tailscale sign-in link and then stops after 30 minutes | Nobody opened the link in that time. The link itself stays valid while it waits | Run the same command again: it prints a new link. For an unattended run, use an auth key (`TS_AUTHKEY`) |
 | `up` says the device needs approval | Your tailnet requires device approval | Approve it under Machines in the Tailscale console |
 | The address does not resolve, or the self-check waits a long time | A first-time Funnel name can take up to ten minutes to reach public DNS | Wait; `muse-vm selfcheck` checks again. It asks a public resolver too, so a computer that is itself in your tailnet is not misled |
-| The address ends in `-1` or `-2` | An older device with the same name is still in your tailnet | Delete the stale offline device under Machines. `muse-vm down` signs devices out, so this happens only after an interrupted run |
+| The address ends in `-1` or `-2` | An older device with the same name is still in your tailnet | Delete the stale offline device under Machines. `muse-vm down` signs the device out, but Tailscale keeps its entry until you delete it, so reinstalling under the same name gets a suffix. Delete the entry after `down` to keep the name |
 | `Cannot run commands on … with sudo -n` | Key-based SSH or passwordless sudo is missing | Fix the login, then run `up` again |
 | `up` stops waiting for SSH on Google Cloud | A new VM is still booting, or IAP access is not granted to your account | The tool retries dropped connections; check that you have the IAP tunnel and OS Login roles |
 | The image build fails | The machine cannot reach Docker Hub or PyPI | Allow outbound access from the machine, or pre-build the images and use `--image` and `--guard-image` |
