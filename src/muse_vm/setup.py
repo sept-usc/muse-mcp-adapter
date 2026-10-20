@@ -152,7 +152,7 @@ def _choose_servers(io: Io) -> list[config.ServerPlan]:
 
 def _connect(
     server: config.ServerPlan, name: str, run_command: Callable[[list[str]], int], io: Io
-) -> None:
+) -> bool:
     preset = presets.find(server.server)
     secret = server.secret_name or (preset.secret_name if preset else None)
     if server.token_file:
@@ -175,9 +175,7 @@ def _connect(
         argv.append("--no-reads")
     io.say("")
     io.say(f"Connecting {preset.name if preset else server.server}…")
-    code = run_command(argv)
-    if code != 0:
-        raise SystemExit(code)
+    return run_command(argv) == 0
 
 
 def run(
@@ -239,8 +237,7 @@ def run(
     if not servers and io.interactive:
         servers = _choose_servers(io)
         plan.servers = servers
-    for server in servers:
-        _connect(server, name, run_command, io)
+    failed = [s for s in servers if not _connect(s, name, run_command, io)]
 
     if save_to is not None and (
         not config_existed
@@ -252,10 +249,21 @@ def run(
 
     dep = Deployment.load(name) if Deployment.path_for(name).exists() else None
     io.say("")
-    io.say("Done.")
+    io.say(
+        "Done."
+        if not failed
+        else "The adapter is installed and running, but not everything connected."
+    )
     if dep and dep.base_url:
         io.say(f"  The adapter is running at {dep.base_url}")
+    for server in failed:
+        io.say(
+            f"  Not connected: {server.server}. Fix the reason shown above (often a rejected or "
+            f"expired token), then run: muse-vm add-server {server.server} --name {name}"
+        )
     io.say("  Add a server to Muse: tell Muse the connector address printed above, click Connect,")
     io.say(
         "  and paste the token. More servers: muse-vm add-server <name>. Everything: muse-vm --help"
     )
+    if failed:
+        raise SystemExit(1)

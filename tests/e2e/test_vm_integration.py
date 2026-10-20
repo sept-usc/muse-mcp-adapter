@@ -196,6 +196,50 @@ def test_add_server_connects_a_real_server_and_the_printed_token_works(
     assert deployment.servers == ["tracker"]
 
 
+def test_a_rejected_token_can_be_corrected_by_running_the_same_command_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+    Deployment(
+        name="muse", provider="fake", ingress="tailscale-funnel", hostname="adapter.tail1.ts.net"
+    ).save()
+    vm = ContainerTarget(tmp_path / "vm")
+    _config(tmp_path / "vm")
+    _use(monkeypatch, _FakeProvider(Deployment.load("muse"), vm))
+    stored = tmp_path / "vm" / "secrets" / "TRACKER_TOKEN"
+
+    with atlas_server(auth="bearer") as atlas:
+        argv = [
+            "add-server",
+            "tracker",
+            "--endpoint",
+            atlas.url,
+            "--credential",
+            "env_token",
+            "--secret-name",
+            "TRACKER_TOKEN",
+            "--dev-network",
+            "--no-copy",
+            "--name",
+            "muse",
+        ]
+        monkeypatch.setenv("TRACKER_TOKEN", "an-expired-token")
+        _fails(argv, capsys, "DOWNSTREAM_AUTH_REJECTED")
+        assert stored.read_text().strip() == "an-expired-token"
+        assert Deployment.load("muse").servers == []  # nothing was announced as connected
+
+        monkeypatch.setenv("TRACKER_TOKEN", "atlas-secret-token")  # the person fixes the token
+        assert cli.main(argv) == 0
+        text = capsys.readouterr().out
+        assert "replaced TRACKER_TOKEN" in text and "registered earlier but never finished" in text
+        assert stored.read_text().strip() == "atlas-secret-token"
+        assert Deployment.load("muse").servers == ["tracker"]
+
+        assert cli.main(argv) == 0  # and running it once more changes nothing
+        again = capsys.readouterr().out
+        assert "already connected" in again and "Connector URL" not in again
+
+
 def test_add_server_for_a_public_server_needs_no_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

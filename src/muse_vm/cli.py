@@ -323,7 +323,13 @@ def cmd_add_server(args: argparse.Namespace) -> None:
     if args.credential == "env_token":
         chosen: str = args.secret_name or f"{args.server.upper().replace('-', '_')}_TOKEN"
         secret_name = chosen
-        if chosen in bundle.list_secrets(t):
+        supplied = os.environ.get(chosen)
+        if supplied:  # a token given now replaces one stored earlier, such as a rejected one
+            replacing = chosen in bundle.list_secrets(t)
+            bundle.set_secret(t, chosen, supplied)
+            verb = "replaced" if replacing else "stored"
+            say(f"  {verb} {chosen} on the VM (readable only by the adapter)")
+        elif chosen in bundle.list_secrets(t):
             say(f"  using the {chosen} already stored on the VM")
         else:
             if getattr(args, "token_help", None) and sys.stdin.isatty():
@@ -334,8 +340,24 @@ def cmd_add_server(args: argparse.Namespace) -> None:
             say(f"  stored {chosen} on the VM (readable only by the adapter)")
     profile = {"none": "none", "env_token": "bearer", "oauth": "oauth"}[args.credential]
 
-    say(f"registering {server_id} at {args.endpoint}")
-    admin.register(server_id, args.display_name or server_id, args.endpoint, profile)
+    known = {str(item.get("serverId")): item for item in admin.servers()}
+    if server_id in known:
+        if known[server_id].get("endpoint") != args.endpoint:
+            raise SystemExit(
+                f"{server_id} is already registered at {known[server_id].get('endpoint')}. "
+                "Use another --name for the new address, or remove it first."
+            )
+        connections = [c for c in admin.links() if c.get("serverId") == server_id]
+        if connections:
+            say(
+                f"{server_id} is already connected ({len(connections)} connection(s)): "
+                "nothing to do. See them with `muse-vm servers`."
+            )
+            return
+        say(f"{server_id} was registered earlier but never finished: continuing")
+    else:
+        say(f"registering {server_id} at {args.endpoint}")
+        admin.register(server_id, args.display_name or server_id, args.endpoint, profile)
     linked: Linked | None = None
     if args.credential == "oauth":
         linked = admin.link(server_id, label, "oauth", None)

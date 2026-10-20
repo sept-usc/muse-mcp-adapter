@@ -362,6 +362,28 @@ def test_a_script_must_say_where_and_must_accept_the_cost() -> None:
     assert len(commands.calls) == 1  # no servers listed and nobody to ask: just the deployment
 
 
+class _RejectsGithub(_Commands):
+    def __call__(self, argv: list[str]) -> int:
+        super().__call__(argv)
+        return 1 if argv[:2] == ["add-server", "github"] else 0
+
+
+def test_a_rejected_server_does_not_hide_that_the_install_worked() -> None:
+    plan = config.Plan(
+        cloud="gcp",
+        yes=True,
+        servers=[config.ServerPlan(server="github"), config.ServerPlan(server="learn")],
+    )
+    term, commands = _Terminal(interactive=False), _RejectsGithub()
+    with pytest.raises(SystemExit) as stopped:
+        _run(plan, term, commands)
+    assert stopped.value.code == 1  # a script still sees that something needs attention
+    assert [c[1] for c in commands.calls[1:]] == ["github", "learn"]  # the others were not skipped
+    assert "installed and running" in term.text
+    assert "muse-vm add-server github --name muse" in term.text
+    assert "Not connected: learn" not in term.text
+
+
 def test_declining_the_cost_creates_nothing() -> None:
     commands = _Commands()
     with pytest.raises(SystemExit, match="Nothing was created"):
