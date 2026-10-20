@@ -37,6 +37,7 @@ Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings a
 | `doctor` | Check what would stop a deployment, before anything is created: Python, `ssh`, `git`, the checkout, `gcloud` sign-in and credentials, project, APIs; or, with `--ssh USER@HOST`, key login, `sudo`, a supported Linux and outbound reachability |
 | `presets` | List the well-known servers `add-server` knows by name |
 | `up --cloud gcp --project P` | Create a Google Cloud VM and install the adapter. Options: `--zone`, `--machine-type`, `--budget-usd N`, `--idle-stop-hours N`, `--no-snapshots` |
+| `up --local` | Install on the machine you are running muse-vm on (Debian or Ubuntu, as root or with passwordless `sudo`): the same checks, install and removal as `--ssh`, without the SSH hop |
 | `up --ssh USER@HOST` | Install on a machine you have. Option: `--ssh-opt` for extra ssh options (a key, a port) |
 | `up` common options | `--name` (default `muse`), `--egress-allow CIDR`, `--tz`, `--keep-on-failure`, `--allow-dirty`, `--no-browser` (print Tailscale links instead of opening them), `-v` (print every command), `--yes` |
 | `add-server NAME` | Register, discover, draft a policy, publish and link a server; prints the connector address, token and connection code. A well-known name (`muse-vm presets`) needs nothing else; for your own server give `--endpoint URL`. `--credential none\|env_token\|oauth`, `--secret-name`, `--allow TOOL`, `--policy FILE`, `--no-reads` |
@@ -51,7 +52,7 @@ Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings a
 
 ## The settings file
 
-`muse-vm setup` reads `muse-vm.toml` from the folder you run it in (or `--config FILE`). Every key is optional; flags override the file; unknown keys are rejected. Keys: `name`, `cloud`, `ssh`, `ssh_opts`, `project`, `zone`, `machine_type`, `budget_usd`, `idle_stop_hours`, `egress_allow`, `tz`, `tailscale_authkey_file`, `yes`, and a `[[servers]]` table per server with `preset` (or `id` and `endpoint`), `credential`, `secret_name`, `token_file`, `allow`, `no_reads`. Secrets are never in the file: `tailscale_authkey_file` and `token_file` are paths to files that hold them. The README has a full example.
+`muse-vm setup` reads `muse-vm.toml` from the folder you run it in (or `--config FILE`). Every key is optional; flags override the file; unknown keys are rejected. Keys: `name`, `cloud`, `ssh`, `local`, `ssh_opts`, `project`, `zone`, `machine_type`, `budget_usd`, `idle_stop_hours`, `egress_allow`, `tz`, `tailscale_authkey_file`, `yes`, and a `[[servers]]` table per server with `preset` (or `id` and `endpoint`), `credential`, `secret_name`, `token_file`, `allow`, `no_reads`. Secrets are never in the file: `tailscale_authkey_file` and `token_file` are paths to files that hold them. The README has a full example.
 
 Deployment details are kept on your computer under `~/.config/muse-vm/` (set `MUSE_VM_HOME` to move it). They hold no secrets.
 

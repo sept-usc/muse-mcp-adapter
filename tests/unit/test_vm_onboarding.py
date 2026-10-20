@@ -105,7 +105,8 @@ secret_name = "TRACKER_TOKEN"
         ("budget_usd = 'lots'", "wrong type"),
         ("yes = 1", "wrong type"),
         ("cloud = 'aws'", 'cloud must be "gcp"'),
-        ("cloud = 'gcp'\nssh = 'a@b'", "either cloud or ssh"),
+        ("cloud = 'gcp'\nssh = 'a@b'", "choose one of cloud, ssh or local"),
+        ("local = true\nssh = 'a@b'", "choose one of cloud, ssh or local"),
         ("[[servers]]\nallow = []", "needs a preset or an id"),
         ("[[servers]]\npreset = 'x'\ncredential = 'magic'", "credential must be"),
         ("name = ", "not valid TOML"),
@@ -294,6 +295,8 @@ class _Commands:
 
 @pytest.fixture(autouse=True)
 def _wizard_environment(monkeypatch: pytest.MonkeyPatch) -> Any:
+    # The menu offers "this machine" only on Linux: tests must not depend on where they run.
+    monkeypatch.setattr(wizard.sys, "platform", "darwin")
     def passing(report: Report) -> None:
         report.add("this computer is ready", True)
 
@@ -485,3 +488,52 @@ def test_setup_is_wired_into_the_command_line(
     up = seen[0]
     assert up[:3] == ["up", "--name", "prod"] and up[up.index("--project") + 1] == "flag-proj"
     assert json.dumps(seen)  # nothing unserialisable leaked into the commands
+
+
+# ---- installing on the machine you are on ------------------------------------------------------
+def test_local_is_a_setting_and_reaches_the_up_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.sys, "platform", "linux")
+    plan = config.parse('local = true\nname = "vm"')
+    assert plan.local and config.parse(config.dump(plan)).local
+    commands = _Commands()
+    _run(plan, _Terminal(interactive=False), commands, runner=_ssh_ok())
+    assert "--local" in commands.calls[0] and "--ssh" not in commands.calls[0]
+
+
+def _ssh_ok() -> FakeRunner:
+    runner = FakeRunner()
+    runner.when("uname -s -m", stdout="Linux x86_64\n0\n")
+    runner.when("registry-1.docker.io", stdout="docker=22\npypi=0\n")
+    return runner
+
+
+def test_this_machine_is_offered_on_linux_but_never_inside_cloud_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wizard.sys, "platform", "linux")
+    monkeypatch.delenv("CLOUD_SHELL", raising=False)
+    gone = FakeRunner([("gcloud --version", Result(1, "", ""))])
+    for answer, expected in (("1", "local"), ("2", "ssh")):
+        plan = config.Plan()
+        term = _Terminal(answer, "deploy@203.0.113.7")
+        wizard._where(plan, term.io, gone)  # type: ignore[reportPrivateUsage]
+        assert (plan.local, bool(plan.ssh)) == (
+            (True, False) if expected == "local" else (False, True)
+        )
+        assert "This machine" in term.text
+
+    monkeypatch.setenv("CLOUD_SHELL", "true")  # installing Docker into Cloud Shell would be wrong
+    term = _Terminal("1", "deploy@203.0.113.7")
+    wizard._where(config.Plan(), term.io, gone)  # type: ignore[reportPrivateUsage]
+    assert "This machine" not in term.text
+
+
+def test_the_doctor_checks_this_machine(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.sys, "platform", "linux")
+    report = Report()
+    doctor.local_machine_checks(report, _ssh_ok())
+    assert report.ok
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    mac = Report()
+    doctor.local_machine_checks(mac, _ssh_ok())
+    assert not mac.ok and "--ssh" in " ".join(mac.lines())

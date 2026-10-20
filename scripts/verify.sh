@@ -35,6 +35,9 @@ step "GitHub workflows: syntax, and every action is pinned to a commit that exis
 docker run --rm -v "$PWD":/repo -w /repo "$ACTIONLINT_IMAGE" -color || fail "actionlint"
 python3 scripts/check_workflows.py || fail "an action reference is not pinned or does not exist"
 
+step "shell scripts are clean"
+scripts/check_shell.sh || fail "shellcheck"
+
 step "lint, types and the full test suite, on Linux with Python 3.12 (as CI does)"
 volume=muse-verify-pip
 docker volume create "$volume" >/dev/null
@@ -62,6 +65,9 @@ docker run --rm mma-adapter:verify --help >/dev/null || fail "adapter image does
 
 step "the release wheel installs on its own and builds the images from what it carries"
 python3 scripts/check_package.py || fail "the release wheel does not work on its own"
+
+step "the installer works with an old and a new Python"
+scripts/check_install.sh || fail "the installer"
 
 step "no known high or critical vulnerabilities in the images (as CI scans them)"
 for image in mma-adapter:verify mma-guard:verify; do

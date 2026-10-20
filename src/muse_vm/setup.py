@@ -9,6 +9,7 @@ do by hand.
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +45,7 @@ def _read_secret_file(path: str) -> str:
 
 def _where(plan: config.Plan, io: Io, runner: Runner) -> None:
     """Fill in cloud or ssh: from the config, from what gcloud already knows, or by asking."""
-    if plan.cloud or plan.ssh:
+    if plan.cloud or plan.ssh or plan.local:
         return
     if not io.interactive:
         raise SystemExit(
@@ -53,38 +54,50 @@ def _where(plan: config.Plan, io: Io, runner: Runner) -> None:
         )
     facts = doctor.gcloud_facts(runner)
     google = facts is not None and facts.credentials_ok and facts.project is not None
-    io.say("Where should the adapter run?")
+    on_linux = sys.platform.startswith("linux") and not os.environ.get("CLOUD_SHELL")
+    options: list[tuple[str, str]] = []
     if google and facts is not None:
         cost = MONTHLY_USD.get(plan.machine_type or DEFAULT_MACHINE)
-        io.say(
-            f"  1  A new VM in Google Cloud, project {facts.project}"
-            + (f" (about ${cost}/month plus a little for disk and NAT)" if cost else "")
+        options.append(
+            (
+                "gcp",
+                f"A new VM in Google Cloud, project {facts.project}"
+                + (f" (about ${cost}/month plus a little for disk and NAT)" if cost else ""),
+            )
         )
-        io.say("  2  A Linux machine I already have, over SSH")
-        choice = io.ask("Choose 1 or 2 [1] ").strip() or "1"
-    else:
+    if on_linux:
+        options.append(("local", "This machine (I am on the Linux VM the adapter should run on)"))
+    options.append(("ssh", "A Linux machine I already have, over SSH"))
+    io.say("Where should the adapter run?")
+    if not google:
         reason = (
             "gcloud is not installed or signed in"
             if facts is None or not facts.credentials_ok
             else "gcloud has no project set"
         )
         io.say(f"  (Google Cloud is not available here: {reason}.)")
-        io.say("  1  A Linux machine I already have, over SSH")
-        choice = "2" if (io.ask("Choose 1 [1] ").strip() or "1") == "1" else "x"
-    if choice == "1" and google and facts is not None:
+    for number, (_, label) in enumerate(options, 1):
+        io.say(f"  {number}  {label}")
+    answer = io.ask(f"Choose 1-{len(options)} [1] ").strip() or "1"
+    if not answer.isdigit() or not 0 < int(answer) <= len(options):
+        raise SystemExit("Please choose one of the options shown.")
+    choice = options[int(answer) - 1][0]
+    if choice == "gcp" and facts is not None:
         plan.cloud, plan.project = "gcp", plan.project or facts.project
-    elif choice == "2":
+    elif choice == "local":
+        plan.local = True
+    else:
         plan.ssh = io.ask("SSH address, for example deploy@203.0.113.7: ").strip()
         if not plan.ssh:
             raise SystemExit("An SSH address is needed.")
-    else:
-        raise SystemExit("Please choose one of the options shown.")
 
 
 def _checks(plan: config.Plan, io: Io, runner: Runner) -> None:
     report = Report()
     doctor.local_checks(report)
-    if plan.ssh:
+    if plan.local:
+        doctor.local_machine_checks(report, runner)
+    elif plan.ssh:
         doctor.ssh_checks(report, runner, plan.ssh, plan.ssh_opts)
     else:
         doctor.gcp_checks(report, runner, plan.project, plan.zone)
@@ -96,7 +109,9 @@ def _checks(plan: config.Plan, io: Io, runner: Runner) -> None:
 
 def _up_argv(plan: config.Plan, name: str) -> list[str]:
     argv = ["up", "--name", name, "--yes"]
-    if plan.ssh:
+    if plan.local:
+        argv.append("--local")
+    elif plan.ssh:
         argv += ["--ssh", plan.ssh]
     else:
         argv += ["--cloud", "gcp"]

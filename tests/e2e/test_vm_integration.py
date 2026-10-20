@@ -487,7 +487,7 @@ def test_up_needs_to_be_told_where_to_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    _fails(["up", "--name", "muse"], capsys, "--ssh user@host or --cloud gcp")
+    _fails(["up", "--name", "muse"], capsys, "--ssh user@host, --cloud gcp, or --local")
 
 
 def test_a_tailscale_auth_key_goes_into_the_private_environment_file_only(
