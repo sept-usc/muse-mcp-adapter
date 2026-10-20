@@ -36,15 +36,17 @@ The adapter does that work once. Toward Muse it is an ordinary REST API with an 
 - **The whole of MCP, tested.** Tools, resources, prompts, structured and multimedia results, progress, and mid-call questions are carried into one REST contract and validated against a purpose-built server.
 - **You keep custody.** You host it, keep the credentials, and keep the audit trail. Muse holds one revocable token per connector.
 
-**What Muse already does, and what this adds.** Muse can add services as Custom Connectors, keeps credentials away from the agent, confirms consequential actions with you, and keeps an activity history. The adapter does not replace any of that. It covers what a connector built for each server, one at a time, does not:
+**What Muse already does, and what this adds.** Muse can add services as Custom Connectors, keeps credentials away from the agent, confirms consequential actions with you, and keeps an activity history. The adapter does not replace any of that. It adds a layer you own, between Muse and each server:
 
 | When this happens | Connecting each server by hand | Through the adapter |
 | --- | --- | --- |
-| A server adds, removes or changes a tool | The connector breaks, or quietly exposes the change | The published contract stays fixed. You see the difference, then publish a new version or roll back |
-| Someone must limit what the agent can do | Rules live in the agent platform | A second policy, owned by whoever owns the system, enforced on every call, whatever the agent does |
-| A write times out and nobody knows if it happened | A retry may do it twice | The write is recorded. A repeat is replayed, and an unknown outcome blocks a blind retry |
-| You use more than a server's tools: resources, prompts, progress, questions mid-call | You write and maintain each one | Carried into one REST contract and tested against a validation server |
-| You need to show where credentials and audit records live | With the agent platform | On a machine you run |
+| A server adds, removes or changes a tool | Muse follows the change at once, reviewed or not | The published contract stays fixed. You see what changed, then publish a new version or roll back |
+| Someone must limit what the agent can do | Limits are whatever the agent platform offers | A second policy, owned by whoever owns the system, applied to every call |
+| A write times out and nobody knows if it happened | Nothing records the attempt, so a retry can do it twice | The write is recorded. A repeat is replayed, and an unknown outcome blocks a blind retry |
+| You use more than a server's tools: resources, prompts, progress, questions mid-call | It depends on the connector you build | All carried into one REST contract and tested against a direct MCP client |
+| You must say where credentials and audit records live | Wherever the platform keeps them | On a machine you run |
+
+[What it adds in detail, with the tests behind each claim and where it stops](docs/what-it-adds.md).
 
 The trade-off is one more service to run. For a single simple, stable MCP server you may not need it. It pays off with several servers behind one reviewed boundary, or when a write must never be done twice.
 
@@ -79,6 +81,7 @@ Then, in a new Muse chat, say: *"Create a connector called GitHub from the API s
 
 | Topic | Page |
 | --- | --- |
+| What it adds, with the evidence and the limits | [What it adds](docs/what-it-adds.md) |
 | How it works, and the key terms | [How it works](docs/how-it-works.md) |
 | Every command and what is installed on the machine | [Deployment reference](docs/deployment.md) |
 | Looking after it | [Running on a VM](docs/operations.md) |
