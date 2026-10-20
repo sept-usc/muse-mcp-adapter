@@ -34,7 +34,7 @@ Muse ──(token or OAuth)──▶ Adapter ──(policy-checked, your credent
 - If tokens are missing or cannot be refreshed, requests fail fast with a clear reconnect message (and a fresh link) instead of waiting for a browser. A write is never marked uncertain because of this.
 
 **Write safety**
-- Muse confirms consequential actions with its user before calling them. Optionally, require signed approval evidence as well (`approvalMode: signed`).
+- Muse confirms consequential actions with its user before calling them. A signed-approval mode (`approvalMode: signed`) exists in the code but is not usable end to end yet, because the HTTP interface cannot carry the approval evidence; leave it off.
 - Writes carry an idempotency key, supplied by Muse or derived from the request, so a retry returns the stored result instead of running again.
 - If the outcome cannot be established (a failure after the request was sent, a rejected result, or a crash), the write is marked `UNKNOWN` and is not retried until you reconcile it. Failures that happen before anything was sent are safely retryable.
 - An operation never remains in `RUNNING` after an error.
