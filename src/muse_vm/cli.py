@@ -137,17 +137,16 @@ def cmd_up(args: argparse.Namespace) -> None:
     build = not args.image
     if args.image and not args.guard_image:
         raise SystemExit("--image needs --guard-image too: both images come from your registry.")
-    source = None
+    source: bundle.BuildSource | None = None
     if build:
-        source = bundle.find_source_dir()
-        if source:
-            _refuse_unreviewed(source, args.allow_dirty)
-        if not source:
+        source = bundle.find_build_source()
+        if source is None:
             raise SystemExit(
-                "Run muse-vm from a checkout of the muse-mcp-adapter repository: the images are "
-                "built from it on the target machine. (To use images from your own registry, "
-                "pass --image and --guard-image.)"
+                "There is nothing to build the images from: install muse-mcp-adapter from a "
+                "release, or run muse-vm inside a checkout of the repository. (To use images "
+                "from your own registry, pass --image and --guard-image.)"
             )
+        _refuse_unreviewed(source, args.allow_dirty)
     dep = Deployment(
         name=name,
         provider=provider_name,
@@ -256,22 +255,24 @@ def cmd_up(args: argparse.Namespace) -> None:
     say(f"  muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp --name {name}")
 
 
-def _refuse_unreviewed(source: Path, allow: bool) -> None:
+def _refuse_unreviewed(source: bundle.BuildSource, allow: bool) -> None:
     """A deployment should come from a commit that can be named again, not from local edits."""
-    revision, dirty = bundle.source_revision(source)
-    if dirty and not allow:
+    if source.dirty and not allow:
         raise SystemExit(
-            f"The checkout at {revision} has uncommitted changes to what is deployed. Commit or "
-            "stash them so the deployment matches a commit, or pass --allow-dirty."
+            f"The checkout at {source.revision} has uncommitted changes to what is deployed. "
+            "Commit or stash them so the deployment matches a commit, or pass --allow-dirty."
         )
 
 
 def _fetch_images(
-    t: Any, dep: Deployment, env: dict[str, str], source: Path | None, log: Any
+    t: Any, dep: Deployment, env: dict[str, str], source: bundle.BuildSource | None, log: Any
 ) -> None:
     if dep.build:
         assert source
-        log("  uploading the source and building the images on the machine (a few minutes)…")
+        log(
+            f"  uploading the source ({source.kind} {source.revision}) and building the images on "
+            "the machine (a few minutes)…"
+        )
         bundle.upload_source(t, source)
         t.compose("build", stream=True, timeout=3600)
         return
@@ -603,11 +604,11 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     t = provider.target()
     previous = bundle.set_version(t)
     if dep.build:
-        source = bundle.find_source_dir()
-        if not source:
+        source = bundle.find_build_source()
+        if source is None:
             raise SystemExit(
-                "Run `muse-vm upgrade` from the updated checkout of the muse-mcp-adapter "
-                "repository (git pull first): the images are rebuilt from it."
+                "Nothing to rebuild from: upgrade muse-mcp-adapter first (`pipx upgrade "
+                "muse-mcp-adapter`, or `git pull` in your checkout), then run `muse-vm upgrade`."
             )
         _refuse_unreviewed(source, args.allow_dirty)
         revision = bundle.upload_source(t, source)

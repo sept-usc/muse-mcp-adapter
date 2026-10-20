@@ -139,13 +139,14 @@ You run the adapter in your own environment, on your own machine and with your o
 
 ## Quick start
 
-You need a computer with Python 3.12+, `git` and `ssh`; a free [Tailscale](https://tailscale.com) account; and either a Google Cloud project (with the `gcloud` CLI signed in) or a Linux machine you can SSH into.
+You need a computer with Python 3.12+ and `ssh`; a free [Tailscale](https://tailscale.com) account; and either a Google Cloud project (with the `gcloud` CLI signed in) or a Linux machine you can SSH into.
 
 ```bash
-git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter
-python3 -m venv .venv && .venv/bin/python -m pip install .
-.venv/bin/muse-vm setup
+pipx install git+https://github.com/sept-usc/muse-mcp-adapter    # or: pip install ...
+muse-vm setup
 ```
+
+(No `pipx`? `python3 -m pip install --user pipx`, or use a virtual environment and `pip install` the same address. To review the code first, or to pin a commit, [clone it](#step-1--get-the-code) instead.)
 
 `muse-vm setup` is a guided run. It checks that everything is in place, asks where the adapter should run, creates it, opens the two Tailscale links you need to click, lets you pick the MCP servers Muse should use, and prints what to give Muse. It asks only for what it cannot work out itself, and it takes 10 to 20 minutes, most of it building.
 
@@ -166,15 +167,23 @@ flowchart LR
 ### Step 1 · Get the code
 
 ```bash
+pipx install git+https://github.com/sept-usc/muse-mcp-adapter
+```
+
+**What this does.** It installs the `muse-vm` command. The adapter itself is built later, on the machine, from the code that came with the install: the container recipe, the hash-locked dependency list and the egress guard all travel inside the package, so there is nothing else to download. `muse-vm` records which release the images were built from.
+
+**To review and pin the code first** (recommended for production), clone it and install from your checkout instead:
+
+```bash
 git clone https://github.com/sept-usc/muse-mcp-adapter
 cd muse-mcp-adapter
 git checkout <the tag or commit you have reviewed>
 python3 -m venv .venv && .venv/bin/python -m pip install .
 ```
 
-**What this does.** It installs the `muse-vm` command on your computer. The adapter itself is built later, on the machine, from this same checkout, so you run exactly the code you reviewed. `muse-vm` records the commit in the image and refuses to deploy a checkout with uncommitted changes (`--allow-dirty` overrides).
+From a checkout, `muse-vm` builds from that checkout and records the commit. It refuses to deploy a checkout with uncommitted changes (`--allow-dirty` overrides), so every deployment matches a commit you can name again. In the examples below, `muse-vm` is `.venv/bin/muse-vm` in that case.
 
-**Not sure everything is in place?** Run `.venv/bin/muse-vm doctor` first. It checks Python, `ssh`, the checkout, and (if you use Google Cloud) that `gcloud` is signed in with valid credentials and a project, and tells you how to fix anything that is missing, before anything is created.
+**Not sure everything is in place?** Run `muse-vm doctor` first. It checks Python, `ssh`, what the images will be built from, and (if you use Google Cloud) that `gcloud` is signed in with valid credentials and a project, and tells you how to fix anything that is missing, before anything is created.
 
 ### Step 2 · Run setup
 
@@ -346,7 +355,7 @@ Collect `muse-vm status`, `muse-vm selfcheck` and `muse-vm logs` (they contain n
 | Add another MCP server | `muse-vm add-server <name>` (see `muse-vm presets`); it gets its own connector and token |
 | Change what Muse can use | `muse-vm expose SERVER --allow TOOL` / `--deny TOOL` |
 | Logs | `muse-vm logs` (adapter), `muse-vm logs tailscale` |
-| New version | `git pull`, review what changed, then `muse-vm upgrade` (address, connections and data stay) |
+| New version | `pipx upgrade muse-mcp-adapter` (or `git pull` in your checkout, and review what changed), then `muse-vm upgrade`: the address, connections and data stay |
 | Backup and restore | `muse-vm backup --out FILE` (encrypted with a passphrase you choose), `muse-vm restore FILE` |
 | A leaked token | `muse-vm rotate-token SERVER` |
 | Pause to save money | `muse-vm stop`, `muse-vm start` (on Google Cloud this powers the VM off) |

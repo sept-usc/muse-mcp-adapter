@@ -20,6 +20,7 @@ import re
 import shlex
 import subprocess
 import tarfile
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
@@ -234,23 +235,69 @@ def source_revision(source: Path) -> tuple[str, bool]:
     return revision, bool(changed)
 
 
-def upload_source(target: Target, source: Path) -> str:
+# What the images are built from, as (path in the checkout, name in the archive).
+SOURCE_PARTS = (
+    ("Dockerfile", "Dockerfile"),
+    ("requirements.lock", "requirements.lock"),
+    ("src/muse_mcp_adapter", "src/muse_mcp_adapter"),
+    ("deploy/guard", "guard"),
+)
+
+
+@dataclass(frozen=True)
+class BuildSource:
+    """The code the images are built from: a reviewed checkout, or the installed release."""
+
+    kind: str  # "checkout" or "release"
+    files: tuple[tuple[Path, str], ...]  # (where it is on this computer, name in the archive)
+    revision: str
+    dirty: bool = False
+
+
+def _release_context() -> Path | None:
+    """The build context shipped inside the installed package (absent in a development install)."""
+    context = Path(str(resources.files("muse_vm").joinpath("context")))
+    return context if (context / "Dockerfile").is_file() else None
+
+
+def find_build_source(start: Path | None = None) -> BuildSource | None:
+    """A checkout if there is one (it is what you reviewed), else the installed release."""
+    checkout = find_source_dir(start)
+    if checkout is not None:
+        revision, dirty = source_revision(checkout)
+        return BuildSource(
+            "checkout",
+            tuple((checkout / relative, name) for relative, name in SOURCE_PARTS),
+            revision,
+            dirty,
+        )
+    context = _release_context()
+    if context is None:
+        return None
+    adapter = Path(str(resources.files("muse_mcp_adapter")))
+    return BuildSource(
+        "release",
+        (
+            (context / "Dockerfile", "Dockerfile"),
+            (context / "requirements.lock", "requirements.lock"),
+            (adapter, "src/muse_mcp_adapter"),
+            (context / "guard", "guard"),
+        ),
+        f"release-{__version__}",
+    )
+
+
+def upload_source(target: Target, source: BuildSource) -> str:
     """Send what the images are built from: the adapter, its lock, and the egress guard.
 
-    Returns the commit they were built from, which is recorded in the images.
+    Returns the revision they were built from, which is recorded in the images.
     """
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-        for relative, arcname in (
-            ("Dockerfile", "Dockerfile"),
-            ("requirements.lock", "requirements.lock"),
-            ("src/muse_mcp_adapter", "src/muse_mcp_adapter"),
-            ("deploy/guard", "guard"),
-        ):
-            archive.add(source / relative, arcname=arcname, filter=_normalise)
+        for path, name in source.files:
+            archive.add(path, arcname=name, filter=_normalise)
     target.sh("rm -rf src && mkdir -p src && tar -xpzf - -C src", input=buffer.getvalue())
-    revision, dirty = source_revision(source)
-    revision += "-modified" if dirty else ""
+    revision = source.revision + ("-modified" if source.dirty else "")
     env = parse_env(target.get(".env"))
     if env:
         env["MMA_REVISION"] = revision

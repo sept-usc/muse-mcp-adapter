@@ -57,22 +57,24 @@ def local_checks(report: Report) -> None:
         ("git", "recording which commit is deployed"),
     ):
         report.add(f"{tool} is installed (for {why})", shutil.which(tool) is not None)
-    source = bundle.find_source_dir()
+    source = bundle.find_build_source()
     if source is None:
         report.add(
-            "a checkout of the muse-mcp-adapter repository",
+            "something to build the images from",
             False,
-            "run muse-vm from inside the cloned repository: the images are built from it",
+            "install muse-mcp-adapter from a release, or run muse-vm inside a cloned repository",
         )
         return
-    revision, dirty = bundle.source_revision(source)
+    if source.kind == "release":
+        report.add("the images are built from the installed release", True, source.revision)
+        return
     report.add(
         "the checkout is clean",
-        not dirty,
-        f"commit {revision}"
-        if not dirty
+        not source.dirty,
+        f"commit {source.revision}"
+        if not source.dirty
         else "uncommitted changes: commit them, or pass --allow-dirty to up",
-        required=not dirty,
+        required=not source.dirty,
     )
 
 

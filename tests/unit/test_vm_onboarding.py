@@ -293,13 +293,17 @@ class _Commands:
 
 
 @pytest.fixture(autouse=True)
-def _wizard_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def _wizard_environment(monkeypatch: pytest.MonkeyPatch) -> Any:
     def passing(report: Report) -> None:
         report.add("this computer is ready", True)
 
     monkeypatch.setattr(doctor, "local_checks", passing)
     monkeypatch.delenv("TS_AUTHKEY", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    yield
+    # The wizard puts secrets it reads from files into the environment, for the commands it runs.
+    for name in ("TS_AUTHKEY", "GITHUB_TOKEN"):
+        os.environ.pop(name, None)
 
 
 def _run(
