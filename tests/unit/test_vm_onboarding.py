@@ -538,3 +538,23 @@ def test_the_doctor_checks_this_machine(monkeypatch: pytest.MonkeyPatch) -> None
     mac = Report()
     doctor.local_machine_checks(mac, _ssh_ok())
     assert not mac.ok and "--ssh" in " ".join(mac.lines())
+
+
+def test_a_blip_after_the_address_first_answers_does_not_abort_the_self_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from muse_vm import selfcheck
+
+    calls: list[int] = []
+
+    def flaky(method: str, url: str, **kwargs: object) -> tuple[int, dict[str, str], str]:
+        calls.append(1)
+        if len(calls) < 3:
+            raise OSError("Name or service not known")
+        return 200, {"cache-control": "no-store"}, "{}"
+
+    monkeypatch.setattr(selfcheck, "_request", flaky)
+    monkeypatch.setattr(selfcheck.time, "sleep", lambda _s: None)
+    assert selfcheck._headers("https://x/health") == {"cache-control": "no-store"}  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(selfcheck, "_request", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    assert selfcheck._headers("https://x/health") == {}  # pyright: ignore[reportPrivateUsage]

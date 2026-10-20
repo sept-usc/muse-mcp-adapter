@@ -70,6 +70,10 @@ services:
       TS_STATE_DIR: /var/lib/tailscale
       TS_SERVE_CONFIG: /config/serve.json
       TS_USERSPACE: "true"
+      # These three must match what `tailscale-login` below passes to `tailscale up`: Tailscale
+      # refuses a second `up` that leaves out a setting the first one changed.
+      TS_HOSTNAME: ${MMA_TS_HOSTNAME:-muse-adapter}
+      TS_ACCEPT_DNS: "false"
       TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
     volumes:
       - ./ts-state:/var/lib/tailscale
@@ -94,12 +98,13 @@ services:
         daemon=$$!
         waited=0
         while [ ! -S $$sock ] && [ $$waited -lt 30 ]; do sleep 1; waited=$$((waited + 1)); done
-        tailscale --socket=$$sock up --hostname="$$TS_HOSTNAME" --accept-dns=false
+        tailscale --socket=$$sock up --hostname="$$TS_HOSTNAME" --accept-dns=false $${TS_EXTRA_ARGS:-}
         echo "Login complete."
         kill $$daemon || true
         wait $$daemon || true
     environment:
       TS_HOSTNAME: ${MMA_TS_HOSTNAME:-muse-adapter}
+      TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
     security_opt: ["no-new-privileges:true"]
     logging: *logging
     volumes:

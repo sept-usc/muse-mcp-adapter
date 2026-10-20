@@ -577,3 +577,16 @@ def test_with_neither_there_is_nothing_to_build_from(
     monkeypatch.setattr(bundle, "find_source_dir", _no_checkout)
     monkeypatch.setattr(bundle, "_release_context", lambda: None)
     assert bundle.find_build_source() is None
+
+
+def test_the_sign_in_step_and_the_running_service_ask_tailscale_for_the_same_settings() -> None:
+    # Tailscale rejects a second `up` that omits a setting the first one changed, which leaves
+    # the device signed in but the service crash-looping.
+    services = _compose()["services"]
+    login = "\n".join(services["tailscale-login"]["command"])
+    running = services["tailscale"]["environment"]
+    assert "--accept-dns=false" in login and running["TS_ACCEPT_DNS"] == "false"
+    assert '--hostname="$$TS_HOSTNAME"' in login
+    assert running["TS_HOSTNAME"] == services["tailscale-login"]["environment"]["TS_HOSTNAME"]
+    assert running["TS_EXTRA_ARGS"] == services["tailscale-login"]["environment"]["TS_EXTRA_ARGS"]
+    assert "TS_EXTRA_ARGS" in login
