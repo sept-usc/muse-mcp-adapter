@@ -123,3 +123,67 @@ def test_a_failing_certificate_fetch_is_retried_and_reported_but_does_not_stop_t
     name, said = _up(target)
     assert name == NAME and target.cert_attempts == 3
     assert any("no HTTPS certificate" in line and "set-dns" in line for line in said)
+
+
+# ---- the one-time sign-in ---------------------------------------------------------------------
+class Login(FakeTarget):
+    """A login service whose log grows over time: a link, then (maybe) completion."""
+
+    def __init__(self, logs: list[str], *, exited: bool = False) -> None:
+        super().__init__()
+        self.logs = logs
+        self.exited = exited
+
+    def sh(self, script: str, *args: Any, **kwargs: Any) -> Result:  # type: ignore[override]
+        super().sh(script, *args, **kwargs)
+        if "logs --no-color tailscale-login" in script:
+            text = self.logs.pop(0) if len(self.logs) > 1 else self.logs[0]
+            return Result(0, text, "")
+        if "ps -a --status exited" in script:
+            return Result(0, "abc123\n" if self.exited else "", "")
+        return Result(0, "", "")
+
+
+LINK = "To authenticate, visit:\n\n\thttps://login.tailscale.com/a/abc123XYZ\n"
+
+
+def test_the_login_shows_one_stable_link_and_waits_until_it_is_approved() -> None:
+    target = Login([LINK, LINK, LINK + "Login complete.\n"])
+    said: list[str] = []
+    opened: list[str] = []
+    ingress.interactive_login(
+        target,
+        say=said.append,
+        sleep=lambda _: None,
+        open_link=lambda url: opened.append(url) or True,
+    )
+    assert sum("login.tailscale.com/a/abc123XYZ" in line for line in said) == 1  # shown once
+    assert opened == ["https://login.tailscale.com/a/abc123XYZ"]
+    assert target.ran("up -d tailscale-login")
+    assert target.ran("rm -f -s tailscale-login")  # cleaned up
+
+
+def test_a_new_link_is_shown_again_if_the_old_one_was_replaced() -> None:
+    newer = "visit https://login.tailscale.com/a/second\n"
+    target = Login([LINK, LINK + newer, LINK + newer + "Login complete.\n"])
+    said: list[str] = []
+    ingress.interactive_login(target, say=said.append, sleep=lambda _: None)
+    links = [line.rsplit(" ", 1)[1] for line in said if "Sign in" in line]
+    assert links == [
+        "https://login.tailscale.com/a/abc123XYZ",
+        "https://login.tailscale.com/a/second",
+    ]
+
+
+def test_a_login_that_stops_early_reports_why_and_is_cleaned_up() -> None:
+    target = Login(["tailscaled: cannot open state\n"], exited=True)
+    with pytest.raises(SystemExit, match="stopped before it finished"):
+        ingress.interactive_login(target, say=lambda _: None, sleep=lambda _: None)
+    assert target.ran("rm -f -s tailscale-login")
+
+
+def test_a_login_nobody_completes_times_out_with_advice(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = Login([LINK])
+    with pytest.raises(SystemExit, match="not completed in time"):
+        ingress.interactive_login(target, timeout=0.01, say=lambda _: None, sleep=lambda _: None)
+    assert target.ran("rm -f -s tailscale-login")

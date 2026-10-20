@@ -46,7 +46,7 @@ flowchart LR
 [What is it?](#what-is-it) · [What can you use it for?](#what-can-you-use-it-for) · [Why use it?](#why-use-it) · [How it works](#how-it-works) · [Key concepts](#key-concepts)
 
 **Get started**
-[Quick start](#quick-start) · [Step-by-step setup](#step-by-step-setup) · [Troubleshooting](#troubleshooting)
+[Quick start](#quick-start) · [Step-by-step setup](#step-by-step-setup) · [Settings file and automation](#settings-file-and-automation) · [Doing it by hand](#doing-it-by-hand) · [Troubleshooting](#troubleshooting)
 
 **Use it**
 [Day to day](#day-to-day) · [Stay in control: your policy](#stay-in-control-your-policy) · [What Muse sees](#what-muse-sees)
@@ -92,7 +92,7 @@ The trade-off is one more service to run. For a single simple, stable MCP server
 
 ```mermaid
 flowchart LR
-    A["<b>1 Create the deployment</b><br/>muse-vm up<br/>builds and starts the adapter,<br/>gives it a public address"] --> B["<b>2 Connect a server</b><br/>muse-vm add-server<br/>registers it and discovers<br/>what it offers"]
+    A["<b>1 Create the deployment</b><br/>muse-vm setup<br/>builds and starts the adapter,<br/>gives it a public address"] --> B["<b>2 Connect a server</b><br/>muse-vm add-server<br/>registers it and discovers<br/>what it offers"]
     B --> C["<b>3 Policy</b><br/>read-only tools are approved,<br/>everything else waits<br/>for you"]
     C --> D["<b>4 Publish</b><br/>the approved catalog goes live;<br/>you get a connector URL<br/>and a token"]
     D --> E["<b>5 Add to Muse</b><br/>tell Muse the URL,<br/>paste the token"]
@@ -102,7 +102,7 @@ flowchart LR
     class C you;
 ```
 
-1. **You run the adapter on a small Linux machine you control.** One command, `muse-vm up`, builds it from this repository and starts it. The machine gets a public HTTPS address through Tailscale Funnel, and nothing on it accepts inbound connections.
+1. **You run the adapter on a small Linux machine you control.** One guided command, `muse-vm setup`, builds it from this repository and starts it. The machine gets a public HTTPS address through Tailscale Funnel, and nothing on it accepts inbound connections.
 2. **You connect an MCP server.** `muse-vm add-server` registers the server, looks at what it offers, and drafts a policy that exposes only its read-only tools. You decide whether to expose more.
 3. **You add the connector to Muse.** You give Muse a connector address and a token. Muse reads the API description and can now use the tools you approved.
 4. **Every call is checked.** When Muse calls a tool, the adapter confirms who is calling, that the operation is on your list, and that the input is valid. It then calls the MCP server with its own credential, checks the answer, records the call, and replies.
@@ -139,66 +139,31 @@ You run the adapter in your own environment, on your own machine and with your o
 
 ## Quick start
 
-About five minutes of typing and fifteen of waiting. You need Python 3.12+, `git`, `ssh`, a Tailscale account that has [the one-time settings](#step-2--prepare-tailscale-once) switched on, and either a Google Cloud project or a Linux machine you can SSH into.
+You need a computer with Python 3.12+, `git` and `ssh`; a free [Tailscale](https://tailscale.com) account; and either a Google Cloud project (with the `gcloud` CLI signed in) or a Linux machine you can SSH into.
 
 ```bash
 git clone https://github.com/sept-usc/muse-mcp-adapter && cd muse-mcp-adapter
 python3 -m venv .venv && .venv/bin/python -m pip install .
-
-# 1. Create the deployment (Google Cloud shown; for your own machine use --ssh user@host)
-.venv/bin/muse-vm up --cloud gcp --project my-project
-
-# 2. Connect an MCP server; it prints a connector address and a token
-.venv/bin/muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp
+.venv/bin/muse-vm setup
 ```
 
-Then tell Muse: *"Create a connector called Microsoft Learn from the API spec at `<the connector address>`"*, click **Connect**, and paste the token. Ask Muse something that needs the documentation, and it will use the connector.
+`muse-vm setup` is a guided run. It checks that everything is in place, asks where the adapter should run, creates it, opens the two Tailscale links you need to click, lets you pick the MCP servers Muse should use, and prints what to give Muse. It asks only for what it cannot work out itself, and it takes 10 to 20 minutes, most of it building.
 
-Every step is explained below, including what to expect and what to do if it does not work.
+Then tell Muse: *"Create a connector called GitHub from the API spec at `<the connector address setup printed>`"*, click **Connect**, and paste the token. That's it.
+
+The rest of this page explains each stage, shows how to set everything in one file or run it without prompts, and has a [troubleshooting guide](#troubleshooting).
 
 ## Step-by-step setup
 
-Setup is seven steps. Each one says what you do, what happens behind the scenes, how you know it worked, and where to look if it did not.
-
-```text
- 1 Check what you need ─▶ 2 Prepare Tailscale ─▶ 3 Get the code ─▶ 4 Create the deployment
-                                                                              │
- 7 Connect Muse and try it ◀─ 6 Decide what Muse can use ◀─ 5 Connect a server ◀┘
+```mermaid
+flowchart LR
+    A["<b>1 Get the code</b><br/>clone and install<br/>muse-vm"] --> B["<b>2 Run setup</b><br/>muse-vm setup"]
+    B --> C["<b>3 Answer a few questions</b><br/>where it runs,<br/>which servers"]
+    C --> D["<b>4 Click the Tailscale links</b><br/>sign in and approve"]
+    D --> E["<b>5 Connect Muse</b><br/>paste the address<br/>and token"]
 ```
 
-### Step 1 · Check what you need
-
-| You need | For | Notes |
-|---|---|---|
-| A computer with **Python 3.12+**, **git** and **ssh** | Running `muse-vm` | This is *your* computer, not the adapter's. Docker is not needed on it |
-| A **Linux machine** for the adapter | Hosting it | Either one you already have (Debian or Ubuntu, x86_64 or arm64, key-based SSH, passwordless `sudo`, 1 vCPU, 2 GB memory, 20 GB disk), or let `muse-vm` create one on Google Cloud |
-| For Google Cloud: the **`gcloud` CLI**, signed in, and a project with billing | Creating the VM | Your account needs to create instances and firewall rules and to use Identity-Aware Proxy |
-| A **Tailscale account** (the free plan is enough) | The public HTTPS address | Set up once in step 2 |
-| Outbound internet access from the machine | Building the images | Docker Hub (base images) and PyPI (Python packages, checked against hashes) |
-| The MCP server's **public HTTPS address** | Connecting a server | Private or plain-HTTP servers are refused |
-
-**Why Tailscale?** Muse runs in the cloud and needs a public HTTPS address with a proper hostname (Muse refuses addresses that merely encode an IP, such as `203-0-113-7.sslip.io`). Tailscale Funnel provides one, with a certificate, without you opening a single port, owning a domain, or giving the machine a public IP.
-
-### Step 2 · Prepare Tailscale (once)
-
-**What you do.** Three one-time settings in your Tailscale account:
-
-1. Open the [DNS settings](https://login.tailscale.com/admin/dns) and enable **HTTPS Certificates**.
-2. Open the [access controls](https://login.tailscale.com/admin/acls/file), add the section below (or add the entry to an existing `nodeAttrs` section), and save:
-
-   ```json
-   "nodeAttrs": [
-     { "target": ["autogroup:member"], "attr": ["funnel"] }
-   ],
-   ```
-
-3. *Optional, and recommended:* under **Settings, Keys**, generate an **auth key** that is *single use*, *untagged* and expires in a day. Save it in a file only you can read, for example `~/my-tailscale-key`.
-
-**What this does.** The first two settings allow your tailnet to publish a device on the public internet (Funnel). The auth key lets the machine join your tailnet without anyone clicking a sign-in link. Without a key, `muse-vm up` prints a link for you to open instead; the links expire after a few minutes, which is why a key is easier.
-
-**You will know it worked when** `muse-vm up` in step 4 reaches "public address". If a setting is missing, `muse-vm up` says which one and prints the exact steps rather than waiting in silence.
-
-### Step 3 · Get the code
+### Step 1 · Get the code
 
 ```bash
 git clone https://github.com/sept-usc/muse-mcp-adapter
@@ -207,69 +172,46 @@ git checkout <the tag or commit you have reviewed>
 python3 -m venv .venv && .venv/bin/python -m pip install .
 ```
 
-**What this does.** It installs the `muse-vm` command. The adapter itself is not installed on your computer. It is built later, on the machine, from this same checkout.
+**What this does.** It installs the `muse-vm` command on your computer. The adapter itself is built later, on the machine, from this same checkout, so you run exactly the code you reviewed. `muse-vm` records the commit in the image and refuses to deploy a checkout with uncommitted changes (`--allow-dirty` overrides).
 
-**Why a checkout, not a download?** You run exactly the code you reviewed, and `muse-vm` records the commit in the image. It refuses to deploy a checkout with uncommitted changes (`--allow-dirty` overrides), so every deployment matches a commit you can name again.
+**Not sure everything is in place?** Run `.venv/bin/muse-vm doctor` first. It checks Python, `ssh`, the checkout, and (if you use Google Cloud) that `gcloud` is signed in with valid credentials and a project, and tells you how to fix anything that is missing, before anything is created.
 
-### Step 4 · Create the deployment
-
-Pick where the adapter runs. Each takes 10 to 20 minutes, most of it building the images. Pass the Tailscale key from step 2 as `TS_AUTHKEY`, or omit it to get a sign-in link.
-
-**A. A Google Cloud VM that `muse-vm` creates**
+### Step 2 · Run setup
 
 ```bash
-TS_AUTHKEY="$(cat ~/my-tailscale-key)" .venv/bin/muse-vm up --cloud gcp --project my-project
+.venv/bin/muse-vm setup
 ```
 
-It creates a network of its own (your project's default network is not used), a shielded VM with no service account and no public IP address (outbound traffic goes through Cloud NAT), allows SSH only from Google's Identity-Aware Proxy range, and schedules daily disk snapshots kept for 7 days. Options: `--zone`, `--machine-type` (default `e2-small`, about $13 a month plus about $2 for NAT and disk), `--budget-usd` (a budget alert), `--idle-stop-hours` (power off after inactivity).
+`setup` works through these stages. Each is an ordinary `muse-vm` command, so nothing happens that you could not do by hand.
 
-**B. A machine you already have, over SSH**
+| Stage | What you do | What happens |
+|---|---|---|
+| **Where** | Pick *a new Google Cloud VM* or *a Linux machine I already have*. If `gcloud` is signed in, your project is already chosen for you. For your own machine, type its SSH address (`user@host`). | It shows what the choice costs, and asks before creating anything billable. |
+| **Check** | Nothing. | The doctor runs against the target: tools, credentials, SSH and `sudo`, a supported Linux, reachability of Docker Hub and PyPI. If something is wrong it says what and how to fix it, and stops before creating anything. |
+| **Create** | Click the Tailscale links (next section). | Google Cloud: a network of its own, a shielded VM with no service account and no public IP, SSH only through Identity-Aware Proxy, daily snapshots. Your own machine: only what is missing is installed (an existing Docker is never restarted). Then the images are built from your checkout and the adapter starts. A self-check tests it from outside and inside. |
+| **Servers** | Choose from the well-known servers by number or name, or press Enter to skip. Paste a token if a server needs one. | Each server is connected, its tools are discovered, and only the read-only ones are exposed. You get a connector address and token for each. |
+| **Save** | Say yes to save your answers. | They are written to `muse-vm.toml` (no secrets in it), so the next run needs no questions. |
 
-```bash
-TS_AUTHKEY="$(cat ~/my-tailscale-key)" .venv/bin/muse-vm up --ssh deploy@203.0.113.7
-```
+**The Tailscale links.** Tailscale gives the adapter its public HTTPS address (`https://<name>.<your-tailnet>.ts.net`) without opening a single port, owning a domain, or giving the machine a public IP. There is nothing to prepare in the Tailscale console: during **Create**, `muse-vm` opens up to two links in your browser. The first signs the machine in to your Tailscale account. The second, shown only if your tailnet has not used Funnel before, is Tailscale's own one-click approval for HTTPS certificates and Funnel. Click approve in each and the run carries on by itself. If your tailnet requires device approval, approve the new device under Machines.
 
-Use this for a VM from any provider or an on-premises server. It needs key-based SSH and passwordless `sudo`. For a non-standard key or port, add `--ssh-opt=-i/path/to/key` or `--ssh-opt=-p2222`. The machine needs no inbound port. It is changed as little as possible: the adapter lives in `/opt/muse-adapter`, Docker and automatic security updates are installed *only if missing* (an existing Docker is never restarted), and `muse-vm down` removes exactly what was added.
+**Which servers?** `muse-vm presets` lists them: Microsoft Learn (no sign-in), GitHub (a token), Linear and Atlassian (you approve access in your browser). Any other MCP server works too: `muse-vm add-server myserver --endpoint https://…`.
 
-**C. A virtual machine on your own computer, to try it first**
+**Tokens.** A token is typed at a hidden prompt on your computer and stored in a root-only folder on the machine. It never appears in a command line, a log or a database. For GitHub, create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repositories Muse should use; read access is enough to start.
 
-Create any Ubuntu or Debian VM (OrbStack, Multipass, UTM), make sure you can SSH in with a key and `sudo` without a password, and follow **B**.
+**You will know it worked when** `setup` ends with `The adapter is running at https://…`, eleven green checks during Create, and a connector address for each server.
 
-**What `up` does.** It prints a numbered progress line for each stage and stops with a clear message if one fails. If a stage fails, it removes what it created (add `--keep-on-failure` to keep it for inspection).
+### Step 3 · Connect Muse and try it
 
-| Stage | What happens |
-|---|---|
-| 1 Preflight | Checks your tools and credentials and the machine, and that nothing is installed there already |
-| 2 Provision | Google Cloud only: creates the network, firewall rule, NAT, VM and snapshot schedule |
-| 3 Install | Prepares Docker, security updates and log limits (only what is missing), uploads the source, and builds the two images: the adapter and the egress guard |
-| 4 Start | Starts the containers and Tailscale; waits for the device to join and for Funnel to be published; fetches the HTTPS certificate ahead of time |
-| 5 Public address | Learns the address, for example `https://muse-adapter-prod.tail1234.ts.net` |
-| 6 Self-check | Tests it from outside (HTTPS answers with the security headers; requests without or with a wrong token are refused) and from inside (the guard blocks the cloud metadata server and private networks; the adapter runs as a non-root user with a read-only filesystem; its data directories are private) |
+1. Open a **new side chat** in Muse (not your main chat) and send: `Create a connector called GitHub from the API spec at <the connector address>`.
+2. Muse reads the API description and shows a **Connect** card. Click **Connect** and accept Muse's consent dialog.
+3. Paste the **token** when Muse asks. (Or, if Muse offers it, sign in with the **connection code**.)
+4. Muse says the connector is connected. Try it:
+   - *"List the open pull requests in my repository `<owner>/<repo>`."* (a read)
+   - *"Create an issue titled 'test' in that repository."* (a write; only if you allowed writes, below)
 
-**You will know it worked when** it ends with `The adapter is running at https://…` and eleven green checks. `muse-vm status` shows the deployment and `muse-vm selfcheck` repeats the checks whenever you like. If something fails, go to [Troubleshooting](#troubleshooting).
+**You will know it worked when** Muse answers with real data and `muse-vm logs` shows the matching `POST …/operations/<name> 200` lines.
 
-### Step 5 · Connect an MCP server
-
-```bash
-# A public server that needs no sign-in
-.venv/bin/muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp
-
-# A server that takes a token: store the token first (typed at a hidden prompt, never on a command line)
-.venv/bin/muse-vm secret set GITHUB_TOKEN
-.venv/bin/muse-vm add-server github --endpoint https://api.githubcopilot.com/mcp/ \
-    --credential env_token --secret-name GITHUB_TOKEN
-
-# A server that signs you in with OAuth: it prints a link to open and approve
-.venv/bin/muse-vm add-server linear --endpoint https://mcp.linear.app/mcp --credential oauth
-```
-
-**What this does.** `add-server` registers the server by its address, connects to it and discovers its tools, drafts a policy that exposes **only the read-only tools**, publishes that as version 1.0.0, and creates a connection for Muse. If you run several deployments, add `--name <deployment>`.
-
-**The token for the MCP server** is stored in a root-only folder on the machine and never leaves it. Muse never sees it.
-
-**You will know it worked when** it prints the list of exposed tools, then a **connector address**, a **token** and a **connection code**. These are shown once, and the adapter keeps only hashes of the token and code. The command also prints the sentence to send to Muse and copies it to your clipboard; that sentence holds no secret.
-
-### Step 6 · Decide what Muse can use
+### Letting Muse change things
 
 Writes are never exposed by default. To let Muse use specific write tools, publish a new version:
 
@@ -277,39 +219,79 @@ Writes are never exposed by default. To let Muse use specific write tools, publi
 .venv/bin/muse-vm expose github --allow issue_write --allow add_issue_comment --allow create_pull_request
 ```
 
-**What this does.** It publishes a new catalog version that adds exactly those tools. Everything already published keeps its settings. Muse sees the change on its next request, and the connector address and token do not change. Use `--deny TOOL` to withdraw a tool.
+It adds exactly those tools; everything already published keeps its settings, and the connector address and token do not change. Use `--deny TOOL` to withdraw one. Muse asks you before it calls a write, and the adapter runs each write once: if it cannot tell whether a write happened, it marks it `UNKNOWN` and never retries it blindly. See [Stay in control](#stay-in-control-your-policy).
 
-**What protects you.** Muse asks you before it calls a write. The adapter runs each write once, and if it cannot tell whether a write happened it marks it `UNKNOWN` and never retries it blindly. See [Stay in control](#stay-in-control-your-policy).
+## Settings file and automation
 
-### Step 7 · Connect Muse and try it
+Everything `setup` asks can also be written down once in `muse-vm.toml` in the folder you run it from (or passed with `--config`). Every key is optional. A person at a terminal is asked for what is missing; a script gets an error naming it. Unknown keys are rejected, so a typo never silently does nothing.
 
-1. Open a **new side chat** in Muse (not your main chat) and send: `Create a connector called GitHub from the API spec at <the connector address>`.
-2. Muse reads the API description and shows a **Connect** card. Click **Connect** and accept Muse's consent dialog.
-3. Paste the **token** when Muse asks. (Or, if Muse offers it, sign in with the **connection code**.)
-4. Muse says the connector is connected. Try it:
-   - *"List the open pull requests in my repository `<owner>/<repo>`."* (a read)
-   - *"Create an issue titled 'test' in that repository."* (a write; Muse confirms first)
+```toml
+name = "prod"                    # deployment name (default: muse)
+cloud = "gcp"                    # or: ssh = "deploy@203.0.113.7"
+project = "my-project"           # default: gcloud's
+zone = "us-central1-a"           # default: gcloud's, else us-central1-a
+machine_type = "e2-small"
+budget_usd = 20                  # a monthly budget alert on the project
+idle_stop_hours = 8              # power the VM off after this long without use
+egress_allow = ["10.0.0.0/24"]   # private ranges the adapter may reach (default: none)
+tailscale_authkey_file = "~/ts-key"   # a single-use auth key, to skip the sign-in link
+yes = true                       # accept that this creates billable resources
 
-**You will know it worked when** Muse answers with real data, and `muse-vm logs` shows the matching `POST …/operations/<name> 200` lines.
+[[servers]]
+preset = "github"
+allow = ["issue_write"]          # tools beyond the read-only ones
+token_file = "~/github-token"    # one line; read, never printed
 
-You are done. For what to do next (more servers, updates, backups), see [Day to day](#day-to-day).
+[[servers]]
+preset = "learn"
+
+[[servers]]
+id = "tracker"                   # a server of your own
+endpoint = "https://tracker.example.com/mcp"
+credential = "env_token"         # none, env_token or oauth
+secret_name = "TRACKER_TOKEN"
+```
+
+```bash
+.venv/bin/muse-vm setup                       # reads ./muse-vm.toml, asks only for what is missing
+.venv/bin/muse-vm setup --non-interactive     # never asks: fails and says what is missing
+.venv/bin/muse-vm setup --cloud gcp --project my-project --server github --yes
+```
+
+A saved file holds no secrets: only the paths of files that do. Flags override the file. For a fully unattended run, give a Tailscale auth key (`tailscale_authkey_file`, or `TS_AUTHKEY`) so there is no link to click, `yes = true` for the cost, and a `token_file` for every server that needs a token. OAuth servers (Linear, Atlassian) always need you in a browser once.
+
+## Doing it by hand
+
+`setup` is a front end to these commands, which stay available for scripts and for finer control. All options are listed in the [deployment reference](docs/deployment.md#commands).
+
+```bash
+.venv/bin/muse-vm up --cloud gcp --project my-project        # or: --ssh deploy@203.0.113.7
+.venv/bin/muse-vm add-server github                          # a well-known server needs nothing else
+.venv/bin/muse-vm add-server tracker --endpoint https://tracker.example.com/mcp --credential env_token
+.venv/bin/muse-vm expose github --allow issue_write
+```
+
+`up` takes many more options (`--zone`, `--machine-type`, `--budget-usd`, `--idle-stop-hours`, `--egress-allow`, `--ssh-opt`, `--image`, `--keep-on-failure`, `--no-browser`) and, if you prefer not to click a Tailscale sign-in link, a Tailscale auth key in `TS_AUTHKEY`: a single-use, untagged key that expires in a day, generated under **Settings, Keys** in the Tailscale console. The key is removed from the machine as soon as the device has joined.
 
 ## Troubleshooting
 
-Start with the two commands that explain most problems:
+Start with the commands that explain most problems:
 
 ```bash
-.venv/bin/muse-vm selfcheck     # each line says what passed or failed
+.venv/bin/muse-vm doctor        # before creating anything: what is missing, and how to fix it
+.venv/bin/muse-vm selfcheck     # after: each line says what passed or failed
 .venv/bin/muse-vm logs          # the adapter's log; also: logs tailscale, logs guard
 ```
 
 Add `-v` to any `muse-vm` command to print every command it runs. If `up` fails it removes what it created; add `--keep-on-failure` to keep the machine for inspection.
 
-### While creating the deployment (`muse-vm up`)
+### While creating the deployment (`muse-vm setup` or `muse-vm up`)
 
 | What you see | Why | What to do |
 |---|---|---|
-| `your tailnet does not allow HTTPS and Funnel yet` | The one-time Tailscale settings are missing | Do what it prints: enable HTTPS certificates, and add the `nodeAttrs` Funnel entry to the access controls ([step 2](#step-2--prepare-tailscale-once)). It keeps waiting, so you can fix it while it runs |
+| `gcloud credentials … have expired` | `gcloud` still lists your account but its stored sign-in has expired | `gcloud auth login`, then run again |
+| `Python 3.12 or newer`, `ssh` or `git` is marked ✗ | A tool is missing on your computer | Install it; `muse-vm doctor` says which |
+| `your tailnet does not allow HTTPS and Funnel yet` | Your Tailscale network has not used Funnel before | Open the approval link it prints (it also opens in your browser) and approve. It keeps waiting, so you can do it while it runs. If it printed steps instead of a link: enable HTTPS certificates under **DNS** in the Tailscale console, and add `"nodeAttrs": [{"target": ["autogroup:member"], "attr": ["funnel"]}]` to the access controls |
 | It prints a Tailscale sign-in link and then times out | The link expired before it was opened (they last a few minutes) | Use an auth key (`TS_AUTHKEY`), or open the newest link as soon as it appears |
 | `this tailnet requires device approval` | Your tailnet approves new devices | Approve the device under **Machines** in the Tailscale console |
 | `That does not look like a Tailscale auth key` | The key was pasted with extra text, or is not a `tskey-` key | Generate a new one and save it without spaces or prefixes |
@@ -318,6 +300,7 @@ Add `-v` to any `muse-vm` command to print every command it runs. If `up` fails 
 | `Cannot run commands on … with sudo -n` | SSH key login or passwordless `sudo` is missing on the machine | Fix the login (`ssh user@host sudo -n true` must work), then run `up` again |
 | Google Cloud: it waits for SSH for several minutes | A new VM is still booting and installing Docker, or IAP access is not granted | Give it up to 10 minutes. It retries dropped connections itself. If it never connects, check that your account has the IAP tunnel and OS Login roles |
 | `A network named mma-… already exists` | A previous run left something behind | `muse-vm down --name <name>`, or choose another `--name` |
+| `setup` says the deployment already exists | You ran it again | That is fine: it keeps the deployment and only adds the servers you ask for |
 | The image build fails or hangs | The machine cannot reach Docker Hub or PyPI | Allow outbound HTTPS from the machine, or build the images elsewhere and use `--image` and `--guard-image` ([reference](docs/deployment.md#how-the-images-are-built)) |
 | `The checkout … has uncommitted changes` | You edited files that are deployed | Commit or stash them, so the deployment matches a commit |
 | The self-check fails on `/health` but the checks inside the machine pass | The public address is not reachable from here yet, or Tailscale is disconnected | `muse-vm logs tailscale`; check the device is online in the Tailscale console |
@@ -360,7 +343,7 @@ Collect `muse-vm status`, `muse-vm selfcheck` and `muse-vm logs` (they contain n
 | Task | Command |
 |---|---|
 | Health, containers, connected servers | `muse-vm status`, `muse-vm selfcheck`, `muse-vm servers` |
-| Add another MCP server | `muse-vm add-server …` (step 5); it gets its own connector and token |
+| Add another MCP server | `muse-vm add-server <name>` (see `muse-vm presets`); it gets its own connector and token |
 | Change what Muse can use | `muse-vm expose SERVER --allow TOOL` / `--deny TOOL` |
 | Logs | `muse-vm logs` (adapter), `muse-vm logs tailscale` |
 | New version | `git pull`, review what changed, then `muse-vm upgrade` (address, connections and data stay) |

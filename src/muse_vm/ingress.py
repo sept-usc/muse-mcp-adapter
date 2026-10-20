@@ -24,6 +24,8 @@ def tailscale_status(target: Target) -> dict[str, Any] | None:
         return None
 
 
+LOGIN_SERVICE = "tailscale-login"
+LOGIN_TIMEOUT = 1800  # half an hour for a person to find the link and click it
 TS_ADMIN = "https://login.tailscale.com/admin"
 FUNNEL_CAPS = ("https", "funnel")
 # A first-time name can take minutes to reach public DNS, and a person may need to approve a
@@ -40,8 +42,8 @@ def missing_capabilities(status: dict[str, Any]) -> list[str]:
     return [capability for capability in FUNNEL_CAPS if capability not in have]
 
 
-def enable_message(target: Target, missing: list[str]) -> str:
-    """How to allow HTTPS/Funnel: Tailscale's own one-click link when it gives one."""
+def enable_link(target: Target) -> str:
+    """Tailscale's own one-click link that allows HTTPS and Funnel, or "" when it gives none."""
     result = target.compose(
         "exec -T tailscale tailscale debug localapi POST 'query-feature?feature=funnel'",
         check=False,
@@ -50,8 +52,14 @@ def enable_message(target: Target, missing: list[str]) -> str:
     try:
         url = str(cast(dict[str, Any], json.loads(result.stdout)).get("URL") or "")
     except (ValueError, AttributeError):
-        url = ""
-    if url.startswith("https://"):
+        return ""
+    return url if url.startswith("https://") else ""
+
+
+def enable_message(target: Target, missing: list[str], url: str | None = None) -> str:
+    """How to allow HTTPS/Funnel: Tailscale's own one-click link when it gives one."""
+    url = enable_link(target) if url is None else url
+    if url:
         return (
             "  Tailscale: your tailnet does not allow HTTPS and Funnel yet (a one-time setting).\n"
             f"    Open {url}\n  and approve it; waiting…"
@@ -107,17 +115,63 @@ def ensure_certificate(
     return False
 
 
+def interactive_login(
+    target: Target,
+    *,
+    timeout: float = LOGIN_TIMEOUT,
+    say: Callable[[str], None] = print,
+    sleep: Callable[[float], None] = time.sleep,
+    open_link: Callable[[str], bool] | None = None,
+) -> None:
+    """Sign the machine in to the owner's Tailscale account, with a link that stays valid.
+
+    Runs the one-time login service, shows its link (and opens it when it can), and waits until
+    the owner has approved it. The login is stored in the state directory the normal Tailscale
+    service uses, so that service only has to reconnect.
+    """
+    target.compose(f"up -d {LOGIN_SERVICE}", stream=True)
+    deadline = time.monotonic() + timeout
+    shown = ""
+    try:
+        while time.monotonic() < deadline:
+            logs = target.compose(f"logs --no-color {LOGIN_SERVICE}", check=False)
+            text = logs.stdout + logs.stderr
+            if "Login complete" in text:
+                return
+            links = TS_LOGIN.findall(text)
+            if links and links[-1] != shown:
+                shown = links[-1]
+                say(f"  Sign in to Tailscale to give the adapter its address: {shown}")
+                if open_link:
+                    open_link(shown)
+            exited = target.compose(
+                f"ps -a --status exited -q {LOGIN_SERVICE}", check=False
+            ).stdout.strip()
+            if exited:
+                tail = "\n    ".join(text.strip().splitlines()[-6:])
+                raise SystemExit(f"The Tailscale sign-in stopped before it finished:\n    {tail}")
+            sleep(3)
+        raise SystemExit(
+            "The Tailscale sign-in was not completed in time. Run `muse-vm up` again and open "
+            "the link as soon as it appears."
+        )
+    finally:
+        target.compose(f"rm -f -s {LOGIN_SERVICE}", check=False)
+
+
 def hostname_after_start(
     target: Target,
     *,
     timeout: float = 600,
     say: Callable[[str], None] = print,
     sleep: Callable[[float], None] = time.sleep,
+    open_link: Callable[[str], bool] | None = None,
 ) -> str:
     """Learn the public hostname once Tailscale runs and Funnel is on for it.
 
     The owner may have to sign in, approve the device, or allow HTTPS and Funnel in the tailnet;
-    each is explained once, and the wait is extended while they do it.
+    each is explained once, and the wait is extended while they do it. When `open_link` is given
+    it is called with each link the owner has to click, so their browser can open it for them.
     """
     deadline = time.monotonic() + timeout
     shown_login = ""
@@ -132,7 +186,10 @@ def hostname_after_start(
                 missing = missing_capabilities(status)
                 if missing:
                     if not shown_enable:
-                        say(enable_message(target, missing))
+                        link = enable_link(target)
+                        say(enable_message(target, missing, link))
+                        if link and open_link:
+                            open_link(link)
                         shown_enable = True
                         deadline = max(deadline, time.monotonic() + EXTENSION)
                 elif funnel_published(target, name):
@@ -150,6 +207,8 @@ def hostname_after_start(
                 if match and match.group(0) != shown_login:
                     shown_login = match.group(0)
                     say(f"  Sign in to Tailscale to give the adapter its address: {shown_login}")
+                    if open_link:
+                        open_link(shown_login)
                     deadline = max(deadline, time.monotonic() + EXTENSION)
         sleep(5)
     if shown_enable:

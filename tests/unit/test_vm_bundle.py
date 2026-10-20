@@ -60,7 +60,7 @@ def test_nothing_publishes_a_port_on_the_host() -> None:
     # Muse reaches the adapter through Tailscale Funnel, which needs no inbound connection.
     services = _compose()["services"]
     assert [name for name, service in services.items() if "ports" in service] == []
-    assert set(services) == {"guard", "adapter", "tailscale"}
+    assert set(services) == {"guard", "adapter", "tailscale", "tailscale-login"}
     assert "profiles" not in services["tailscale"]
 
 
@@ -75,7 +75,7 @@ def test_every_third_party_image_is_pinned_by_digest() -> None:
     text = (BUNDLE / "compose.yml").read_text()
     images = [line.split("image:", 1)[1].strip() for line in text.splitlines() if "image:" in line]
     third_party = [i for i in images if "MMA_IMAGE" not in i and "MMA_GUARD_IMAGE" not in i]
-    assert len(third_party) == 1  # Tailscale
+    assert len(third_party) == 2  # Tailscale, and its one-time sign-in service
     for image in third_party:
         assert "@sha256:" in image and ":latest" not in image, image
 
@@ -498,3 +498,15 @@ def test_a_fresh_host_gets_docker_updates_and_log_limits(tmp_path: Path) -> None
     assert any(c.startswith("python3") for c in calls)  # daemon.json log limits
     assert "systemctl restart docker" in calls  # nothing runs on a fresh host to disturb
     assert (tmp_path / "root" / "etc" / "apt" / "apt.conf.d" / "20auto-upgrades").exists()
+
+
+def test_the_one_time_tailscale_sign_in_is_not_part_of_the_stack() -> None:
+    login = _compose()["services"]["tailscale-login"]
+    assert login["profiles"] == ["login"]  # only started by name, never by `compose up`
+    tailscale = _compose()["services"]["tailscale"]
+    assert login["image"] == tailscale["image"]  # the same pinned version
+    assert "ports" not in login and "network_mode" not in login
+    assert "./ts-state:/var/lib/tailscale" in login["volumes"]  # the login is kept for the stack
+    assert (
+        "TS_BOOT_TIMEOUT" not in (BUNDLE / "compose.yml").read_text()
+    )  # a setting that is not real

@@ -14,11 +14,23 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from . import __version__, bundle, crypt, ingress, selfcheck
+from . import (
+    __version__,
+    browser,
+    bundle,
+    config,
+    crypt,
+    doctor,
+    ingress,
+    presets,
+    selfcheck,
+)
+from . import setup as wizard
 from .admin import Admin, Linked, check_server_id, pick_exposure
 from .providers import PROVIDERS, provider_for
 from .providers.base import Provider
 from .runner import CommandError, Runner
+from .selfcheck import Report
 from .state import Deployment, check_name
 
 DEFAULT_NAME = "muse"
@@ -118,7 +130,10 @@ def cmd_up(args: argparse.Namespace) -> None:
         )
     provider_name = "ssh" if args.ssh else args.cloud
     if not provider_name:
-        raise SystemExit("Choose where to run the adapter: --ssh user@host or --cloud gcp.")
+        raise SystemExit(
+            "Choose where to run the adapter: --ssh user@host or --cloud gcp. "
+            "(`muse-vm setup` asks you instead.)"
+        )
     build = not args.image
     if args.image and not args.guard_image:
         raise SystemExit("--image needs --guard-image too: both images come from your registry.")
@@ -189,8 +204,14 @@ def cmd_up(args: argparse.Namespace) -> None:
         bundle.install(t, env, bundle.serve_config("pending.invalid"))
         _fetch_images(t, dep, env, source, say)
         say("4/6 start")
+        if "TS_AUTHKEY" not in ingress_secrets:
+            ingress.interactive_login(
+                t, say=say, open_link=None if args.no_browser else browser.open_link
+            )
         provider.start_stack(t)
-        dep.hostname = ingress.hostname_after_start(t, say=say)
+        dep.hostname = ingress.hostname_after_start(
+            t, say=say, open_link=None if args.no_browser else browser.open_link
+        )
         dep.save()
         if bundle.set_hostname(t, dep.hostname):
             provider.restart_adapter(t)
@@ -272,8 +293,27 @@ def _show_logs(t: Any, tail: int = 15) -> None:
 
 
 # ---- servers and connections ------------------------------------------------------------------
+def _resolve_preset(args: argparse.Namespace) -> None:
+    """Fill in the address and sign-in method from a well-known server, unless given explicitly."""
+    preset = presets.find(args.server)
+    if not args.endpoint:
+        if preset is None:
+            raise SystemExit(
+                f"{args.server!r} is not a well-known server: give its address with --endpoint.\n"
+                "Well-known servers:\n  " + "\n  ".join(presets.describe())
+            )
+        args.endpoint = preset.endpoint
+    if preset is not None and args.endpoint == preset.endpoint:
+        args.credential = args.credential or preset.credential
+        args.secret_name = args.secret_name or preset.secret_name
+        args.display_name = args.display_name or preset.name
+        args.token_help = preset.token_help
+    args.credential = args.credential or "none"
+
+
 def cmd_add_server(args: argparse.Namespace) -> None:
     check_server_id(args.server)  # before anything is stored or contacted
+    _resolve_preset(args)
     dep, provider = _context(args)
     t = provider.target()
     admin = Admin(t, actor=args.actor, dev_network=args.dev_network)
@@ -285,6 +325,8 @@ def cmd_add_server(args: argparse.Namespace) -> None:
         if chosen in bundle.list_secrets(t):
             say(f"  using the {chosen} already stored on the VM")
         else:
+            if getattr(args, "token_help", None) and sys.stdin.isatty():
+                say(f"  {args.token_help}")
             value = _secret_value(chosen, f"The token for {server_id} ({chosen})")
             assert value
             bundle.set_secret(t, chosen, value)
@@ -353,6 +395,74 @@ def cmd_expose(args: argparse.Namespace) -> None:
         say(f"  {item}")
     admin.publish(server_id, version, policies)
     say("Done. Muse sees the change on its next request; its address and token are unchanged.")
+
+
+def _plan_from(args: argparse.Namespace) -> tuple[config.Plan, Path | None]:
+    """The config file (given, or muse-vm.toml here), with command-line flags on top."""
+    try:
+        plan, path = config.discover(args.config)
+    except config.ConfigError as error:
+        raise SystemExit(str(error)) from None
+    for field_name in ("name", "cloud", "ssh", "project", "zone", "machine_type", "tz"):
+        value = getattr(args, field_name, None)
+        if value:
+            setattr(plan, field_name, value)
+    for field_name in ("budget_usd", "idle_stop_hours"):
+        value = getattr(args, field_name, None)
+        if value is not None:
+            setattr(plan, field_name, value)
+    if args.ssh_opt:
+        plan.ssh_opts = list(args.ssh_opt)
+    if args.egress_allow:
+        plan.egress_allow = [item for item in args.egress_allow.split(",") if item]
+    if args.cloud and not args.ssh:
+        plan.ssh = None
+    if args.ssh and not args.cloud:
+        plan.cloud = None
+    if args.yes:
+        plan.yes = True
+    if args.server:
+        plan.servers = [config.ServerPlan(server=item) for item in args.server]
+    return plan, path
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    if args.no_browser:
+        os.environ["MUSE_VM_NO_BROWSER"] = "1"
+    plan, path = _plan_from(args)
+    name = check_name(plan.name or DEFAULT_NAME)
+    terminal = sys.stdin.isatty() and sys.stdout.isatty()
+    wizard_io = wizard.Io(say=say, ask=input, interactive=terminal and not args.non_interactive)
+    wizard.run(
+        plan,
+        name=name,
+        runner=_runner(args),
+        run_command=main,
+        io=wizard_io,
+        save_to=Path.cwd() / config.FILENAME if (args.save or path is None) else None,
+        config_existed=path is not None and not args.save,
+    )
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    report = Report()
+    runner = _runner(args)
+    doctor.local_checks(report)
+    if args.ssh:
+        doctor.ssh_checks(report, runner, args.ssh, args.ssh_opt or [])
+    elif args.cloud == "gcp" or (not args.ssh and doctor.gcloud_facts(runner)):
+        doctor.gcp_checks(report, runner, args.project, args.zone)
+    for line in report.lines():
+        say(line)
+    if not report.ok:
+        raise SystemExit("Fix the items marked ✗ and run `muse-vm doctor` again.")
+    say("Ready.")
+
+
+def cmd_presets(args: argparse.Namespace) -> None:
+    say("Well-known servers: `muse-vm add-server <name>` needs nothing else.")
+    for line in presets.describe():
+        say(f"  {line}")
 
 
 def cmd_servers(args: argparse.Namespace) -> None:
@@ -578,7 +688,7 @@ def cmd_down(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="muse-vm", description=__doc__)
     parser.add_argument("--version", action="version", version=f"muse-vm {__version__}")
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(dest="command")
 
     def common(
         sub: argparse.ArgumentParser, default_name: str | None = None
@@ -628,6 +738,7 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument(
         "--wait", type=float, default=None, help="seconds to wait for the public address"
     )
+    up.add_argument("--no-browser", action="store_true", help="print links instead of opening them")
     up.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
     up.add_argument(
         "--force", action="store_true", help="reuse an existing deployment directory on the host"
@@ -643,15 +754,20 @@ def build_parser() -> argparse.ArgumentParser:
     up.set_defaults(func=cmd_up)
 
     sp = common(commands.add_parser("add-server", help="connect an MCP server and link it to Muse"))
-    sp.add_argument("server", help="a short id, such as learn or linear")
-    sp.add_argument("--endpoint", required=True, help="the server's public HTTPS MCP address")
+    sp.add_argument(
+        "server",
+        help="a well-known server (" + ", ".join(presets.PRESETS) + ") or any short id of your own",
+    )
+    sp.add_argument(
+        "--endpoint",
+        help="the server's public HTTPS MCP address (not needed for a well-known server)",
+    )
     sp.add_argument("--display-name")
     sp.add_argument("--label", help="the connection's label (default: the id)")
     sp.add_argument(
         "--credential",
         choices=("none", "env_token", "oauth"),
-        default="none",
-        help="how the adapter signs in to the server",
+        help="how the adapter signs in to the server (default: the well-known server's, else none)",
     )
     sp.add_argument("--secret-name", help="env_token: the secret's name (default: <ID>_TOKEN)")
     sp.add_argument("--policy", help="a reviewed policy file; otherwise one is drafted")
@@ -664,6 +780,48 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--yes", "-y", action="store_true")
     sp.set_defaults(func=cmd_add_server)
 
+    sp = common(
+        commands.add_parser(
+            "setup", help="guided setup: the adapter, then the servers you want, in one run"
+        ),
+        None,
+    )
+    sp.add_argument(
+        "--config", "-f", help=f"a settings file (default: ./{config.FILENAME} if present)"
+    )
+    sp.add_argument("--cloud", choices=("gcp",), help="create a Google Cloud VM")
+    sp.add_argument("--ssh", metavar="USER@HOST", help="use an existing Linux machine over SSH")
+    sp.add_argument("--ssh-opt", action="append", metavar="OPT")
+    sp.add_argument("--project", help="GCP project (default: gcloud's)")
+    sp.add_argument("--zone")
+    sp.add_argument("--machine-type")
+    sp.add_argument("--budget-usd", type=float)
+    sp.add_argument("--idle-stop-hours", type=int)
+    sp.add_argument("--egress-allow", metavar="CIDRS")
+    sp.add_argument("--tz")
+    sp.add_argument(
+        "--server",
+        action="append",
+        metavar="NAME",
+        help="a well-known server to connect (repeatable)",
+    )
+    sp.add_argument(
+        "--yes", "-y", action="store_true", help="accept that this creates billable resources"
+    )
+    sp.add_argument("--save", action="store_true", help=f"write the choices to ./{config.FILENAME}")
+    sp.add_argument("--non-interactive", action="store_true", help="never ask; fail instead")
+    sp.add_argument("--no-browser", action="store_true", help="print links instead of opening them")
+    sp.set_defaults(func=cmd_setup)
+    sp = common(commands.add_parser("doctor", help="check what would stop a deployment"))
+    sp.add_argument("--ssh", metavar="USER@HOST", help="check this machine too")
+    sp.add_argument("--cloud", choices=("gcp",), help="check Google Cloud access")
+    sp.add_argument("--project")
+    sp.add_argument("--zone")
+    sp.add_argument("--ssh-opt", action="append", metavar="OPT")
+    sp.set_defaults(func=cmd_doctor)
+    common(commands.add_parser("presets", help="list the well-known servers")).set_defaults(
+        func=cmd_presets
+    )
     common(
         commands.add_parser("servers", help="the connected servers and their connections")
     ).set_defaults(func=cmd_servers)
@@ -728,8 +886,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+WELCOME = """muse-vm puts the Muse MCP Adapter on a machine you control and looks after it.
+
+  muse-vm setup       guided: checks, creates the adapter, connects the servers you pick
+  muse-vm doctor      check what would stop a deployment, before anything is created
+  muse-vm presets     the well-known servers (GitHub, Linear, Microsoft Learn, ...)
+  muse-vm --help      every command
+
+Start with `muse-vm setup`."""
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not hasattr(args, "func"):
+        say(WELCOME)
+        return 0
     try:
         args.func(args)
     except CommandError as error:

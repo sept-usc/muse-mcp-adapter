@@ -97,6 +97,11 @@ class GcpProvider(Provider):
         ).stdout.strip()
         if not account:
             raise SystemExit("gcloud has no active account. Run `gcloud auth login`.")
+        if not self.runner(["gcloud", "auth", "print-access-token"], check=False).ok:
+            raise SystemExit(
+                f"gcloud's credentials for {account} have expired. Run `gcloud auth login` "
+                "and try again."
+            )
         enabled = self._g(
             "services",
             "list",

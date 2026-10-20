@@ -44,13 +44,17 @@ class Target:
         timeout: float | None = 600,
         stream: bool = False,
         cwd_root: bool = True,
+        retry: bool = True,
     ) -> Result:
-        """Run a POSIX shell script as root, in the deployment directory unless told otherwise."""
+        """Run a POSIX shell script as root, in the deployment directory unless told otherwise.
+
+        A dropped connection is retried unless `retry` is False (a diagnostic should fail fast).
+        """
         if cwd_root:
             script = f"cd {shlex.quote(self.root)} && {script}"
         argv = self._argv(script)
         result = Result(CONNECTION_FAILED, "", "")
-        for delay in (*RETRY_DELAYS, None):
+        for delay in (*RETRY_DELAYS, None) if retry else (None,):
             result = self.runner(argv, input=input, check=False, timeout=timeout, stream=stream)
             if result.returncode != CONNECTION_FAILED or delay is None:
                 break
