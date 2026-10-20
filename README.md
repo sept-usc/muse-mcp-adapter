@@ -1,6 +1,6 @@
 # Muse MCP Adapter
 
-**Let Muse use any MCP server, safely.** The adapter sits between Muse and the MCP servers you rely on. It shows Muse only what you approve, keeps your credentials to itself, and makes sure a write runs once or says it may not have.
+**A boundary you control between Muse and your MCP servers.** The adapter publishes only the capabilities you have reviewed, keeps the credentials for your MCP servers to itself, holds that contract steady as servers change, and makes sure a write runs once or says it may not have. One guided command sets it up on a machine you own.
 
 ```mermaid
 flowchart LR
@@ -56,7 +56,7 @@ flowchart LR
 
 ## What is it?
 
-[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is how applications such as issue trackers, wikis, documentation sites, and databases publish tools, data, and prompt templates. Muse is a personal AI agent that adds services through Custom Connectors, which it reads from an OpenAPI description. Muse does not speak MCP, so MCP servers are out of its reach.
+[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is how applications such as issue trackers, wikis, documentation sites, and databases publish tools, data, and prompt templates. Muse is a personal AI agent that adds services through Custom Connectors, which it reads from an OpenAPI description. An MCP server can be added to Muse as a Custom Connector, but doing that one server at a time duplicates protocol, authentication, policy, and change-tracking work for each one.
 
 The adapter bridges the two:
 
@@ -78,15 +78,17 @@ For Muse it behaves almost like a transparent wrapper: using a server through th
 
 ## Why use it?
 
-MCP servers change on their own: tools appear, schemas shift, and a tool marked "read-only" may not be. Connecting Muse to that directly would mean handing Muse your credentials and letting upstream changes alter what it can do without anyone noticing.
+MCP servers change on their own: tools appear, schemas shift, and a tool marked "read-only" may not be. Muse already confirms consequential actions with you and keeps its own activity history. The adapter adds a second layer that you own, so the rules do not depend on the agent platform or on the server.
 
-- **You decide what Muse can reach.** Nothing is exposed until you review it and publish it. New or changed upstream tools never go live on their own.
-- **Permissions are yours, not the server's.** You classify each operation as read, write, or sensitive write. What the server claims about itself is only a hint.
-- **Writes are guarded.** Muse confirms with you before a write. The adapter runs it once, and if the outcome is unclear it never retries blindly.
-- **Credentials stay with the adapter.** Muse gets one token per connection. The credentials for the MCP server never reach Muse.
-- **Changes are caught.** The adapter compares each live server with what you published and reports anything added, removed, or changed.
+- **A stable, reviewed contract.** The exact operations, descriptions, schemas, classifications, and limits Muse may use are frozen when you publish them. A later change at the MCP server never silently changes what Muse can do: you see the difference, publish a new version, or roll back.
+- **Your policy, enforced by a system you run.** You decide which operations exist for Muse and whether each is a read, a write, or a sensitive write. This matters most when the owner of the connected system is not the person using Muse, or when your organisation's rules must hold whatever the agent platform does.
+- **Writes that run once.** A network timeout after a write leaves everyone unsure whether it happened. The adapter records every write, replays a repeated one instead of running it twice, and when the outcome is unknown it blocks a blind retry until you have checked. This is what makes payments, messages, deletions, and tickets safe to automate.
+- **The whole of MCP, tested.** Tools, resources, templates, prompts, structured and multimedia results, progress, and mid-call questions are carried into one REST contract. A purpose-built validation server tests normal behaviour, dropped connections, schema changes, authorization, and duplicate writes against it.
+- **You keep custody.** You host it, keep the credentials for your MCP servers, choose where it runs, and keep the audit trail on your own machine. Muse holds one revocable token per connector and never sees the server credentials.
 
-The trade-off is one more service to run. For a single simple, stable MCP server you may not need it. It pays off when you want several servers behind one reviewed, consistent boundary.
+The trade-off is one more service to run. For a single simple, stable MCP server you may not need it. It pays off when you want several servers behind one reviewed, consistent boundary, or when a write must never be done twice. Setup is one guided command and takes about 5 to 10 minutes.
+
+**Read-only tools start exposed; everything else starts closed.** `add-server` exposes the tools the server itself marks read-only, and prints exactly what it exposed. Every write is off until you allow it. A server's claim that a tool is read-only is only a hint, so to review every tool before anything is exposed, add `--no-reads`.
 
 ## How it works
 
@@ -150,7 +152,19 @@ muse-vm setup
 
 (No `pipx`? `python3 -m pip install --user pipx`, or use a virtual environment and `pip install` the same address. To review the code first, or to pin a commit, [clone it](#step-1--get-the-code) instead.)
 
-`muse-vm setup` is a guided run. It checks that everything is in place, asks where the adapter should run, creates it, opens the two Tailscale links you need to click, lets you pick the MCP servers Muse should use, and prints what to give Muse. It asks only for what it cannot work out itself, and it takes about 5 to 10 minutes, most of it building.
+`muse-vm setup` is a guided run. It checks that everything is in place, asks where the adapter should run, creates it, opens the Tailscale link you need to click, lets you pick the MCP servers Muse should use, and prints what to give Muse. It asks only for what it cannot work out itself, and it takes about 5 to 10 minutes, most of it building.
+
+**What you will do:** say where it runs, click one Tailscale sign-in link (a second approval appears only the first time your Tailscale network uses Funnel), and pick your servers, pasting a token for any that need one. Nothing to prepare in the Tailscale console, no domain, no open ports, no auth key.
+
+| Where it runs | How | What happens |
+| --- | --- | --- |
+| **A new Google Cloud VM** | `muse-vm setup`, or the Cloud Shell button above | A network of its own, a shielded VM with no public IP, SSH only through Identity-Aware Proxy, daily snapshots |
+| **A Linux machine you already have** | `muse-vm setup --ssh user@host` | Only what is missing is installed (Docker, automatic security updates); an existing Docker is never restarted |
+| **The machine you are logged in to** | [`install.sh --local`](#installing-from-the-vm-itself) | The same setup, run on the VM itself |
+
+Whichever you pick, the end state is the same: a public HTTPS address through Tailscale Funnel, nothing on the machine accepting inbound connections, and a self-check of eleven tests run from outside and inside before it reports success.
+
+**It is safe to run again.** If anything stops half way, run `muse-vm setup` again: an existing deployment is kept, a server that never finished connecting is finished, and a corrected token replaces the rejected one. Your own MCP server can be added by pasting its address when `setup` lists the servers, or later with [`muse-vm add-server`](#settings-file-and-automation).
 
 Then tell Muse: *"Create a connector called GitHub from the API spec at `<the connector address setup printed>`"*, click **Connect**, and paste the token. That's it.
 
@@ -413,7 +427,7 @@ Reference for everything above: [deployment reference](docs/deployment.md) (what
 | You decide | Field | Default |
 | --- | --- | --- |
 | Is it exposed to Muse? | `allowed` | No |
-| Read, write, or sensitive write? | `classification` | Write, unless the server marks the tool read-only and you accept that |
+| Read, write, or sensitive write? | `classification` | Write, unless the server marks the tool read-only (`add-server` then drafts it as a read; add `--no-reads` to review it first) |
 | What Muse is told about it | `description` | The server's text, pinned at publish so the server cannot change it later |
 | The name Muse sees | `publicOperationId` | Derived from the tool's name |
 | How long and how large | `timeoutSeconds`, `maxResultBytes` | 30 seconds, 256 KB |
@@ -715,6 +729,8 @@ These are starting points, not a claim that everything a provider offers is safe
 **Supported:** remote MCP servers over Streamable HTTP; tools, resources, resource templates, and prompts; progress and log messages, questions asked mid-call, and image, audio, and linked content; authentication to MCP servers with no credential, a static token, or OAuth.
 
 **Not included:** local `stdio` servers, MCP Apps rendering, a hosted marketplace, or billing. Each deployment serves one owner.
+
+**What the policy covers:** what passes through the adapter. A tool the adapter does not publish cannot be called through it, but the policy does not limit what Muse can do with its other tools, such as its own browser; limit those in Muse.
 
 ## Documentation
 

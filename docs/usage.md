@@ -103,7 +103,7 @@ Rules enforced when you publish:
 | `publicUrl` | The HTTPS address Muse reaches the service at. It appears in the connector URL and the sign-in pages. Required unless listening on a local address. |
 | `listen` | Host and port to bind (default `127.0.0.1:8080`). |
 | `limits` | Per-connection request rate and per-server concurrency. |
-| `approvalMode` | `muse` (default): Muse confirms writes with you. `signed`: additionally require signed approval evidence (needs `approvalSecretEnv`). |
+| `approvalMode` | `muse` (default): Muse confirms writes with you. `signed` is reserved: the HTTP interface cannot yet carry approval evidence, so in this mode every write is refused. Leave it at `muse`. |
 | `integrityKeyEnv` | Optional key that signs stored catalogs so tampering is detected. Use the same config for every command that publishes. |
 | `secretsDir` | Optional directory of secret files, one file per name (for example a Docker or Compose secrets mount). A secret that is not in the environment is read from `<secretsDir>/<NAME>` when it is needed, so it stays out of the process environment and can be added without a restart. `MUSE_ADAPTER_SECRETS_DIR` sets the same thing. |
 | `oauthClients` | For an OAuth provider without dynamic client registration: `{"<serverId>": {"clientId": "...", "clientSecretEnv": "..."}}`. |
