@@ -198,3 +198,16 @@ def test_every_operation_id_is_unique_and_errors_share_one_schema() -> None:
     assert error["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/Problem"
     }
+
+
+def test_every_status_the_adapter_can_return_is_declared() -> None:
+    # A caller reads this document to learn what to expect: 503 (server unreachable, safe to
+    # repeat) and 429 must be there next to 502, with the same error shape.
+    catalog = _catalog([_tool("alpha_tool")], [_tool_policy("alpha_tool")])
+    document: Any = compile_openapi(catalog, public_url="https://a.example.com", slug="s")
+    declared = document["paths"]["/operations/alpha_tool"]["post"]["responses"]
+    for status in ("400", "401", "403", "404", "409", "413", "429", "502", "503"):
+        assert status in declared, status
+    assert declared["503"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/Problem"
+    }

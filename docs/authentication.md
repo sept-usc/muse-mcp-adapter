@@ -28,6 +28,66 @@ flowchart LR
     class O3 key;
 ```
 
+## The two sides
+
+There are two separate sign-ins, and they never mix. Muse never sees the credential for the MCP server, and the server never sees Muse's token.
+
+**Muse to the adapter**: proves Muse may use this connection.
+
+```mermaid
+flowchart LR
+    A1["<b>1 You run link</b><br/>the adapter generates<br/>a URL, a token and a code"] --> A2["<b>2 The adapter keeps hashes</b><br/>of the token and the code,<br/>never the values"] --> A3["<b>3 You give Muse the token</b><br/>paste it into Muse,<br/>or sign in with the code"] --> A4["<b>4 Every call carries it</b><br/>the URL picks the connection,<br/>the token proves the caller"]
+
+    classDef key stroke:#4f8fd6,stroke-width:2px;
+    class A2,A4 key;
+```
+
+**Adapter to the MCP server**: proves who you are to the server. Neither side's credential is ever sent to the other.
+
+```mermaid
+flowchart LR
+    Adapter["<b>Adapter</b><br/>holds the credential for<br/>this one connection"]
+    Adapter --> O1["<b>None</b><br/>public servers,<br/>such as Microsoft Learn"]
+    Adapter --> O2["<b>A token</b><br/>read from a root-only file,<br/>never saved in the database"]
+    Adapter --> O3["<b>Your own sign-in (OAuth)</b><br/>approved once; the tokens are<br/>kept encrypted and refreshed"]
+    O1 --> Server["<b>MCP server</b>"]
+    O2 --> Server
+    O3 --> Server
+
+    classDef key stroke:#4f8fd6,stroke-width:2px;
+    class O3 key;
+```
+
+### Muse to the adapter
+
+1. You run `link`. The adapter **generates** a connector URL, a token, and a connection code, prints them once, and keeps only a hash of the token and of the code.
+2. You give Muse the token, in one of two ways. **Paste the token** into the secure field Muse shows when it adds the connector, or **sign in**: Muse opens a page, you enter the connection code, and Muse receives short-lived tokens that it refreshes itself. The adapter offers both in its API description, and Muse picks one.
+3. From then on every request carries `Authorization: Bearer <token>`. The adapter uses the connector URL to find the connection, hashes the token, and compares it with that connection's stored hash. A token for one connection is refused by every other, and a request without a valid token is refused with a 401.
+
+The random part of the connector URL only selects the connection and keeps its API description unlisted. The token is what authenticates. If a token or code leaks, `rotate-token` ends every session for that connection, and `unlink` removes the connection.
+
+**How Muse learns which authentication to use.** The API description declares both options in its `security` section, and Muse picks one:
+
+```json
+"security": [{"oauth2": ["connector"]}, {"bearerAuth": []}]
+```
+
+- `bearerAuth` is a plain bearer token. Muse asks you for the value.
+- `oauth2` is an authorization-code flow with PKCE, served by the adapter itself. The description lists its authorize, token, and refresh addresses. The adapter acts as the authorization server for Muse: it registers Muse as a client, asks for the connection code on a consent page, then issues access tokens (valid for an hour) and refresh tokens that rotate on every use.
+
+A request without a token also gets a `401` with a `WWW-Authenticate` header that points to the adapter's standard OAuth discovery document, so a client that does not read the description can still find out how to sign in.
+
+### The adapter to the MCP server
+
+You choose this per connection when you run `link --credential ...`:
+
+| `--credential` | Use it when | How it works |
+| --- | --- | --- |
+| `none` | The server is public, such as Microsoft Learn. | Nothing is sent. |
+| `env_token` | The server takes an API key or token. | The adapter reads it when it needs it, from the environment variable you name with `--token-env` or, on a VM, from a file in the root-only secrets folder (`muse-vm secret set`). It is never written to the database. |
+| `oauth` | The server signs users in with OAuth, as Linear and Atlassian do. | `link` prints a one-time sign-in link. You open it and approve the adapter at the server's own sign-in page. The server sends your browser back to the adapter, which exchanges the result for tokens, stores them encrypted, and refreshes them itself. Muse is not part of that redirect and never sees the tokens. If they ever stop working, the adapter tells Muse to reconnect and includes a fresh sign-in link. |
+
+
 ## Who is who
 
 | Identity | What it is | How it is identified |

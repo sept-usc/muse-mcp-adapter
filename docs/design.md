@@ -152,6 +152,18 @@ The initial deployment is a modular monolith:
 
 The customer places the gateway where it can reach Muse and approved public or private MCP servers. Queues, workers, isolated runners, and `stdio` support are introduced only when asynchronous work or network isolation requires them.
 
+### 7.1 How a deployment is made today
+
+`muse-vm` deploys one adapter to one machine the customer owns: a new Google Cloud VM, an existing Linux machine over SSH, or the machine it runs on. The decisions behind it:
+
+- **One ingress: Tailscale Funnel.** Muse needs a public HTTPS address, and rejects hostnames that merely encode an IP. Funnel gives a real name and certificate while the machine has no public IP and accepts no inbound connection: it connects out to Tailscale. A one-time sign-in container (`tailscale-login`) runs before the stack, because Tailscale's own container restarts an interactive login every minute. The public address is not private: every call needs a bearer token, and the token is the access control.
+- **Images are built on the target, from the code the customer installed.** The package carries the container recipe, the hash-locked dependency list and the egress guard, and `muse-vm` uploads them to the machine and builds there. No registry of ours is involved; base images are pinned by digest; `--image` and `--guard-image` use the customer's own registry instead.
+- **The adapter cannot reach what it should not.** An egress-guard container owns the adapter's network namespace and blocks the cloud metadata server and private ranges, so even a compromised adapter cannot use the machine's cloud identity. The adapter runs unprivileged on a read-only filesystem with no capabilities.
+- **Setup is idempotent and checked.** Every run ends in a self-check from outside and inside, a failed install removes what it created, and running setup again finishes what was left undone.
+- **State is small and portable.** The database, key file and OAuth store live in one directory; an encrypted backup carries them. Credentials for MCP servers are separate root-only files and are not in a backup.
+
+See the [deployment reference](deployment.md) and [network exposure](networking.md).
+
 ## 8. Connector and server granularity
 
 The default is one Muse Custom Connector contract per MCP server or intentional logical bundle. Muse never receives a generic unrestricted operation such as `invoke(server, primitive, arguments)`.

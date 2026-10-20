@@ -63,4 +63,4 @@ muse-vm down      # remove everything it created
 
 <walkthrough-conclusion-trophy></walkthrough-conclusion-trophy>
 
-You are done. More: [the README](../README.md) and [troubleshooting](../README.md#troubleshooting).
+You are done. More: [the README](../README.md) and [troubleshooting](troubleshooting.md).

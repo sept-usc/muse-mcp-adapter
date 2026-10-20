@@ -210,6 +210,7 @@ The local suites cover the adapter completely on their own. A session with Muse 
 | --- | --- |
 | Every call returns 403 `CREDENTIAL_RESOLUTION_FAILED` | The environment variable named by the connection is not set where `serve` runs. |
 | 502 `DOWNSTREAM_AUTH_REJECTED` | The server refused the stored credential; replace it or sign in again. |
+| 503 `DOWNSTREAM_UNAVAILABLE` | The MCP server could not be reached and nothing was sent. Safe to repeat after the `Retry-After` delay. |
 | 401 with a `resource_metadata` challenge | The caller's token is missing, revoked, or for another connector. |
 | 409 `UNKNOWN_OUTCOME` | A write may or may not have happened; check the system, then `reconcile`. |
 | A tool Muse could use is missing | It is not in the published policy, or has not been republished since discovery. |
