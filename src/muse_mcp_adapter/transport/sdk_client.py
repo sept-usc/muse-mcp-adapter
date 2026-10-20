@@ -430,10 +430,13 @@ class McpSdkClient:
             session = connected.session
             protocol_version = connected.protocol_version
             self._ensure_protocol(protocol_version)
-            tools = await _all_pages(session.list_tools, "tools")
-            resources = await _all_pages(session.list_resources, "resources")
-            templates = await _all_pages(session.list_resource_templates, "resourceTemplates")
-            prompts = await _all_pages(session.list_prompts, "prompts")
+            offered = connected.capabilities
+            tools = await _listing(session.list_tools, "tools", offered, "tools")
+            resources = await _listing(session.list_resources, "resources", offered, "resources")
+            templates = await _listing(
+                session.list_resource_templates, "resourceTemplates", offered, "resources"
+            )
+            prompts = await _listing(session.list_prompts, "prompts", offered, "prompts")
             primitives = tuple(
                 [_tool_primitive(item) for item in tools]
                 + [_resource_primitive(item) for item in resources]
@@ -681,6 +684,26 @@ def _plain(value: object) -> Any:
     return value
 
 
+async def _listing(
+    method: Any, field: str, offered: Mapping[str, object] | None, capability: str
+) -> list[Any]:
+    """One kind of primitive, as far as the server offers it.
+
+    A server says what it offers when the session starts (MCP lifecycle): what it does not
+    declare is not asked for, and "Method not found" for something it does declare (resource
+    templates on a server of plain resources, say) is an empty list, not a failed discovery.
+    When the capabilities are not known, everything is asked for, as before.
+    """
+    if offered is not None and capability not in offered:
+        return []
+    try:
+        return await _all_pages(method, field)
+    except McpError as error:
+        if error.error.code == types.METHOD_NOT_FOUND:
+            return []
+        raise
+
+
 async def _all_pages(method: Any, field: str) -> list[Any]:
     items: list[Any] = []
     cursor: str | None = None
@@ -703,7 +726,17 @@ async def _in_memory_connection(
     async with create_connected_server_and_client_session(
         server, elicitation_callback=cast(Any, elicitation_callback)
     ) as session:
-        yield ConnectedSession(session, LATEST_PROTOCOL_VERSION)
+        offered = session.get_server_capabilities()
+        yield ConnectedSession(
+            session,
+            LATEST_PROTOCOL_VERSION,
+            capabilities=cast(
+                Mapping[str, object],
+                offered.model_dump(by_alias=True, exclude_none=True),
+            )
+            if offered is not None
+            else None,
+        )
 
 
 @asynccontextmanager
