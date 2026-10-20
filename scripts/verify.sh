@@ -38,6 +38,9 @@ python3 scripts/check_workflows.py || fail "an action reference is not pinned or
 step "shell scripts are clean"
 scripts/check_shell.sh || fail "shellcheck"
 
+step "the Terraform module is valid, safe and plans what we expect"
+scripts/check_terraform.sh || fail "the Terraform module"
+
 step "lint, types and the full test suite, on Linux with Python 3.12 (as CI does)"
 volume=muse-verify-pip
 docker volume create "$volume" >/dev/null

@@ -46,7 +46,7 @@ flowchart LR
 [What is it?](#what-is-it) · [What can you use it for?](#what-can-you-use-it-for) · [Why use it?](#why-use-it) · [How it works](#how-it-works) · [Key concepts](#key-concepts)
 
 **Get started**
-[Quick start](#quick-start) · [Step-by-step setup](#step-by-step-setup) · [Settings file and automation](#settings-file-and-automation) · [Doing it by hand](#doing-it-by-hand) · [Troubleshooting](#troubleshooting)
+[Quick start](#quick-start) · [Step-by-step setup](#step-by-step-setup) · [Settings file and automation](#settings-file-and-automation) · [With Terraform](#with-terraform) · [Doing it by hand](#doing-it-by-hand) · [Troubleshooting](#troubleshooting)
 
 **Use it**
 [Day to day](#day-to-day) · [Stay in control: your policy](#stay-in-control-your-policy) · [What Muse sees](#what-muse-sees)
@@ -282,6 +282,34 @@ secret_name = "TRACKER_TOKEN"
 ```
 
 A saved file holds no secrets: only the paths of files that do. Flags override the file. For a fully unattended run, give a Tailscale auth key (`tailscale_authkey_file`, or `TS_AUTHKEY`) so there is no link to click, `yes = true` for the cost, and a `token_file` for every server that needs a token. OAuth servers (Linear, Atlassian) always need you in a browser once.
+
+## With Terraform
+
+For teams that manage infrastructure as code, `deploy/terraform/gcp` creates the same locked-down setup on Google Cloud declaratively: a network of its own, a shielded VM with no public address, SSH only through Identity-Aware Proxy, Cloud NAT for outbound traffic, daily snapshots, and a first-boot install that runs the same `muse-vm up --local` a person would.
+
+```bash
+# 1. A single-use, untagged Tailscale auth key (Settings, Keys), kept in Secret Manager: it never enters Terraform state
+printf '%s' "tskey-auth-..." | gcloud secrets create my-tailscale-key --data-file=- --project my-project
+```
+
+```hcl
+# 2. main.tf
+module "muse_adapter" {
+  source = "github.com/sept-usc/muse-mcp-adapter//deploy/terraform/gcp?ref=<a tag or commit>"
+
+  project                   = "my-project"
+  tailscale_auth_key_secret = "my-tailscale-key"
+  install_source            = "git+https://github.com/sept-usc/muse-mcp-adapter@<the same tag or commit>"
+}
+```
+
+```bash
+terraform init && terraform apply     # then follow the first-boot install (10 to 20 minutes):
+terraform output watch_the_install    # prints the command; it ends with the adapter's address
+terraform output connect_a_server     # connect a server from your computer, over IAP
+```
+
+The VM reads the key from Secret Manager once, with an identity that can read that one secret and nothing else; the adapter container cannot reach that identity (the egress guard blocks the metadata server). Other inputs: `name`, `region`, `zone`, `machine_type`, `disk_gb`, `egress_allow`, `snapshots`, and `tailscale_auth_key` if you would rather have Terraform store the key (then it is in the Terraform state). Pin `ref` and `install_source` to a reviewed release or commit. Day-two commands (`add-server`, `expose`, `upgrade`, `backup`) run on the VM, for example `gcloud compute ssh mma-muse --tunnel-through-iap -- -t sudo muse-vm add-server github`; remove everything with `terraform destroy`.
 
 ## Doing it by hand
 

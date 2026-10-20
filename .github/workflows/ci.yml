@@ -44,6 +44,8 @@ jobs:
         run: python3 scripts/check_mermaid.py
       - name: Shell scripts are clean
         run: scripts/check_shell.sh
+      - name: The Terraform module is valid, safe and plans what we expect
+        run: scripts/check_terraform.sh
       - name: The installer works with an old and a new Python
         run: scripts/check_install.sh
 
