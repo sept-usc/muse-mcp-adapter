@@ -34,7 +34,7 @@ Muse ──(token or OAuth)──▶ Adapter ──(policy-checked, your credent
 - If tokens are missing or cannot be refreshed, requests fail fast with a clear reconnect message (and a fresh link) instead of waiting for a browser. A write is never marked uncertain because of this.
 
 **Write safety**
-- Muse confirms consequential actions with its user before calling them. Optionally, require signed approval evidence as well (`approvalMode: signed`).
+- Muse confirms consequential actions with its user before calling them. A signed-approval mode (`approvalMode: signed`) exists in the code but is not usable end to end yet, because the HTTP interface cannot carry the approval evidence; leave it off.
 - Writes carry an idempotency key, supplied by Muse or derived from the request, so a retry returns the stored result instead of running again.
 - If the outcome cannot be established (a failure after the request was sent, a rejected result, or a crash), the write is marked `UNKNOWN` and is not retried until you reconcile it. Failures that happen before anything was sent are safely retryable.
 - An operation never remains in `RUNNING` after an error.
@@ -57,6 +57,8 @@ Muse ──(token or OAuth)──▶ Adapter ──(policy-checked, your credent
 - Administrative actions (who registered, discovered, published, activated, rolled back, linked, or disabled) and every runtime request are recorded. Logs and audit data redact token-like keys and bearer values.
 
 ## Your responsibilities
+
+- The policy governs what passes through the adapter. It does not limit what Muse can do with its other tools: a tool the adapter does not publish cannot be called through it, but Muse may offer another route, such as its own browser. Limit that in Muse.
 
 - Provide secrets (downstream tokens, provider client secrets, optional integrity or approval keys) through environment variables or your secret manager, and rotate them.
 - Run the service behind TLS and restrict network access to it. The sign-in pages must be served over HTTPS in production.

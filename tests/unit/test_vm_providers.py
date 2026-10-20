@@ -292,3 +292,25 @@ def test_keeping_data_on_an_ssh_host_keeps_the_data_and_the_backups() -> None:
     provider.teardown(keep_data=True)
     script = " ".join(runner.lines())
     assert "! -name data" in script and "! -name backups" in script
+
+
+def test_the_local_provider_installs_on_this_machine_and_refuses_other_systems(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from muse_vm.providers import PROVIDERS
+    from muse_vm.providers.local import LocalProvider
+
+    assert PROVIDERS["local"] is LocalProvider
+    runner = FakeRunner()
+    runner.when("uname -s -m", stdout="Linux x86_64\n0\n")
+    runner.when("test -f /opt/muse-adapter/compose.yml", stdout="no")
+    dep = Deployment(name="here", provider="local", ingress="tailscale-funnel")
+    provider = LocalProvider(dep, runner, lambda _: None, {"yes": True})  # type: ignore[arg-type]
+    monkeypatch.setattr("muse_vm.providers.local.sys.platform", "linux")
+    provider.preflight()
+    assert provider.status()["host"] == "this machine"
+    assert not any(line.startswith("ssh ") for line in runner.lines())  # no ssh hop at all
+
+    monkeypatch.setattr("muse_vm.providers.local.sys.platform", "darwin")
+    with pytest.raises(SystemExit, match="must be\nLinux|must be Linux"):
+        provider.preflight()

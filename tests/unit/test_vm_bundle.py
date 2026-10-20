@@ -190,7 +190,9 @@ def test_a_secret_must_be_one_non_empty_line(value: str) -> None:
 def test_the_source_upload_holds_exactly_what_the_images_need() -> None:
     runner = FakeRunner()
     target = SSHTarget(runner, "me@host")  # type: ignore[arg-type]
-    bundle.upload_source(target, ROOT)
+    source = bundle.find_build_source(ROOT / "src" / "muse_vm")
+    assert source is not None and source.kind == "checkout"
+    bundle.upload_source(target, source)
     upload = next(call for call in runner.calls if call.get("input"))
     with tarfile.open(fileobj=io.BytesIO(upload["input"]), mode="r:gz") as archive:
         names = archive.getnames()
@@ -510,3 +512,81 @@ def test_the_one_time_tailscale_sign_in_is_not_part_of_the_stack() -> None:
     assert (
         "TS_BOOT_TIMEOUT" not in (BUNDLE / "compose.yml").read_text()
     )  # a setting that is not real
+
+
+def _no_checkout(_start: Path | None = None) -> None:
+    return None
+
+
+def _the_repo_checkout(_start: Path | None = None) -> Path:
+    return ROOT
+
+
+# ---- building from an installed release instead of a checkout ---------------------------------
+def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    context = tmp_path / "context"
+    (context / "guard").mkdir(parents=True)
+    (context / "Dockerfile").write_text("FROM scratch\n")
+    (context / "requirements.lock").write_text("# lock\n")
+    (context / "guard" / "guard.sh").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(bundle, "find_source_dir", _no_checkout)
+    monkeypatch.setattr(bundle, "_release_context", lambda: context)
+    return context
+
+
+def test_an_installed_release_is_a_build_source_when_there_is_no_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _release(tmp_path, monkeypatch)
+    source = bundle.find_build_source()
+    assert source is not None and source.kind == "release" and source.dirty is False
+    assert source.revision == f"release-{bundle.__version__}"
+    assert {name for _, name in source.files} == {
+        "Dockerfile",
+        "requirements.lock",
+        "src/muse_mcp_adapter",
+        "guard",
+    }
+    assert all(path.exists() for path, _ in source.files)
+
+
+def test_the_release_is_uploaded_like_a_checkout_and_records_its_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _release(tmp_path, monkeypatch)
+    target = FakeTarget()
+    target.put(".env", bundle.render_env({"MMA_VERSION": "x"}))
+    source = bundle.find_build_source()
+    assert source is not None
+    assert bundle.upload_source(target, source) == f"release-{bundle.__version__}"
+    assert bundle.parse_env(target.text(".env"))["MMA_REVISION"] == f"release-{bundle.__version__}"
+
+
+def test_a_checkout_wins_over_an_installed_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _release(tmp_path, monkeypatch)
+    monkeypatch.setattr(bundle, "find_source_dir", _the_repo_checkout)
+    source = bundle.find_build_source()
+    assert source is not None and source.kind == "checkout"
+
+
+def test_with_neither_there_is_nothing_to_build_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bundle, "find_source_dir", _no_checkout)
+    monkeypatch.setattr(bundle, "_release_context", lambda: None)
+    assert bundle.find_build_source() is None
+
+
+def test_the_sign_in_step_and_the_running_service_ask_tailscale_for_the_same_settings() -> None:
+    # Tailscale rejects a second `up` that omits a setting the first one changed, which leaves
+    # the device signed in but the service crash-looping.
+    services = _compose()["services"]
+    login = "\n".join(services["tailscale-login"]["command"])
+    running = services["tailscale"]["environment"]
+    assert "--accept-dns=false" in login and running["TS_ACCEPT_DNS"] == "false"
+    assert '--hostname="$$TS_HOSTNAME"' in login
+    assert running["TS_HOSTNAME"] == services["tailscale-login"]["environment"]["TS_HOSTNAME"]
+    assert running["TS_EXTRA_ARGS"] == services["tailscale-login"]["environment"]["TS_EXTRA_ARGS"]
+    assert "TS_EXTRA_ARGS" in login

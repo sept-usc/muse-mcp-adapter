@@ -128,26 +128,25 @@ def cmd_up(args: argparse.Namespace) -> None:
             f"A deployment named {name!r} already exists (`muse-vm status --name {name}`, "
             f"or `muse-vm down --name {name}` first)."
         )
-    provider_name = "ssh" if args.ssh else args.cloud
+    provider_name = "local" if args.local else "ssh" if args.ssh else args.cloud
     if not provider_name:
         raise SystemExit(
-            "Choose where to run the adapter: --ssh user@host or --cloud gcp. "
-            "(`muse-vm setup` asks you instead.)"
+            "Choose where to run the adapter: --ssh user@host, --cloud gcp, or --local for this "
+            "machine. (`muse-vm setup` asks you instead.)"
         )
     build = not args.image
     if args.image and not args.guard_image:
         raise SystemExit("--image needs --guard-image too: both images come from your registry.")
-    source = None
+    source: bundle.BuildSource | None = None
     if build:
-        source = bundle.find_source_dir()
-        if source:
-            _refuse_unreviewed(source, args.allow_dirty)
-        if not source:
+        source = bundle.find_build_source()
+        if source is None:
             raise SystemExit(
-                "Run muse-vm from a checkout of the muse-mcp-adapter repository: the images are "
-                "built from it on the target machine. (To use images from your own registry, "
-                "pass --image and --guard-image.)"
+                "There is nothing to build the images from: install muse-mcp-adapter from a "
+                "release, or run muse-vm inside a checkout of the repository. (To use images "
+                "from your own registry, pass --image and --guard-image.)"
             )
+        _refuse_unreviewed(source, args.allow_dirty)
     dep = Deployment(
         name=name,
         provider=provider_name,
@@ -172,8 +171,14 @@ def cmd_up(args: argparse.Namespace) -> None:
     say(f"muse-vm {__version__}: deploying {name!r} to {provider_name}")
 
     ingress_secrets: dict[str, str] = {}
-    key = _secret_value(
-        "TS_AUTHKEY", "Tailscale auth key (empty: sign in with a link)", required=False
+    # With --yes (the guided setup, scripts) nobody is asked: a key comes from the environment,
+    # otherwise the person signs in with a link.
+    key = (
+        os.environ.get("TS_AUTHKEY")
+        if args.yes
+        else _secret_value(
+            "TS_AUTHKEY", "Tailscale auth key (empty: sign in with a link)", required=False
+        )
     )
     if key:
         if not re.fullmatch(r"tskey-[A-Za-z0-9_-]{20,}", key):
@@ -256,27 +261,29 @@ def cmd_up(args: argparse.Namespace) -> None:
     say(f"  muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp --name {name}")
 
 
-def _refuse_unreviewed(source: Path, allow: bool) -> None:
+def _refuse_unreviewed(source: bundle.BuildSource, allow: bool) -> None:
     """A deployment should come from a commit that can be named again, not from local edits."""
-    revision, dirty = bundle.source_revision(source)
-    if dirty and not allow:
+    if source.dirty and not allow:
         raise SystemExit(
-            f"The checkout at {revision} has uncommitted changes to what is deployed. Commit or "
-            "stash them so the deployment matches a commit, or pass --allow-dirty."
+            f"The checkout at {source.revision} has uncommitted changes to what is deployed. "
+            "Commit or stash them so the deployment matches a commit, or pass --allow-dirty."
         )
 
 
 def _fetch_images(
-    t: Any, dep: Deployment, env: dict[str, str], source: Path | None, log: Any
+    t: Any, dep: Deployment, env: dict[str, str], source: bundle.BuildSource | None, log: Any
 ) -> None:
     if dep.build:
         assert source
-        log("  uploading the source and building the images on the machine (a few minutes)…")
+        log(
+            f"  uploading the source ({source.kind} {source.revision}) and building the images on "
+            "the machine (a few minutes)…"
+        )
         bundle.upload_source(t, source)
         t.compose("build", stream=True, timeout=3600)
         return
     try:
-        t.compose("pull", stream=True, timeout=1800)
+        t.compose("pull --quiet", stream=True, timeout=1800)
     except CommandError as error:
         raise SystemExit(
             f"The images could not be pulled ({env['MMA_IMAGE']}, {env['MMA_GUARD_IMAGE']}). "
@@ -322,7 +329,13 @@ def cmd_add_server(args: argparse.Namespace) -> None:
     if args.credential == "env_token":
         chosen: str = args.secret_name or f"{args.server.upper().replace('-', '_')}_TOKEN"
         secret_name = chosen
-        if chosen in bundle.list_secrets(t):
+        supplied = os.environ.get(chosen)
+        if supplied:  # a token given now replaces one stored earlier, such as a rejected one
+            replacing = chosen in bundle.list_secrets(t)
+            bundle.set_secret(t, chosen, supplied)
+            verb = "replaced" if replacing else "stored"
+            say(f"  {verb} {chosen} on the VM (readable only by the adapter)")
+        elif chosen in bundle.list_secrets(t):
             say(f"  using the {chosen} already stored on the VM")
         else:
             if getattr(args, "token_help", None) and sys.stdin.isatty():
@@ -333,8 +346,24 @@ def cmd_add_server(args: argparse.Namespace) -> None:
             say(f"  stored {chosen} on the VM (readable only by the adapter)")
     profile = {"none": "none", "env_token": "bearer", "oauth": "oauth"}[args.credential]
 
-    say(f"registering {server_id} at {args.endpoint}")
-    admin.register(server_id, args.display_name or server_id, args.endpoint, profile)
+    known = {str(item.get("serverId")): item for item in admin.servers()}
+    if server_id in known:
+        if known[server_id].get("endpoint") != args.endpoint:
+            raise SystemExit(
+                f"{server_id} is already registered at {known[server_id].get('endpoint')}. "
+                "Use another --name for the new address, or remove it first."
+            )
+        connections = [c for c in admin.links() if c.get("serverId") == server_id]
+        if connections:
+            say(
+                f"{server_id} is already connected ({len(connections)} connection(s)): "
+                "nothing to do. See them with `muse-vm servers`."
+            )
+            return
+        say(f"{server_id} was registered earlier but never finished: continuing")
+    else:
+        say(f"registering {server_id} at {args.endpoint}")
+        admin.register(server_id, args.display_name or server_id, args.endpoint, profile)
     linked: Linked | None = None
     if args.credential == "oauth":
         linked = admin.link(server_id, label, "oauth", None)
@@ -415,10 +444,11 @@ def _plan_from(args: argparse.Namespace) -> tuple[config.Plan, Path | None]:
         plan.ssh_opts = list(args.ssh_opt)
     if args.egress_allow:
         plan.egress_allow = [item for item in args.egress_allow.split(",") if item]
-    if args.cloud and not args.ssh:
-        plan.ssh = None
-    if args.ssh and not args.cloud:
-        plan.cloud = None
+    if args.cloud or args.ssh or args.local:
+        # choosing on the command line replaces whatever the file chose
+        plan.cloud = args.cloud
+        plan.ssh = args.ssh
+        plan.local = bool(args.local)
     if args.yes:
         plan.yes = True
     if args.server:
@@ -432,7 +462,9 @@ def cmd_setup(args: argparse.Namespace) -> None:
     plan, path = _plan_from(args)
     name = check_name(plan.name or DEFAULT_NAME)
     terminal = sys.stdin.isatty() and sys.stdout.isatty()
-    wizard_io = wizard.Io(say=say, ask=input, interactive=terminal and not args.non_interactive)
+    wizard_io = wizard.Io(
+        say=say, ask=wizard.ask_at_terminal, interactive=terminal and not args.non_interactive
+    )
     wizard.run(
         plan,
         name=name,
@@ -448,7 +480,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     report = Report()
     runner = _runner(args)
     doctor.local_checks(report)
-    if args.ssh:
+    if args.local:
+        doctor.local_machine_checks(report, runner)
+    elif args.ssh:
         doctor.ssh_checks(report, runner, args.ssh, args.ssh_opt or [])
     elif args.cloud == "gcp" or (not args.ssh and doctor.gcloud_facts(runner)):
         doctor.gcp_checks(report, runner, args.project, args.zone)
@@ -603,18 +637,18 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     t = provider.target()
     previous = bundle.set_version(t)
     if dep.build:
-        source = bundle.find_source_dir()
-        if not source:
+        source = bundle.find_build_source()
+        if source is None:
             raise SystemExit(
-                "Run `muse-vm upgrade` from the updated checkout of the muse-mcp-adapter "
-                "repository (git pull first): the images are rebuilt from it."
+                "Nothing to rebuild from: upgrade muse-mcp-adapter first (`pipx upgrade "
+                "muse-mcp-adapter`, or `git pull` in your checkout), then run `muse-vm upgrade`."
             )
         _refuse_unreviewed(source, args.allow_dirty)
         revision = bundle.upload_source(t, source)
         say(f"  building from commit {revision}")
         t.compose("build", stream=True, timeout=3600)
     else:
-        t.compose("pull", stream=True, timeout=1800)
+        t.compose("pull --quiet", stream=True, timeout=1800)
     env = bundle.parse_env(t.get(".env"))
     bundle.install(t, env, t.get("config/serve.json") or bundle.serve_config(str(dep.hostname)))
     bundle.install_units(t, idle_hours=dep.extra.get("idle_stop_hours"))
@@ -625,10 +659,8 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     report = selfcheck.run(t, str(dep.base_url), wait=300, say=say)
     for line in report.lines():
         say(line)
-    say(
-        f"Upgraded from {previous or 'the same version'} to {__version__}. "
-        "The address, the connections and the data are unchanged."
-    )
+    moved = f"Upgraded from {previous} to {__version__}" if previous else f"Rebuilt {__version__}"
+    say(f"{moved}. The address, the connections and the data are unchanged.")
 
 
 def cmd_backup(args: argparse.Namespace) -> None:
@@ -706,7 +738,10 @@ def build_parser() -> argparse.ArgumentParser:
     where = up.add_mutually_exclusive_group()
     where.add_argument("--ssh", metavar="USER@HOST", help="use an existing Linux machine over SSH")
     where.add_argument(
-        "--cloud", choices=sorted(set(PROVIDERS) - {"ssh"}), help="create a cloud VM"
+        "--local", action="store_true", help="install on this machine (Linux, root or sudo)"
+    )
+    where.add_argument(
+        "--cloud", choices=sorted(set(PROVIDERS) - {"ssh", "local"}), help="create a cloud VM"
     )
     up.add_argument("--tz", default=os.environ.get("MMA_TZ", "UTC"))
     up.add_argument(
@@ -791,6 +826,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--cloud", choices=("gcp",), help="create a Google Cloud VM")
     sp.add_argument("--ssh", metavar="USER@HOST", help="use an existing Linux machine over SSH")
+    sp.add_argument("--local", action="store_true", help="install on this machine (Linux)")
     sp.add_argument("--ssh-opt", action="append", metavar="OPT")
     sp.add_argument("--project", help="GCP project (default: gcloud's)")
     sp.add_argument("--zone")
@@ -814,6 +850,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_setup)
     sp = common(commands.add_parser("doctor", help="check what would stop a deployment"))
     sp.add_argument("--ssh", metavar="USER@HOST", help="check this machine too")
+    sp.add_argument("--local", action="store_true", help="check this machine as the target")
     sp.add_argument("--cloud", choices=("gcp",), help="check Google Cloud access")
     sp.add_argument("--project")
     sp.add_argument("--zone")

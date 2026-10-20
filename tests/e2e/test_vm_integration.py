@@ -196,6 +196,50 @@ def test_add_server_connects_a_real_server_and_the_printed_token_works(
     assert deployment.servers == ["tracker"]
 
 
+def test_a_rejected_token_can_be_corrected_by_running_the_same_command_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+    Deployment(
+        name="muse", provider="fake", ingress="tailscale-funnel", hostname="adapter.tail1.ts.net"
+    ).save()
+    vm = ContainerTarget(tmp_path / "vm")
+    _config(tmp_path / "vm")
+    _use(monkeypatch, _FakeProvider(Deployment.load("muse"), vm))
+    stored = tmp_path / "vm" / "secrets" / "TRACKER_TOKEN"
+
+    with atlas_server(auth="bearer") as atlas:
+        argv = [
+            "add-server",
+            "tracker",
+            "--endpoint",
+            atlas.url,
+            "--credential",
+            "env_token",
+            "--secret-name",
+            "TRACKER_TOKEN",
+            "--dev-network",
+            "--no-copy",
+            "--name",
+            "muse",
+        ]
+        monkeypatch.setenv("TRACKER_TOKEN", "an-expired-token")
+        _fails(argv, capsys, "DOWNSTREAM_AUTH_REJECTED")
+        assert stored.read_text().strip() == "an-expired-token"
+        assert Deployment.load("muse").servers == []  # nothing was announced as connected
+
+        monkeypatch.setenv("TRACKER_TOKEN", "atlas-secret-token")  # the person fixes the token
+        assert cli.main(argv) == 0
+        text = capsys.readouterr().out
+        assert "replaced TRACKER_TOKEN" in text and "registered earlier but never finished" in text
+        assert stored.read_text().strip() == "atlas-secret-token"
+        assert Deployment.load("muse").servers == ["tracker"]
+
+        assert cli.main(argv) == 0  # and running it once more changes nothing
+        again = capsys.readouterr().out
+        assert "already connected" in again and "Connector URL" not in again
+
+
 def test_add_server_for_a_public_server_needs_no_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -389,6 +433,36 @@ def _up_args(*extra: str) -> list[str]:
     return ["up", "--cloud", "gcp", "--yes", "--allow-dirty", "--name", "muse", *extra]
 
 
+def test_the_guided_flow_does_not_ask_a_person_for_a_tailscale_auth_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(selfcheck, "run", _returning(_passing()))
+    vm = ContainerTarget(tmp_path / "vm")
+
+    def make(dep: Deployment, runner: Any, say: Any, opts: Any) -> _FakeProvider:
+        return _FakeProvider(dep, vm)
+
+    monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
+    monkeypatch.setattr(ingress, "interactive_login", _record_login([]))
+    monkeypatch.delenv("TS_AUTHKEY", raising=False)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)  # a person at a terminal
+    asked: list[str] = []
+
+    def ask(prompt: str) -> str:
+        asked.append(prompt)
+        return ""
+
+    monkeypatch.setattr(cli.getpass, "getpass", ask)
+
+    assert cli.main(_up_args()) == 0  # --yes: straight to the sign-in link
+    assert asked == []
+
+    assert cli.main(["up", "--cloud", "gcp", "--allow-dirty", "--name", "other"]) in (0, 1)
+    assert any("Tailscale auth key" in prompt for prompt in asked)  # plain `up` still asks
+
+
 def test_up_installs_the_bundle_starts_it_and_leaves_a_ready_deployment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -403,6 +477,7 @@ def test_up_installs_the_bundle_starts_it_and_leaves_a_ready_deployment(
 
     monkeypatch.setattr(cli, "provider_for", make)
     monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
+    monkeypatch.delenv("TS_AUTHKEY", raising=False)
     logins: list[str] = []
     monkeypatch.setattr(ingress, "interactive_login", _record_login(logins))
     assert cli.main(_up_args()) == 0
@@ -486,7 +561,7 @@ def test_up_needs_to_be_told_where_to_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    _fails(["up", "--name", "muse"], capsys, "--ssh user@host or --cloud gcp")
+    _fails(["up", "--name", "muse"], capsys, "--ssh user@host, --cloud gcp, or --local")
 
 
 def test_a_tailscale_auth_key_goes_into_the_private_environment_file_only(

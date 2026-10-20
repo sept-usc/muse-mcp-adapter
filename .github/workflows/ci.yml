@@ -36,12 +36,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
       - name: No credentials are tracked
         run: scripts/check_secrets.sh
       - name: Documentation links and anchors resolve
         run: python3 scripts/check_docs.py
+      - name: Every muse-vm command in the documentation exists
+        run: pip install -e . && python scripts/check_doc_commands.py
       - name: Every Mermaid diagram renders
         run: python3 scripts/check_mermaid.py
+      - name: Shell scripts are clean
+        run: scripts/check_shell.sh
+      - name: The Terraform module is valid, safe and plans what we expect
+        run: scripts/check_terraform.sh
+      - name: The installer works with an old and a new Python
+        run: scripts/check_install.sh
 
   test:
     name: test (python ${{ matrix.python }})
@@ -59,7 +71,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
       - run: pyright
-      - run: pytest -q
+      - run: pytest -q --cov
 
   images:
     name: image (${{ matrix.name }})
@@ -119,10 +131,34 @@ jobs:
           path: reports/performance.md
           if-no-files-found: ignore
 
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: The release wheel installs on its own and builds the images from what it carries
+        run: python3 scripts/check_package.py
+
+  stack:
+    name: stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - name: The shipped stack works end to end (real images, guard, secrets, a real MCP server)
+        run: python3 scripts/check_stack.py
+
   gate:
     name: gate
     if: always()
-    needs: [workflows, static, test, images]
+    needs: [workflows, static, test, images, package, stack]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

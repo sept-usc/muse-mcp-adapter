@@ -80,6 +80,7 @@ Resource and template policies add a `resource` block; prompts add a `prompt` bl
 Rules enforced when you publish:
 
 - A tool without `readOnlyHint: true` cannot be classified `read` unless `readOnlyReviewed` is set.
+- The generated draft policy marks a tool as `sensitive_write` when it declares `destructiveHint: true` or its name contains a destructive word (delete, remove, drop, merge, revoke, reset, and similar). Review the draft before publishing it.
 - `file:`, `data:`, and similar schemes are never allowed for resources. `http(s)` resources must list `allowedUriHosts`.
 - Template arguments can be constrained with `argumentPatterns` (regular expressions that must match the whole value).
 - Oversized or backtracking-prone regular expressions in schemas and patterns are rejected.
@@ -102,7 +103,7 @@ Rules enforced when you publish:
 | `publicUrl` | The HTTPS address Muse reaches the service at. It appears in the connector URL and the sign-in pages. Required unless listening on a local address. |
 | `listen` | Host and port to bind (default `127.0.0.1:8080`). |
 | `limits` | Per-connection request rate and per-server concurrency. |
-| `approvalMode` | `muse` (default): Muse confirms writes with you. `signed`: additionally require signed approval evidence (needs `approvalSecretEnv`). |
+| `approvalMode` | `muse` (default): Muse confirms writes with you. `signed` is reserved: the HTTP interface cannot yet carry approval evidence, so in this mode every write is refused. Leave it at `muse`. |
 | `integrityKeyEnv` | Optional key that signs stored catalogs so tampering is detected. Use the same config for every command that publishes. |
 | `secretsDir` | Optional directory of secret files, one file per name (for example a Docker or Compose secrets mount). A secret that is not in the environment is read from `<secretsDir>/<NAME>` when it is needed, so it stays out of the process environment and can be added without a restart. `MUSE_ADAPTER_SECRETS_DIR` sets the same thing. |
 | `oauthClients` | For an OAuth provider without dynamic client registration: `{"<serverId>": {"clientId": "...", "clientSecretEnv": "..."}}`. |
@@ -157,7 +158,7 @@ The caller is identified by the bearer token: it fixes the owner, the connection
 
 **Writes** are confirmed by Muse with you before it calls them. Send an optional `Idempotency-Key` header when retrying. If you do not, an identical write sent while the first is still running, or within 30 seconds of it finishing (`idempotencyWindowSeconds`), is treated as a retry and returns the first result with `idempotentReplay: true`. Sent later, it is a new action and runs again. A write whose outcome is unknown is never run again until you settle it.
 
-**Statuses:** `200` success, `400` invalid request, `401` not authenticated (or the linked account must be reconnected: the body then carries an `authorizationUrl`), `403` not allowed or connector disabled, `404` unknown, `409` input needed, still running, conflicting key, or unknown outcome, `413` body too large, `429` rate limited, `502` downstream failure.
+**Statuses:** `200` success, `400` invalid request, `401` not authenticated (or the linked account must be reconnected: the body then carries an `authorizationUrl`), `403` not allowed or connector disabled, `404` unknown, `409` input needed, still running, conflicting key, or unknown outcome, `413` body too large, `429` rate limited, `502` downstream failure, `503` the MCP server could not be reached (nothing was sent; repeat after `Retry-After`). Errors carry `retryable` and `nextStep`.
 
 ## 6. Operations
 

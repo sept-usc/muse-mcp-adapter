@@ -173,3 +173,36 @@ def test_a_dropped_connection_is_retried_but_a_failing_command_is_not(
     with pytest.raises(CommandError, match="command failed"):
         SSHTarget(failing, "me@host").sh("false")  # type: ignore[arg-type]
     assert len(failing.calls) == 1  # a command that ran and failed is not repeated
+
+
+def _no_pause(_seconds: float) -> None:
+    return None
+
+
+# ---- the machine you are on ------------------------------------------------------------------
+def test_local_commands_run_directly_as_root_or_through_sudo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from muse_vm.targets import LocalTarget
+
+    runner = FakeRunner()
+    monkeypatch.setattr("muse_vm.targets.os.geteuid", lambda: 0)
+    LocalTarget(runner).sh("true")  # type: ignore[arg-type]
+    assert runner.calls[-1]["argv"][:2] == ["sh", "-c"]
+    monkeypatch.setattr("muse_vm.targets.os.geteuid", lambda: 1000)
+    LocalTarget(runner).sh("true")  # type: ignore[arg-type]
+    assert runner.calls[-1]["argv"][:4] == ["sudo", "-n", "sh", "-c"]
+    assert "this machine" in LocalTarget(runner).describe()  # type: ignore[arg-type]
+
+
+def test_a_failing_local_command_is_not_retried_like_a_dropped_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from muse_vm import targets
+    from muse_vm.targets import LocalTarget
+
+    monkeypatch.setattr(targets, "_pause", _no_pause)
+    runner = FakeRunner([("sh -c", Result(255, "", "exit 255 is this command's own answer"))])
+    with pytest.raises(CommandError):
+        LocalTarget(runner).sh("exit 255")  # type: ignore[arg-type]
+    assert len(runner.calls) == 1

@@ -92,3 +92,53 @@ def test_a_reviewed_draft_publishes_without_edits() -> None:
         policies=drafts,
     )
     assert len(catalog.primitives) == len(drafts)
+
+
+def test_destructive_tools_are_drafted_as_sensitive_writes() -> None:
+    names = [
+        "delete_file",
+        "merge_pull_request",
+        "removeMember",
+        "DropTable",
+        "force-push",
+        "revoke_token",
+        "reset_password",
+    ]
+    primitives: list[dict[str, object]] = [
+        {"type": "tool", "name": name, "inputSchema": {"type": "object"}} for name in names
+    ]
+    entries = {e["primitiveKey"]: e for e in draft_policies(_snapshot(primitives))}
+    assert {e["classification"] for e in entries.values()} == {"sensitive_write"}
+    assert not any(e["allowed"] for e in entries.values())  # and none is ever exposed for you
+
+
+def test_the_servers_own_destructive_hint_counts_even_when_the_name_is_harmless() -> None:
+    hinted: dict[str, object] = {
+        "type": "tool",
+        "name": "tidy",
+        "inputSchema": {"type": "object"},
+        "annotations": {"destructiveHint": True},
+    }
+    entry = draft_policies(_snapshot([hinted]))[0]
+    assert entry["classification"] == "sensitive_write"
+
+
+def test_ordinary_writes_and_reads_keep_their_classification() -> None:
+    primitives: list[dict[str, object]] = [
+        {"type": "tool", "name": "create_issue", "inputSchema": {"type": "object"}},
+        {"type": "tool", "name": "update_issue", "inputSchema": {"type": "object"}},
+        {"type": "tool", "name": "mergeable_status", "inputSchema": {"type": "object"}},
+        {
+            "type": "tool",
+            "name": "delete_preview",  # a read-only hint is the server's word that nothing changes
+            "inputSchema": {"type": "object"},
+            "annotations": {"readOnlyHint": True},
+        },
+    ]
+    got = {e["primitiveKey"]: e["classification"] for e in draft_policies(_snapshot(primitives))}
+    assert got == {
+        "tool:create_issue": "write",
+        "tool:update_issue": "write",
+        "tool:mergeable_status": "write",
+        "tool:delete_preview": "read",
+    }

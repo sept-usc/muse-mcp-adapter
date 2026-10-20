@@ -311,6 +311,7 @@ MCP annotations are evidence, not policy:
 - Unclassified primitives are not published.
 - Missing or false `readOnlyHint` is Write until reviewed.
 - `readOnlyHint: true` is only a candidate Read classification.
+- A tool that declares `destructiveHint: true`, or whose name contains a word such as delete, remove, drop, merge, revoke, or reset, is drafted as Sensitive Write.
 - External communication, destructive actions, payments, permission changes, credential operations, and irreversible actions require explicit policy.
 - Sensitive Writes require the strongest Muse-supported approval behavior.
 - Material changes to recipients, price, scope, or other approved details require fresh approval.

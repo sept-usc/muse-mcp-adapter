@@ -12,6 +12,10 @@ from .base import Provider
 class SSHProvider(Provider):
     name = "ssh"
 
+    @property
+    def where(self) -> str:
+        return self.dep.ssh_host or "this machine"
+
     def target(self) -> Target:
         assert self.dep.ssh_host
         return SSHTarget(self.runner, self.dep.ssh_host, self.dep.ssh_opts, self.root)
@@ -22,7 +26,7 @@ class SSHProvider(Provider):
             probe = t.sh("uname -s -m && id -u", cwd_root=False, timeout=60)
         except CommandError as error:
             raise SystemExit(
-                f"Cannot run commands on {self.dep.ssh_host} as root with `sudo -n`.\n"
+                f"Cannot run commands on {self.where} as root with `sudo -n`.\n"
                 f"  It needs key-based SSH and passwordless sudo (or a root login).\n  {error}"
             ) from None
         system, architecture = probe.stdout.split()[:2]
@@ -34,7 +38,7 @@ class SSHProvider(Provider):
         existing = t.sh(f"test -f {self.root}/compose.yml && echo yes || echo no", cwd_root=False)
         if existing.stdout.strip() == "yes" and not self.opts.get("reuse_dir"):
             raise SystemExit(
-                f"{self.dep.ssh_host} already has a deployment in {self.root}. Remove it first "
+                f"{self.where} already has a deployment in {self.root}. Remove it first "
                 "(`muse-vm down` for that deployment) or pass --force."
             )
         cloud = t.sh(
@@ -61,6 +65,6 @@ class SSHProvider(Provider):
 
     def status(self) -> dict[str, Any]:
         return {
-            "host": self.dep.ssh_host,
+            "host": self.where,
             "architecture": self.dep.extra.get("arch", "-"),
         }

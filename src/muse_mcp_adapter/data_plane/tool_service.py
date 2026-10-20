@@ -18,6 +18,7 @@ from ..domain.errors import (
     DownstreamAuthRejectedError,
     DownstreamContentError,
     DownstreamToolError,
+    DownstreamUnavailableError,
     IdempotencyConflictError,
     InputRequiredError,
     InvalidStateError,
@@ -525,7 +526,7 @@ class ToolDataPlaneService:
                     message=str(error),
                     retryable=True,
                 )
-                raise DownstreamToolError(str(error)) from error
+                raise DownstreamUnavailableError(str(error)) from error
             except McpInputRequired as error:
                 self._repository.append_operation_event(
                     operation_id,

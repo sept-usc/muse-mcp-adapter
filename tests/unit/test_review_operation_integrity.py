@@ -25,7 +25,7 @@ from muse_mcp_adapter.data_plane.tool_service import (
 from muse_mcp_adapter.discovery.client import ManifestDiscoveryClient
 from muse_mcp_adapter.domain.errors import (
     ApprovalRequiredError,
-    DownstreamToolError,
+    DownstreamUnavailableError,
     InputRequiredError,
     RequestValidationError,
     ServerDisabledError,
@@ -302,7 +302,7 @@ def test_pre_dispatch_failure_is_a_retryable_failure_and_the_write_can_be_retrie
         approval = _approved_write(service)
         request = _request("create_issue", {"title": "Example"}, key="key-1", approval=approval)
 
-        with pytest.raises(DownstreamToolError, match="connect failed"):
+        with pytest.raises(DownstreamUnavailableError, match="connect failed"):
             service.execute(request)
         record = service.get_operation("operation-0")
         assert record.status == FAILED and record.retryable

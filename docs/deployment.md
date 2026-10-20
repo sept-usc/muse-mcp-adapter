@@ -37,6 +37,7 @@ Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings a
 | `doctor` | Check what would stop a deployment, before anything is created: Python, `ssh`, `git`, the checkout, `gcloud` sign-in and credentials, project, APIs; or, with `--ssh USER@HOST`, key login, `sudo`, a supported Linux and outbound reachability |
 | `presets` | List the well-known servers `add-server` knows by name |
 | `up --cloud gcp --project P` | Create a Google Cloud VM and install the adapter. Options: `--zone`, `--machine-type`, `--budget-usd N`, `--idle-stop-hours N`, `--no-snapshots` |
+| `up --local` | Install on the machine you are running muse-vm on (Debian or Ubuntu, as root or with passwordless `sudo`): the same checks, install and removal as `--ssh`, without the SSH hop |
 | `up --ssh USER@HOST` | Install on a machine you have. Option: `--ssh-opt` for extra ssh options (a key, a port) |
 | `up` common options | `--name` (default `muse`), `--egress-allow CIDR`, `--tz`, `--keep-on-failure`, `--allow-dirty`, `--no-browser` (print Tailscale links instead of opening them), `-v` (print every command), `--yes` |
 | `add-server NAME` | Register, discover, draft a policy, publish and link a server; prints the connector address, token and connection code. A well-known name (`muse-vm presets`) needs nothing else; for your own server give `--endpoint URL`. `--credential none\|env_token\|oauth`, `--secret-name`, `--allow TOOL`, `--policy FILE`, `--no-reads` |
@@ -49,16 +50,20 @@ Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings a
 | `backup --out FILE`, `restore FILE` | Encrypted backup and restore. Set `MUSE_VM_BACKUP_PASSPHRASE` to avoid the prompt |
 | `down [--keep-data]` | Sign the device out of Tailscale and remove everything that was created |
 
+## The Terraform module
+
+`deploy/terraform/gcp` is the Google Cloud setup as Terraform (see the README for a complete example). It creates the network, firewall rule (SSH from Identity-Aware Proxy only), Cloud NAT, a shielded VM with no public address, the snapshot schedule, and a service account that can read one Secret Manager secret. The VM's startup script reads its settings from instance metadata (name, install source, the secret's name, egress ranges), fetches the Tailscale auth key from Secret Manager, installs `muse-vm` with pip, and runs `muse-vm up --local --yes`. The log is `/var/log/muse-vm-install.log` on the VM. Inputs: `project`, `name`, `region`, `zone`, `machine_type`, `disk_gb`, `install_source`, `tailscale_auth_key_secret` (or `tailscale_auth_key`), `egress_allow`, `snapshots`, `iap_ssh_ranges`.
+
 ## The settings file
 
-`muse-vm setup` reads `muse-vm.toml` from the folder you run it in (or `--config FILE`). Every key is optional; flags override the file; unknown keys are rejected. Keys: `name`, `cloud`, `ssh`, `ssh_opts`, `project`, `zone`, `machine_type`, `budget_usd`, `idle_stop_hours`, `egress_allow`, `tz`, `tailscale_authkey_file`, `yes`, and a `[[servers]]` table per server with `preset` (or `id` and `endpoint`), `credential`, `secret_name`, `token_file`, `allow`, `no_reads`. Secrets are never in the file: `tailscale_authkey_file` and `token_file` are paths to files that hold them. The README has a full example.
+`muse-vm setup` reads `muse-vm.toml` from the folder you run it in (or `--config FILE`). Every key is optional; flags override the file; unknown keys are rejected. Keys: `name`, `cloud`, `ssh`, `local`, `ssh_opts`, `project`, `zone`, `machine_type`, `budget_usd`, `idle_stop_hours`, `egress_allow`, `tz`, `tailscale_authkey_file`, `yes`, and a `[[servers]]` table per server with `preset` (or `id` and `endpoint`), `credential`, `secret_name`, `token_file`, `allow`, `no_reads`. Secrets are never in the file: `tailscale_authkey_file` and `token_file` are paths to files that hold them. The README has a full example.
 
 Deployment details are kept on your computer under `~/.config/muse-vm/` (set `MUSE_VM_HOME` to move it). They hold no secrets.
 
 ## How the images are built
 
-The images are always built on the target machine from your checkout of this repository, so you run exactly the code you reviewed and nothing is pulled from a registry we operate. The build uses the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`) and base images pinned by digest, and records the commit it was built from in the image. `up` and `upgrade` refuse a checkout with uncommitted changes (`--allow-dirty` overrides).
+The images are always built on the target machine, from your checkout of this repository or from the release you installed (the container recipe, the hash-locked dependency list and the egress guard travel inside the package), so you run exactly the code you chose and nothing is pulled from a registry we operate. The build uses the repository `Dockerfile` with hash-locked dependencies (`requirements.lock`) and base images pinned by digest, and records the commit it was built from in the image. `up` and `upgrade` refuse a checkout with uncommitted changes (`--allow-dirty` overrides).
 
-To get a new version: `git pull`, review what changed, then `muse-vm upgrade`.
+To get a new version: `pipx upgrade muse-mcp-adapter` (or `git pull` in your checkout, and review what changed), then `muse-vm upgrade`.
 
 If your organisation requires images from its own registry, build and scan them yourself from the same `Dockerfile` and `deploy/guard/Dockerfile`, push them to your registry, and run `muse-vm up --image REF --guard-image REF`. The machine must be able to pull from it.

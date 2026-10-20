@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "muse-mcp-adapter"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Customer-owned gateway between Muse Custom Connectors and MCP servers"
 requires-python = ">=3.12"
 license = "MIT"
@@ -35,12 +35,28 @@ dev = [
   "ruff",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.version]
+path = "src/muse_vm/__init__.py"  # the one place the version is written
 
-[tool.setuptools.package-data]
-muse_mcp_adapter = ["provider_packs/*.json"]
-muse_vm = ["bundle/*"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/muse_mcp_adapter", "src/muse_vm"]
+
+# What the images are built from travels inside the wheel, so `pipx install` is enough: no clone.
+[tool.hatch.build.targets.wheel.force-include]
+"Dockerfile" = "muse_vm/context/Dockerfile"
+"requirements.lock" = "muse_vm/context/requirements.lock"
+"deploy/guard" = "muse_vm/context/guard"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/Dockerfile",
+  "/requirements.lock",
+  "/deploy/guard",
+  "/LICENSE",
+  "/README.md",
+  "/pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "examples"]
@@ -50,6 +66,16 @@ markers = [
   "validation: product validation suite driven by the Atlas MCP server",
   "performance: timing measurements, skipped by default (run them with: pytest -m performance)",
 ]
+
+[tool.coverage.run]
+source = ["muse_mcp_adapter", "muse_vm"]
+omit = ["*/__main__.py"]
+
+# A floor, not a target: coverage may go up but not down. Raise it when it has risen.
+[tool.coverage.report]
+fail_under = 87
+show_missing = false
+skip_covered = true
 
 [tool.ruff]
 line-length = 100

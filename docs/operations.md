@@ -19,7 +19,7 @@ On the host: a daily backup timer, a health timer, optional idle shutdown, and a
 | Is it healthy? | `muse-vm status`, then `muse-vm selfcheck` |
 | Logs | `muse-vm logs` (adapter), `muse-vm logs tailscale`, `muse-vm logs guard` |
 | Pause to save money | `muse-vm stop` / `start` (a cloud VM is powered off; disks are kept) |
-| New version | `git pull`, review, then `muse-vm upgrade` |
+| New version | `pipx upgrade muse-mcp-adapter` (or `git pull` in a checkout), review, then `muse-vm upgrade` |
 | Backup | `muse-vm backup --out ./backup.mmavm` (asks for a passphrase of at least 12 characters) |
 | Restore | `muse-vm restore ./backup.mmavm` |
 | Leaked token | `muse-vm rotate-token SERVER` |

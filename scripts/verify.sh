@@ -35,6 +35,12 @@ step "GitHub workflows: syntax, and every action is pinned to a commit that exis
 docker run --rm -v "$PWD":/repo -w /repo "$ACTIONLINT_IMAGE" -color || fail "actionlint"
 python3 scripts/check_workflows.py || fail "an action reference is not pinned or does not exist"
 
+step "shell scripts are clean"
+scripts/check_shell.sh || fail "shellcheck"
+
+step "the Terraform module is valid, safe and plans what we expect"
+scripts/check_terraform.sh || fail "the Terraform module"
+
 step "lint, types and the full test suite, on Linux with Python 3.12 (as CI does)"
 volume=muse-verify-pip
 docker volume create "$volume" >/dev/null
@@ -46,19 +52,28 @@ COPYFILE_DISABLE=1 tar --exclude='._*' --exclude=.DS_Store --exclude=.git --excl
     pip install -q -e ".[dev]"
     echo "-- ruff";    ruff check src tests
     echo "-- pyright"; pyright
-    echo "-- pytest";  pytest -q
+    echo "-- pytest";  pytest -q --cov
   ' || fail "lint, types or tests failed on Linux/Python 3.12"
 
 step "this machine's own virtualenv: the same checks (catches a newer Python's differences)"
 .venv/bin/ruff check src tests || fail "ruff (local)"
 .venv/bin/pyright || fail "pyright (local)"
-.venv/bin/pytest -q || fail "pytest (local)"
+.venv/bin/pytest -q --cov || fail "pytest (local)"
 
 step "the images build"
 docker build -q -t mma-adapter:verify . >/dev/null || fail "adapter image build"
 docker build -q -t mma-guard:verify deploy/guard >/dev/null || fail "guard image build"
 docker run --rm --entrypoint id mma-adapter:verify -u | grep -qx 10001 || fail "adapter image does not run as uid 10001"
 docker run --rm mma-adapter:verify --help >/dev/null || fail "adapter image does not start"
+
+step "the release wheel installs on its own and builds the images from what it carries"
+python3 scripts/check_package.py || fail "the release wheel does not work on its own"
+
+step "the installer works with an old and a new Python"
+scripts/check_install.sh || fail "the installer"
+
+step "the shipped stack works end to end (real images, guard, secrets, a real MCP server)"
+.venv/bin/python scripts/check_stack.py || fail "the shipped stack"
 
 step "no known high or critical vulnerabilities in the images (as CI scans them)"
 for image in mma-adapter:verify mma-guard:verify; do
@@ -70,6 +85,7 @@ done
 step "muse-vm and the documentation"
 .venv/bin/python -m muse_vm --help >/dev/null || fail "muse-vm does not start"
 python3 scripts/check_docs.py || fail "documentation links"
+.venv/bin/python scripts/check_doc_commands.py || fail "a command in the documentation does not exist"
 step "every Mermaid diagram renders"
 python3 scripts/check_mermaid.py || fail "a Mermaid diagram does not render"
 

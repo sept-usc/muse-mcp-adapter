@@ -4,7 +4,7 @@ Every key is optional. A person at a terminal is asked for what is missing; a sc
 that names it. Unknown keys are rejected, so a typo never silently changes nothing.
 
     name = "prod"
-    cloud = "gcp"              # or: ssh = "deploy@203.0.113.7"
+    cloud = "gcp"              # or: ssh = "deploy@203.0.113.7", or: local = true
     project = "my-project"
     yes = true                 # accept that this creates billable resources
     [[servers]]
@@ -26,6 +26,7 @@ _TOP = {
     "name": str,
     "cloud": str,
     "ssh": str,
+    "local": bool,
     "ssh_opts": list,
     "project": str,
     "zone": str,
@@ -70,6 +71,7 @@ class Plan:
     name: str | None = None
     cloud: str | None = None
     ssh: str | None = None
+    local: bool = False
     ssh_opts: list[str] = field(default_factory=list[str])
     project: str | None = None
     zone: str | None = None
@@ -103,8 +105,11 @@ def parse(text: str, where: str = FILENAME) -> Plan:
     _check(data, _TOP, where)
     if data.get("cloud") not in (None, "gcp"):
         raise ConfigError(f'{where}: cloud must be "gcp"')
-    if data.get("cloud") and data.get("ssh"):
-        raise ConfigError(f"{where}: choose either cloud or ssh, not both")
+    chosen = [key for key in ("cloud", "ssh") if data.get(key)] + (
+        ["local"] if data.get("local") else []
+    )
+    if len(chosen) > 1:
+        raise ConfigError(f"{where}: choose one of cloud, ssh or local, not {' and '.join(chosen)}")
     servers: list[ServerPlan] = []
     for number, raw in enumerate(data.pop("servers", []), 1):
         if not isinstance(raw, dict):
