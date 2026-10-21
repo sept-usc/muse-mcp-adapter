@@ -149,7 +149,15 @@ def interactive_login(
                 f"ps -a --status exited -q {LOGIN_SERVICE}", check=False
             ).stdout.strip()
             if exited:
-                tail = "\n    ".join(text.strip().splitlines()[-6:])
+                # It may have finished in the moment between reading the log and asking whether
+                # it exited, so read the log once more before calling that a failure.
+                final = target.compose(f"logs --no-color {LOGIN_SERVICE}", check=False)
+                text = final.stdout + final.stderr
+                if "Login complete" in text:
+                    return
+                lines = text.strip().splitlines()
+                own = [line for line in lines if LOGIN_SERVICE in line] or lines
+                tail = "\n    ".join(own[-6:])
                 raise SystemExit(f"The Tailscale sign-in stopped before it finished:\n    {tail}")
             sleep(3)
         raise SystemExit(

@@ -182,6 +182,25 @@ def test_a_login_that_stops_early_reports_why_and_is_cleaned_up() -> None:
     assert target.ran("rm -f -s tailscale-login")
 
 
+def test_a_login_that_finishes_just_as_it_is_checked_is_not_called_a_failure() -> None:
+    # The first read of the log is from before "Login complete." was written; by the time we
+    # ask whether the container exited, it has finished. That is success, not a failure.
+    target = Login([LINK, LINK + "Login complete.\n"], exited=True)
+    ingress.interactive_login(target, say=lambda _: None, sleep=lambda _: None)
+    assert target.ran("rm -f -s tailscale-login")
+
+
+def test_the_failure_excerpt_shows_the_login_containers_own_lines_only() -> None:
+    noisy = (
+        "tailscale-login-1  | 2026/10/21 tailscaled: cannot open state\n"
+        "WARNING: consider installing NumPy for IAP tunnel performance\n"
+    )
+    target = Login([noisy], exited=True)
+    with pytest.raises(SystemExit) as stopped:
+        ingress.interactive_login(target, say=lambda _: None, sleep=lambda _: None)
+    assert "cannot open state" in str(stopped.value) and "NumPy" not in str(stopped.value)
+
+
 def test_a_login_nobody_completes_times_out_with_advice(monkeypatch: pytest.MonkeyPatch) -> None:
     target = Login([LINK])
     with pytest.raises(SystemExit, match="not completed in time"):
