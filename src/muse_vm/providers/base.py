@@ -25,6 +25,11 @@ class Provider:
     ) -> None:
         self.dep, self.runner, self.say, self.opts = dep, runner, say, opts or {}
 
+    def detail(self, message: str) -> None:
+        """A sub-step: shown with -v, so the default output stays a few lines."""
+        if getattr(self.runner, "verbose", False):
+            self.say(message)
+
     # ---- lifecycle (override) ---------------------------------------------------------------
     def preflight(self) -> None:
         """Check tools, credentials and the machine before anything is created."""

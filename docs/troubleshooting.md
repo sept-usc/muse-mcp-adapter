@@ -15,6 +15,7 @@ Add `-v` to any `muse-vm` command to print every command it runs. If `up` fails 
 
 | What you see | Why | What to do |
 |---|---|---|
+| It shows only a few lines and you want to see every step | By default it prints one line per stage and hides the raw output of builds and cloud commands | Add `-v` to any `muse-vm` command to see every command and its output. A failure always shows the end of the output |
 | `gcloud credentials … have expired` | `gcloud` still lists your account but its stored sign-in has expired | `gcloud auth login`, then run again |
 | `Python 3.12 or newer`, `ssh` or `git` is marked ✗ | A tool is missing on your computer | Install it; `muse-vm doctor` says which |
 | `your tailnet does not allow HTTPS and Funnel yet` | Your Tailscale network has not used Funnel before | Open the approval link it prints (it also opens in your browser) and approve. It keeps waiting, so you can do it while it runs. If it printed steps instead of a link: enable HTTPS certificates under **DNS** in the Tailscale console, and add `"nodeAttrs": [{"target": ["autogroup:member"], "attr": ["funnel"]}]` to the access controls |
@@ -24,6 +25,7 @@ Add `-v` to any `muse-vm` command to print every command it runs. If `up` fails 
 | The address does not resolve, or `up` waits a long time at the self-check | A brand-new Funnel name can take up to ten minutes to reach public DNS | Wait. `muse-vm selfcheck` checks again, and uses public DNS so a computer that is itself in your tailnet is not misled |
 | The address ends in `-1` or `-2` | An older device with the same name is still in your tailnet | Harmless. Delete the stale offline device under **Machines**. `muse-vm down` signs the device out, but Tailscale keeps its entry until you delete it, so reinstalling under the same name gets a suffix. Delete the entry after `down` to keep the name |
 | `Cannot run commands on … with sudo -n` | SSH key login or passwordless `sudo` is missing on the machine | Fix the login (`ssh user@host sudo -n true` must work), then run `up` again |
+| Google Cloud: `does not have enough resources available` | The zone is out of that machine type for now | `muse-vm` tries the other zones of the region by itself and tells you which one it used. If every zone is full, try again in a few minutes, use a zone in another region (`--zone`), or another machine type (`--machine-type`) |
 | Google Cloud: it waits for SSH for several minutes | A new VM is still booting and installing Docker, or IAP access is not granted | Give it up to 10 minutes. It retries dropped connections itself. If it never connects, check that your account has the IAP tunnel and OS Login roles |
 | `A network named mma-… already exists` | A previous run left something behind | `muse-vm down --name <name>`, or choose another `--name` |
 | `setup` says the deployment already exists | You ran it again | That is fine: it keeps the deployment and only adds the servers you ask for |

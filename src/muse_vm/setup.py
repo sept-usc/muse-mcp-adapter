@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import browser, config, doctor, presets
-from .providers.gcp import MONTHLY_USD
+from .providers.gcp import DEFAULT_ZONE, MONTHLY_USD
 from .runner import Runner
 from .selfcheck import Report
 from .state import Deployment
@@ -32,6 +32,7 @@ class Io:
     say: Callable[[str], None]
     ask: Callable[[str], str]
     interactive: bool
+    verbose: bool = False
 
     def confirm(self, question: str, default: bool = True) -> bool:
         for _ in range(3):
@@ -83,7 +84,7 @@ def _where(plan: config.Plan, io: Io, runner: Runner) -> None:
         options.append(
             (
                 "gcp",
-                f"A new VM in Google Cloud, project {facts.project}"
+                "A new VM in Google Cloud"
                 + (f" (about ${cost}/month plus a little for disk and NAT)" if cost else ""),
             )
         )
@@ -105,13 +106,69 @@ def _where(plan: config.Plan, io: Io, runner: Runner) -> None:
         raise SystemExit("Please choose one of the options shown.")
     choice = options[int(answer) - 1][0]
     if choice == "gcp" and facts is not None:
-        plan.cloud, plan.project = "gcp", plan.project or facts.project
+        plan.cloud = "gcp"
     elif choice == "local":
         plan.local = True
     else:
         plan.ssh = io.ask("SSH address, for example deploy@203.0.113.7: ").strip()
         if not plan.ssh:
             raise SystemExit("An SSH address is needed.")
+
+
+_ZONE = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
+_MACHINE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)+$")
+_PROJECT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+
+
+def _ask_valid(
+    io: Io, prompt: str, default: str | None, pattern: re.Pattern[str], example: str
+) -> str:
+    for _ in range(3):
+        suffix = f" [{default}] " if default else " "
+        answer = io.ask(prompt + suffix).strip() or (default or "")
+        if pattern.match(answer):
+            return answer
+        io.say(f"  That does not look right. For example: {example}")
+    raise SystemExit(f"No valid answer for: {prompt}")
+
+
+def _gcp_settings(plan: config.Plan, io: Io, runner: Runner) -> None:
+    """Show the project, zone and machine setup would use, and let the person choose others.
+
+    Nothing about where the VM goes is assumed silently: gcloud's own settings are offered as the
+    default, and a settings file or flags that already name the project and zone skip the question.
+    """
+    if plan.cloud != "gcp" or not io.interactive or (plan.project and plan.zone):
+        return
+    facts = doctor.gcloud_facts(runner)
+    project = plan.project or (facts.project if facts else None)
+    zone = plan.zone or (facts.zone if facts else None)
+    machine = plan.machine_type or DEFAULT_MACHINE
+    cost = MONTHLY_USD.get(machine)
+    io.say("")
+    io.say("Google Cloud settings:")
+    io.say(f"  project   {project or 'none set in gcloud'}")
+    io.say(
+        f"  zone      {zone or DEFAULT_ZONE}"
+        + ("" if zone else "  (a default: gcloud has no zone set)")
+    )
+    io.say(f"  machine   {machine}" + (f"  (about ${cost}/month)" if cost else ""))
+    if project and io.confirm("Use these settings?"):
+        plan.project, plan.zone, plan.machine_type = project, zone or DEFAULT_ZONE, machine
+        return
+    listed = runner(
+        ["gcloud", "projects", "list", "--format=value(projectId)", "--limit=15"], check=False
+    )
+    if listed.ok and listed.stdout.split():
+        io.say("Your projects: " + ", ".join(listed.stdout.split()))
+    plan.project = _ask_valid(io, "Project ID", project, _PROJECT, "my-project-123456")
+    plan.zone = _ask_valid(io, "Zone", zone or DEFAULT_ZONE, _ZONE, "us-central1-a, europe-west4-b")
+    io.say(
+        "Machine types: "
+        + ", ".join(f"{name} (about ${price}/month)" for name, price in MONTHLY_USD.items())
+        + ", or any other Compute Engine type"
+    )
+    plan.machine_type = _ask_valid(io, "Machine type", machine, _MACHINE, "e2-small, e2-medium")
 
 
 def _checks(plan: config.Plan, io: Io, runner: Runner) -> None:
@@ -123,7 +180,11 @@ def _checks(plan: config.Plan, io: Io, runner: Runner) -> None:
         doctor.ssh_checks(report, runner, plan.ssh, plan.ssh_opts)
     else:
         doctor.gcp_checks(report, runner, plan.project, plan.zone)
-    for line in report.lines():
+    lines = report.lines()
+    if report.ok and not io.verbose:
+        io.say("  ✓ Everything needed is in place")
+        lines = [line for line in lines if not line.lstrip().startswith("✓")]  # notes still show
+    for line in lines:
         io.say(line)
     if not report.ok:
         raise SystemExit("Fix the items marked ✗ above and run `muse-vm setup` again.")
@@ -239,6 +300,7 @@ def run(
     io.say("muse-vm setup: you will be asked only for what cannot be worked out.")
     io.say("")
     _where(plan, io, runner)
+    _gcp_settings(plan, io, runner)
     if plan.cloud and not plan.yes:
         cost = MONTHLY_USD.get(plan.machine_type or DEFAULT_MACHINE)
         if not io.interactive:

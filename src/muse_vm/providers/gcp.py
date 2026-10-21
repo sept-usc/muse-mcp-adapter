@@ -28,6 +28,7 @@ _STILL_SETTLING = ("is not ready", "resourceinuse", "already being used", "is be
 SUBNET_RANGE = "10.20.0.0/24"
 ARM_PREFIXES = ("t2a", "c4a")
 MONTHLY_USD = {"e2-micro": 7, "e2-small": 13, "e2-medium": 25}
+DEFAULT_ZONE = "us-central1-a"  # only when neither the person nor gcloud says otherwise
 # What is deleted first when a deployment is removed: the VM before the things it uses.
 TEARDOWN_ORDER = [
     "instance",
@@ -90,7 +91,7 @@ class GcpProvider(Provider):
             zone = self.runner(
                 ["gcloud", "config", "get-value", "compute/zone"], check=False
             ).stdout.strip()
-            dep.zone = zone if zone and zone != "(unset)" else "us-central1-a"
+            dep.zone = zone if zone and zone != "(unset)" else DEFAULT_ZONE
         account = self.runner(
             ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
             check=False,
@@ -153,7 +154,8 @@ class GcpProvider(Provider):
         region = self.region
         assert dep.zone
 
-        self.say(f"  creating a network of its own, {name}…")
+        self.say("  creating the network, firewall rules and Cloud NAT (no public address)…")
+        self.detail(f"  creating a network of its own, {name}…")
         self._g(
             "compute", "networks", "create", name, "--subnet-mode=custom", f"--description={label}"
         )
@@ -171,7 +173,7 @@ class GcpProvider(Provider):
         )
         dep.add_resource("subnet", name, region=region)
 
-        self.say("  creating firewall rules (SSH from Google's IAP range only)…")
+        self.detail("  creating firewall rules (SSH from Google's IAP range only)…")
         self._g(
             "compute",
             "firewall-rules",
@@ -187,7 +189,7 @@ class GcpProvider(Provider):
         )
         dep.add_resource("firewall", f"{name}-iap-ssh")
 
-        self.say("  no public address: outbound traffic goes through Cloud NAT…")
+        self.detail("  no public address: outbound traffic goes through Cloud NAT…")
         self._g("compute", "routers", "create", name, f"--network={name}", f"--region={region}")
         dep.add_resource("router", name, region=region)
         self._g(
@@ -216,7 +218,7 @@ class GcpProvider(Provider):
                 "instances",
                 "create",
                 name,
-                f"--zone={dep.zone}",
+                "--zone=ZONE",
                 f"--machine-type={machine}",
                 f"--image-family=ubuntu-2404-lts-{architecture}",
                 "--image-project=ubuntu-os-cloud",
@@ -235,7 +237,7 @@ class GcpProvider(Provider):
                 "--shielded-integrity-monitoring",
                 "--no-address",
             ]
-            self._g(*args)
+            self._create_in_a_zone_with_capacity(args, machine)
         finally:
             os.unlink(startup)
         dep.add_resource("instance", name, zone=dep.zone)
@@ -245,8 +247,54 @@ class GcpProvider(Provider):
         t.sh(f"mkdir -p {self.root} && chmod 755 {self.root}", cwd_root=False)
         return t
 
+    def _create_in_a_zone_with_capacity(self, args: list[str], machine: str) -> None:
+        """Create the VM in the chosen zone, or in another zone of the same region if it is full.
+
+        A zone can be out of a machine type for a while. The network, firewall and NAT are
+        regional, so any zone of the region works, and the VM is not tied to a zone by anything
+        else yet: the zone is recorded once it has been created.
+        """
+        dep = self.dep
+        assert dep.zone
+        tried: list[str] = []
+        candidates = [dep.zone]
+        while candidates:
+            zone = candidates.pop(0)
+            tried.append(zone)
+            command = [("--zone=" + zone) if item == "--zone=ZONE" else item for item in args]
+            result = self._g(*command, check=False)
+            if result.ok:
+                if zone != dep.zone:
+                    self.say(f"  created in {zone} instead")
+                dep.zone = zone
+                return
+            if not _no_capacity(result):
+                raise CommandError(["gcloud", *command], result)
+            self.say(f"  {zone} has no {machine} capacity right now")
+            if len(tried) == 1:  # look for the other zones only once we know we need them
+                candidates = self._other_zones(tried)
+            if candidates:
+                self.say(f"  trying {candidates[0]}…")
+        raise SystemExit(
+            f"No zone in {self.region} has {machine} capacity right now "
+            f"(tried {', '.join(tried)}). Try again in a few minutes, use a zone in another "
+            "region (--zone), or another machine type (--machine-type)."
+        )
+
+    def _other_zones(self, tried: list[str]) -> list[str]:
+        listed = self._g(
+            "compute",
+            "zones",
+            "list",
+            f"--filter=name~^{self.region}- AND status=UP",
+            "--format=value(name)",
+            check=False,
+        )
+        names = sorted(n for n in listed.stdout.split() if n.startswith(self.region + "-"))
+        return [n for n in names if n not in tried]
+
     def _wait_for_bootstrap(self, t: Target, timeout: float = 900) -> None:
-        self.say("  waiting for SSH through IAP and for the startup script (Docker install)…")
+        self.say("  waiting for the VM to finish installing Docker…")
         deadline, last = time.monotonic() + timeout, ""
         while time.monotonic() < deadline:
             probe = t.sh(
@@ -308,7 +356,7 @@ class GcpProvider(Provider):
         )
         if attached.ok:
             self.dep.extra["snapshots"] = "daily, 7 days"
-            self.say("  disk snapshots: daily at 03:00, kept for 7 days")
+            self.detail("  disk snapshots: daily at 03:00, kept for 7 days")
         else:
             self.say(f"  ! the snapshot schedule could not be attached: {_last_line(attached)}")
 
@@ -393,7 +441,7 @@ class GcpProvider(Provider):
         )
         for resource in ordered:
             kind, name = resource["kind"], resource["name"]
-            self.say(f"  deleting {kind} {name}…")
+            self.detail(f"  deleting {kind} {name}…")
             result = self._delete(kind, name, resource, keep_data)
             if result is None:
                 continue
@@ -510,6 +558,20 @@ class GcpProvider(Provider):
             "idle stop": f"{idle}h" if idle else "off",
             "resources": ", ".join(f"{r['kind']}:{r['name']}" for r in self.dep.resources),
         }
+
+
+_CAPACITY_MARKERS = (
+    "does not have enough resources",
+    "resource_availability",
+    "zone_resource_pool_exhausted",
+    "stockout",
+)
+
+
+def _no_capacity(result: Result) -> bool:
+    """Google says a zone cannot supply the machine right now (not a permanent error)."""
+    text = (result.stderr + result.stdout).lower()
+    return any(marker in text for marker in _CAPACITY_MARKERS)
 
 
 def _last_line(result: Result) -> str:

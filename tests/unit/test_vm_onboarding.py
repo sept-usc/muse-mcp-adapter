@@ -324,7 +324,7 @@ def _run(
 
 
 def test_a_person_with_gcloud_is_asked_one_question_and_gets_a_vm_and_servers() -> None:
-    term, commands = _Terminal("1", "y", "1,2"), _Commands()
+    term, commands = _Terminal("1", "y", "y", "1,2"), _Commands()  # where, settings, cost, servers
     _run(config.Plan(), term, commands)
     up, learn, github = commands.calls
     assert (
@@ -336,6 +336,62 @@ def test_a_person_with_gcloud_is_asked_one_question_and_gets_a_vm_and_servers() 
     assert learn[:2] == ["add-server", "learn"] and github[:2] == ["add-server", "github"]
     assert "about $13/month" in " ".join(term.said + term.asked)
     assert "browser" in term.text  # it says what the Tailscale links are going to be
+
+
+def _up_of(commands: _Commands) -> list[str]:
+    return commands.calls[0]
+
+
+def test_the_google_cloud_settings_are_shown_and_the_defaults_can_be_kept() -> None:
+    term, commands = _Terminal("1", "", "y"), _Commands()  # where; Enter keeps the settings; cost
+    _run(config.Plan(), term, commands)
+    assert "Google Cloud settings:" in term.text and "my-proj" in term.text
+    assert "a default: gcloud has no zone set" in term.text  # it says where a value is a guess
+    up = _up_of(commands)
+    assert up[up.index("--zone") + 1] == "us-central1-a"
+    assert up[up.index("--machine-type") + 1] == "e2-small"
+
+
+def test_the_person_can_choose_another_project_zone_and_machine() -> None:
+    term = _Terminal("1", "n", "other-proj-123", "europe-west4-b", "e2-medium", "y")
+    commands = _Commands()
+    _run(config.Plan(), term, commands)
+    up = _up_of(commands)
+    assert up[up.index("--project") + 1] == "other-proj-123"
+    assert up[up.index("--zone") + 1] == "europe-west4-b"
+    assert up[up.index("--machine-type") + 1] == "e2-medium"
+    assert "about $25/month" in " ".join(term.said)  # the cost shown is for the chosen machine
+
+
+def test_a_malformed_zone_is_asked_again() -> None:
+    term = _Terminal("1", "n", "", "not-a-zone", "us-west1-b", "", "y")
+    commands = _Commands()
+    _run(config.Plan(), term, commands)
+    assert "That does not look right" in term.text
+    assert _up_of(commands)[_up_of(commands).index("--zone") + 1] == "us-west1-b"
+
+
+def test_settings_that_name_the_project_and_zone_are_not_asked_about_again() -> None:
+    term, commands = _Terminal("y"), _Commands()  # only the cost
+    _run(config.Plan(cloud="gcp", project="p", zone="asia-east1-a"), term, commands)
+    assert "Google Cloud settings:" not in term.text
+    assert _up_of(commands)[_up_of(commands).index("--zone") + 1] == "asia-east1-a"
+
+
+def test_a_script_never_gets_the_settings_question() -> None:
+    commands = _Commands()
+    _run(config.Plan(cloud="gcp", yes=True), _Terminal(interactive=False), commands)
+    assert len(commands.calls) == 1  # and nothing waited for an answer
+
+
+def test_the_checklist_is_one_line_when_everything_passes_and_complete_with_verbose() -> None:
+    quiet = _Terminal("y")
+    _run(config.Plan(cloud="gcp", project="p", zone="us-central1-a"), quiet, _Commands())
+    assert "Everything needed is in place" in quiet.text and "gcloud credentials" not in quiet.text
+    loud = _Terminal("y")
+    loud.io.verbose = True
+    _run(config.Plan(cloud="gcp", project="p", zone="us-central1-a"), loud, _Commands())
+    assert "gcloud credentials are valid" in loud.text
 
 
 def test_without_gcloud_the_only_offer_is_a_machine_you_have() -> None:
@@ -387,7 +443,7 @@ def test_a_rejected_server_does_not_hide_that_the_install_worked() -> None:
 def test_declining_the_cost_creates_nothing() -> None:
     commands = _Commands()
     with pytest.raises(SystemExit, match="Nothing was created"):
-        _run(config.Plan(cloud="gcp"), _Terminal("n"), commands)
+        _run(config.Plan(cloud="gcp"), _Terminal("y", "n"), commands)  # settings, then the cost
     assert commands.calls == []
 
 
@@ -482,7 +538,7 @@ def test_a_tailscale_key_file_is_used_and_a_bad_one_is_refused(tmp_path: Path) -
 def test_a_mistyped_server_choice_is_asked_again_not_fatal() -> None:
     commands = _Commands()
     term = _Terminal("nonsense", "learn")  # a typo after the VM exists must not throw it away
-    _run(config.Plan(cloud="gcp", yes=True), term, commands)
+    _run(config.Plan(cloud="gcp", yes=True, project="p", zone="us-central1-a"), term, commands)
     assert "Not in the list: nonsense" in term.text
     assert [c[:2] for c in commands.calls[1:]] == [["add-server", "learn"]]
 
@@ -497,7 +553,7 @@ def test_giving_up_on_the_server_choice_skips_servers() -> None:
 def test_a_server_of_your_own_can_be_given_by_address() -> None:
     commands = _Commands()
     term = _Terminal("https://mcp.example.com/mcp", "y")  # the address, then "needs a token"
-    _run(config.Plan(cloud="gcp", yes=True), term, commands)
+    _run(config.Plan(cloud="gcp", yes=True, project="p", zone="us-central1-a"), term, commands)
     add = commands.calls[1]
     assert add[:3] == ["add-server", "mcp-example-com", "--name"]
     assert add[add.index("--endpoint") + 1] == "https://mcp.example.com/mcp"
@@ -525,7 +581,7 @@ def test_typed_ahead_keys_are_discarded_before_a_question(
 
 def test_the_choices_can_be_saved_for_next_time(tmp_path: Path) -> None:
     target = tmp_path / config.FILENAME
-    term = _Terminal("1", "y", "learn", "y")  # where, cost, servers, save
+    term = _Terminal("1", "y", "y", "learn", "y")  # where, settings, cost, servers, save
     _run(config.Plan(), term, _Commands(), save_to=target)
     saved = config.load(target)
     assert saved.cloud == "gcp" and saved.project == "my-proj"

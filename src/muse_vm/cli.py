@@ -192,6 +192,7 @@ def cmd_up(args: argparse.Namespace) -> None:
     provider.preflight()
     dep.save()
     t = None
+    joined = False  # the device has been signed in to Tailscale (and so exists in the tailnet)
     try:
         say("2/6 provision")
         t = provider.provision()
@@ -213,6 +214,7 @@ def cmd_up(args: argparse.Namespace) -> None:
             ingress.interactive_login(
                 t, say=say, open_link=None if args.no_browser else browser.open_link
             )
+        joined = True
         provider.start_stack(t)
         dep.hostname = ingress.hostname_after_start(
             t, say=say, open_link=None if args.no_browser else browser.open_link
@@ -243,18 +245,30 @@ def cmd_up(args: argparse.Namespace) -> None:
                 f"Remove it with `muse-vm down --name {name}`."
             )
             raise
-        say(f"\n✗ {error or type(error).__name__}\nRolling back…")
+        if isinstance(error, KeyboardInterrupt):
+            say("\nInterrupted. Rolling back…")
+        else:
+            say(f"\n✗ {error or type(error).__name__}\nRolling back…")
         try:
             provider.teardown()
             dep.delete()
-            say("Rolled back.")
+            say("Rolled back: nothing this run created is left.")
+            if joined:
+                say(
+                    f"Tailscale keeps the device you signed in (muse-adapter-{name}) until you "
+                    "delete it under Machines in the Tailscale admin page. Delete it so the next "
+                    "install keeps the name."
+                )
+            say("Fix the reason above and run `muse-vm setup` again (add -v to see every step).")
         except BaseException as problem:
             say(
                 f"The rollback is incomplete: {problem}\n"
                 f"The state is kept in {Deployment.path_for(name)}; "
                 f"run `muse-vm down --name {name}`."
             )
-        raise
+        if isinstance(error, KeyboardInterrupt):
+            raise
+        raise SystemExit(1) from None  # the reason was printed above; do not print it twice
     say()
     say(f"The adapter is running at https://{dep.hostname}")
     say("Next, connect an MCP server and link it to Muse:")
@@ -463,7 +477,10 @@ def cmd_setup(args: argparse.Namespace) -> None:
     name = check_name(plan.name or DEFAULT_NAME)
     terminal = sys.stdin.isatty() and sys.stdout.isatty()
     wizard_io = wizard.Io(
-        say=say, ask=wizard.ask_at_terminal, interactive=terminal and not args.non_interactive
+        say=say,
+        ask=wizard.ask_at_terminal,
+        interactive=terminal and not args.non_interactive,
+        verbose=args.verbose,
     )
     wizard.run(
         plan,
@@ -948,6 +965,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 130
     except SystemExit as stopped:
         if stopped.code not in (None, 0):
-            print(stopped.code if isinstance(stopped.code, str) else "", file=sys.stderr)
+            if isinstance(stopped.code, str):
+                print(stopped.code, file=sys.stderr)
             return 1 if isinstance(stopped.code, str) else int(stopped.code or 1)
     return 0
