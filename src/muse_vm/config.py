@@ -82,6 +82,8 @@ class Plan:
     tz: str | None = None
     tailscale_authkey_file: str | None = None
     yes: bool = False
+    # not a file setting: removing what an earlier run left is chosen at the time, never stored
+    replace_leftovers: bool = False
     servers: list[ServerPlan] = field(default_factory=list[ServerPlan])
 
 

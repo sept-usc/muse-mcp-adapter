@@ -192,6 +192,8 @@ def _checks(plan: config.Plan, io: Io, runner: Runner) -> None:
 
 def _up_argv(plan: config.Plan, name: str) -> list[str]:
     argv = ["up", "--name", name, "--yes"]
+    if plan.replace_leftovers:
+        argv.append("--replace-leftovers")
     if plan.local:
         argv.append("--local")
     elif plan.ssh:
@@ -213,6 +215,58 @@ def _up_argv(plan: config.Plan, name: str) -> list[str]:
     for option in plan.ssh_opts:
         argv.append(f"--ssh-opt={option}")
     return argv
+
+
+def _clear_unfinished(name: str, io: Io, run_command: Callable[[list[str]], int]) -> None:
+    """An earlier run that stopped half way (Ctrl-C, a crash) leaves a record that blocks a new one.
+
+    Offer to remove what it created and start fresh. The record is only dropped for good by `down`.
+    """
+    if not Deployment.path_for(name).exists():
+        return
+    earlier = Deployment.load(name)
+    if earlier.status == "ready":
+        return
+    where = f" in project {earlier.project}" if earlier.project else ""
+    advice = (
+        f"Remove it with `muse-vm down --name {name}`; if the cloud resources are already "
+        f"gone, `muse-vm down --name {name} --forget` clears the record."
+    )
+    if not io.interactive:
+        raise SystemExit(
+            f"An earlier run named {name!r} did not finish ({earlier.status}{where}). {advice}"
+        )
+    io.say("")
+    io.say(f"An earlier run named {name!r} did not finish (it is {earlier.status}{where}).")
+    if not io.confirm("Remove what it created and start fresh?"):
+        raise SystemExit(f"Nothing was changed. {advice}")
+    if run_command(["down", "--name", name, "--yes"]) != 0:
+        raise SystemExit(
+            "It could not be removed automatically (see above). If the cloud resources are "
+            f"already gone, run `muse-vm down --name {name} --forget` and then setup again."
+        )
+
+
+def _offer_to_clear_cloud_leftovers(plan: config.Plan, name: str, io: Io, runner: Runner) -> None:
+    """A crash or Ctrl-C can leave resources in the cloud project with no local record.
+
+    Only what muse-vm itself marked is ever offered for removal.
+    """
+    if plan.cloud != "gcp" or plan.replace_leftovers or Deployment.path_for(name).exists():
+        return
+    found = doctor.gcp_leftovers(runner, plan.project, name)
+    if not found:
+        return
+    if not io.interactive:
+        raise SystemExit(
+            f"An earlier run named {name!r} left {found} in project {plan.project}. Run again "
+            "with --replace-leftovers to remove it and start fresh."
+        )
+    io.say("")
+    io.say(f"An earlier run named {name!r} left {found} in project {plan.project}.")
+    if not io.confirm("Remove it and start fresh?"):
+        raise SystemExit("Nothing was changed. Remove it yourself, or choose another --name.")
+    plan.replace_leftovers = True
 
 
 def _own_server(url: str, io: Io) -> config.ServerPlan:
@@ -323,6 +377,8 @@ def run(
     if plan.tailscale_authkey_file:
         os.environ["TS_AUTHKEY"] = _read_secret_file(plan.tailscale_authkey_file)
 
+    _clear_unfinished(name, io, run_command)
+    _offer_to_clear_cloud_leftovers(plan, name, io, runner)
     existing = Deployment.path_for(name).exists() and Deployment.load(name).status == "ready"
     if existing:
         io.say("")
@@ -366,6 +422,11 @@ def run(
     )
     if dep and dep.base_url:
         io.say(f"  The adapter is running at {dep.base_url}")
+        if dep.extra.get("address_pending"):
+            io.say(
+                "  Its public name has not reached public DNS yet (normal for a new name; up to "
+                f"20 minutes). Check with `muse-vm selfcheck --name {name}`, then connect Muse."
+            )
     for server in failed:
         io.say(
             f"  Not connected: {server.server}. Fix the reason shown above (often a rejected or "

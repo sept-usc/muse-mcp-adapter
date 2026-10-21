@@ -193,6 +193,37 @@ def test_raw_tool_output_is_captured_unless_verbose() -> None:
     assert loud.stdout == ""  # streamed to the terminal instead
 
 
+def test_a_disabled_api_is_explained_in_a_sentence_not_an_api_dump() -> None:
+    provider, dep, runner = _gcp()
+    dep.project, dep.zone = "other-proj", "us-central1-a"
+    runner.rules.insert(
+        0,
+        (
+            "instances describe",
+            Result(
+                1,
+                "",
+                "reason: SERVICE_DISABLED\nactivationUrl: https://console.developers.google.com/"
+                "apis/api/compute.googleapis.com/overview?project=other-proj\n",
+            ),
+        ),
+    )
+    with pytest.raises(SystemExit) as stopped:
+        provider.vm_status()
+    message = str(stopped.value)
+    assert "Compute Engine API is not enabled in project other-proj" in message
+    assert "console.developers.google.com" in message and "--forget" in message
+    assert "domain:" not in message and "reason:" not in message  # no raw dump
+
+
+def test_a_missing_vm_is_explained_with_the_way_to_clear_the_record() -> None:
+    provider, dep, runner = _gcp()
+    dep.project, dep.zone = "my-proj", "us-central1-a"
+    runner.rules.insert(0, ("instances describe", Result(1, "", "The resource was not found")))
+    with pytest.raises(SystemExit, match="was not found in project my-proj"):
+        provider.vm_status()
+
+
 def test_preflight_refuses_without_confirmation_when_it_would_spend_money(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -322,6 +353,40 @@ def test_idle_stop_is_recorded_for_status_and_installs_its_timer_through_the_uni
     assert dep.extra["idle_stop_hours"] == 6
 
 
+# ---- GCP: leftovers of an earlier run -------------------------------------------------------
+def _with_leftovers(runner: FakeRunner, *, ours: bool = True) -> None:
+    description = "mma-deployment=muse" if ours else "someone else's network"
+    runner.rules.insert(0, ("networks describe mma-muse", Result(0, description, "")))
+    runner.rules.insert(0, ("routers describe mma-muse", Result(0, "mma-muse", "")))
+
+
+def test_leftovers_of_an_earlier_run_are_named_and_need_an_explicit_yes() -> None:
+    provider, _dep, runner = _gcp()
+    _with_leftovers(runner)
+    with pytest.raises(SystemExit, match="--replace-leftovers") as stopped:
+        provider.preflight()
+    assert "network mma-muse" in str(stopped.value) and "router mma-muse" in str(stopped.value)
+    assert not any("delete" in line for line in runner.lines())  # nothing removed without a yes
+
+
+def test_leftovers_are_removed_with_the_flag_and_the_network_goes_last() -> None:
+    provider, dep, runner = _gcp(replace_leftovers=True)
+    _with_leftovers(runner)
+    provider.preflight()
+    deletes = [line for line in runner.lines() if " delete " in line]
+    assert len(deletes) == 2 and "routers delete mma-muse" in deletes[0]
+    assert "networks delete mma-muse" in deletes[1]  # the network only after what is in it
+    assert dep.resources == []  # and the new run starts from nothing
+
+
+def test_a_network_that_muse_vm_did_not_create_is_never_touched() -> None:
+    provider, _dep, runner = _gcp(replace_leftovers=True)
+    _with_leftovers(runner, ours=False)
+    with pytest.raises(SystemExit, match="was not created by muse-vm"):
+        provider.preflight()
+    assert not any(" delete " in line for line in runner.lines())
+
+
 # ---- SSH --------------------------------------------------------------------------------------
 def _ssh(**opts: Any) -> tuple[SSHProvider, FakeRunner]:
     runner = FakeRunner()
@@ -395,3 +460,34 @@ def test_the_local_provider_installs_on_this_machine_and_refuses_other_systems(
     monkeypatch.setattr("muse_vm.providers.local.sys.platform", "darwin")
     with pytest.raises(SystemExit, match="must be\nLinux|must be Linux"):
         provider.preflight()
+
+
+def test_down_on_an_unreachable_machine_tries_once_and_explains() -> None:
+    provider, runner = _ssh()
+    runner.rules.insert(
+        0,
+        (
+            "sudo -n sh -c true",
+            Result(255, "", "ssh: connect to host 203.0.113.9 port 22: Operation timed out"),
+        ),
+    )
+    with pytest.raises(SystemExit) as stopped:
+        provider.teardown()
+    message = str(stopped.value)
+    assert "Could not reach me@203.0.113.9" in message and "--forget" in message
+    probes = [line for line in runner.lines() if "sudo -n sh -c true" in line]
+    assert len(probes) == 1  # no retries, so it takes seconds and not minutes
+    assert not any("compose" in line for line in runner.lines())  # nothing else was attempted
+
+
+def test_other_commands_fail_fast_on_an_unreachable_machine_too() -> None:
+    provider, runner = _ssh()
+    runner.rules.insert(0, ("sudo -n sh -c true", Result(255, "", "Connection timed out")))
+    with pytest.raises(SystemExit, match="Could not reach"):
+        provider.ensure_ready()
+
+
+def test_down_on_a_reachable_machine_still_removes_everything() -> None:
+    provider, runner = _ssh()
+    provider.teardown()
+    assert runner.ran("docker compose down")

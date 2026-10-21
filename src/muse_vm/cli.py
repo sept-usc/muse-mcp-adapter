@@ -12,7 +12,7 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import (
     __version__,
@@ -34,6 +34,11 @@ from .selfcheck import Report
 from .state import Deployment, check_name
 
 DEFAULT_NAME = "muse"
+PENDING_NOTE = (
+    "  Its public name has not reached public DNS yet. That is normal for a new name and can take "
+    "up to 20 minutes; everything inside the machine is healthy. Check again with "
+    "`muse-vm selfcheck --name {name}`, and connect Muse once it passes."
+)
 
 
 def say(message: str = "") -> None:
@@ -124,8 +129,16 @@ def _show_linked(linked: Linked, *, copy: bool) -> None:
 def cmd_up(args: argparse.Namespace) -> None:
     name = check_name(args.name)
     if Deployment.path_for(name).exists():
+        earlier = Deployment.load(name)
+        unfinished = (
+            f"An earlier run named {name!r} did not finish (it is {earlier.status}). Remove what "
+            f"it created with `muse-vm down --name {name}`; if the cloud resources are already "
+            f"gone, `muse-vm down --name {name} --forget` clears the record."
+        )
         raise SystemExit(
-            f"A deployment named {name!r} already exists (`muse-vm status --name {name}`, "
+            unfinished
+            if earlier.status != "ready"
+            else f"A deployment named {name!r} already exists (`muse-vm status --name {name}`, "
             f"or `muse-vm down --name {name}` first)."
         )
     provider_name = "local" if args.local else "ssh" if args.ssh else args.cloud
@@ -165,6 +178,7 @@ def cmd_up(args: argparse.Namespace) -> None:
         "snapshots": not args.no_snapshots,
         "yes": args.yes,
         "reuse_dir": args.force,
+        "replace_leftovers": getattr(args, "replace_leftovers", False),
     }
     runner = _runner(args)
     provider = provider_for(dep, runner, say, options)
@@ -230,6 +244,8 @@ def cmd_up(args: argparse.Namespace) -> None:
         if not report.ok:
             _show_logs(t)
             raise SystemExit("The self-check failed.")
+        if report.address_pending:
+            dep.extra["address_pending"] = True
         if bundle.forget_auth_key(t):
             say("  removing the Tailscale auth key from the machine (the device has joined)")
             t.compose("up -d --no-deps tailscale", stream=True)
@@ -246,7 +262,12 @@ def cmd_up(args: argparse.Namespace) -> None:
             )
             raise
         if isinstance(error, KeyboardInterrupt):
-            say("\nInterrupted. Rolling back…")
+            say("\nInterrupted.")
+            if _keep_after_interrupt(name):
+                dep.status = "failed"
+                dep.save()
+                raise SystemExit(130) from None
+            say("Rolling back…")
         else:
             say(f"\n✗ {error or type(error).__name__}\nRolling back…")
         try:
@@ -271,8 +292,30 @@ def cmd_up(args: argparse.Namespace) -> None:
         raise SystemExit(1) from None  # the reason was printed above; do not print it twice
     say()
     say(f"The adapter is running at https://{dep.hostname}")
+    if dep.extra.get("address_pending"):
+        say(PENDING_NOTE.format(name=name))
     say("Next, connect an MCP server and link it to Muse:")
     say(f"  muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp --name {name}")
+
+
+def _keep_after_interrupt(name: str) -> bool:
+    """After Ctrl-C, ask before throwing away what was built (it can take ten minutes).
+
+    Returns True to keep it. Without a terminal, or on a second Ctrl-C, it rolls back as before.
+    """
+    if not sys.stdin.isatty():
+        return False
+    try:
+        answer = input("  Remove everything created so far? [Y/n] ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return False
+    if answer in ("n", "no"):
+        say(
+            f"Kept. See it with `muse-vm status --name {name}`, check it with `muse-vm selfcheck "
+            f"--name {name}`, or remove it with `muse-vm down --name {name}`."
+        )
+        return True
+    return False
 
 
 def _refuse_unreviewed(source: bundle.BuildSource, allow: bool) -> None:
@@ -329,7 +372,104 @@ def _resolve_preset(args: argparse.Namespace) -> None:
         args.secret_name = args.secret_name or preset.secret_name
         args.display_name = args.display_name or preset.name
         args.token_help = preset.token_help
+        args.token_shape = preset.token_shape
+        args.token_kind = preset.token_kind
     args.credential = args.credential or "none"
+
+
+def _token_fits(value: str, args: argparse.Namespace) -> bool:
+    shape = getattr(args, "token_shape", None)
+    return not shape or re.fullmatch(shape, value) is not None
+
+
+def _wrong_kind_message(value: str, args: argparse.Namespace) -> str:
+    kind = getattr(args, "token_kind", None) or "the right kind of token"
+    if value.startswith("mcpa_"):
+        return (
+            "That is a Muse connector token (it starts with mcpa_). It goes into Muse, not here. "
+            f"This needs {kind}."
+        )
+    return f"That does not look like {kind}. Paste the token itself, with nothing around it."
+
+
+def _require_this_kind_of_token(value: str, args: argparse.Namespace, name: str) -> None:
+    if not _token_fits(value, args):
+        raise SystemExit(f"{name}: {_wrong_kind_message(value, args)}")
+
+
+def _ask_for_a_token(chosen: str, server_id: str, args: argparse.Namespace) -> str:
+    """The hidden prompt, checked against what this server's tokens look like (three tries)."""
+    value = _secret_value(chosen, f"The token for {server_id} ({chosen})")
+    assert value
+    for _ in range(2):
+        if _token_fits(value, args):
+            return value
+        say(f"  {_wrong_kind_message(value, args)}")
+        if not sys.stdin.isatty():
+            break
+        value = getpass.getpass(
+            f"  Paste the token for {server_id} again (Enter to stop): "
+        ).strip()
+        if not value:
+            raise SystemExit("Nothing was connected.")
+    _require_this_kind_of_token(value, args, chosen)
+    return value
+
+
+def _adapter_error(error: CommandError) -> tuple[str, str] | None:
+    """The adapter's own JSON error (code and message) from the end of a failed command."""
+    for line in reversed(f"{error.result.stderr}\n{error.result.stdout}".splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                data = cast(object, json.loads(line))
+            except ValueError:
+                continue
+            if isinstance(data, dict):
+                found = cast(dict[str, Any], data)
+                if "error" in found:
+                    return str(found["error"]), str(found.get("message", ""))
+    return None
+
+
+def _discover_with_a_second_chance(
+    admin: Admin, t: Any, server_id: str, secret_name: str | None, args: argparse.Namespace
+) -> int:
+    """Discover the server's tools. A rejected token is said in a sentence, and (at a terminal)
+    the person may paste a corrected one, up to three times, instead of getting a stack trace."""
+    for attempt in range(3):
+        try:
+            return admin.discover(server_id, token_env=secret_name)
+        except CommandError as error:
+            parsed = _adapter_error(error)
+            if parsed is None:
+                raise
+            code, message = parsed
+            if (
+                code == "DOWNSTREAM_AUTH_REJECTED"
+                and secret_name
+                and sys.stdin.isatty()
+                and attempt < 2
+            ):
+                say(f"  {message}")
+                fresh = getpass.getpass(
+                    f"  Paste a different token for {server_id} (Enter to stop): "
+                ).strip()
+                if not fresh:
+                    raise SystemExit(f"Nothing was connected. {message}") from None
+                if not _token_fits(fresh, args):
+                    say(f"  {_wrong_kind_message(fresh, args)}")
+                    continue
+                bundle.set_secret(t, secret_name, fresh)
+                say(f"  replaced {secret_name} on the VM")
+                continue
+            hint = (
+                f" Run `muse-vm add-server {server_id} --name <name>` again with a good token."
+                if code == "DOWNSTREAM_AUTH_REJECTED"
+                else ""
+            )
+            raise SystemExit(f"{message} ({code}).{hint}") from None
+    raise SystemExit("The token was rejected three times. Nothing was connected.")
 
 
 def cmd_add_server(args: argparse.Namespace) -> None:
@@ -345,6 +485,7 @@ def cmd_add_server(args: argparse.Namespace) -> None:
         secret_name = chosen
         supplied = os.environ.get(chosen)
         if supplied:  # a token given now replaces one stored earlier, such as a rejected one
+            _require_this_kind_of_token(supplied, args, chosen)
             replacing = chosen in bundle.list_secrets(t)
             bundle.set_secret(t, chosen, supplied)
             verb = "replaced" if replacing else "stored"
@@ -354,8 +495,7 @@ def cmd_add_server(args: argparse.Namespace) -> None:
         else:
             if getattr(args, "token_help", None) and sys.stdin.isatty():
                 say(f"  {args.token_help}")
-            value = _secret_value(chosen, f"The token for {server_id} ({chosen})")
-            assert value
+            value = _ask_for_a_token(chosen, server_id, args)
             bundle.set_secret(t, chosen, value)
             say(f"  stored {chosen} on the VM (readable only by the adapter)")
     profile = {"none": "none", "env_token": "bearer", "oauth": "oauth"}[args.credential]
@@ -389,7 +529,7 @@ def cmd_add_server(args: argparse.Namespace) -> None:
         input("  ")
         found = admin.discover(server_id, connection_id=linked.connection_id)
     else:
-        found = admin.discover(server_id, token_env=secret_name)
+        found = _discover_with_a_second_chance(admin, t, server_id, secret_name, args)
     say(f"  found {found} tools, resources and prompts")
 
     if args.policy:
@@ -465,6 +605,8 @@ def _plan_from(args: argparse.Namespace) -> tuple[config.Plan, Path | None]:
         plan.local = bool(args.local)
     if args.yes:
         plan.yes = True
+    if getattr(args, "replace_leftovers", False):
+        plan.replace_leftovers = True
     if args.server:
         plan.servers = [config.ServerPlan(server=item) for item in args.server]
     return plan, path
@@ -634,6 +776,11 @@ def cmd_selfcheck(args: argparse.Namespace) -> None:
         say(line)
     if not report.ok:
         raise SystemExit(1)
+    if report.address_pending:
+        say(PENDING_NOTE.format(name=dep.name))
+    elif dep.extra.pop("address_pending", None):
+        dep.save()
+        say("The public address now answers.")
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -726,6 +873,14 @@ def cmd_restore(args: argparse.Namespace) -> None:
 
 def cmd_down(args: argparse.Namespace) -> None:
     dep = _pick(args.name)
+    if args.forget:
+        _confirm(
+            f"Forget deployment {dep.name!r}? Nothing in the cloud or on the machine is touched.",
+            args.yes,
+        )
+        dep.delete()
+        say(f"Forgot {dep.name!r}: only the local record was removed.")
+        return
     provider = provider_for(dep, _runner(args), say, {"yes": args.yes})
     _confirm(f"Remove deployment {dep.name!r} and everything it created?", args.yes)
     provider.teardown(keep_data=args.keep_data)
@@ -794,6 +949,11 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
     up.add_argument(
         "--force", action="store_true", help="reuse an existing deployment directory on the host"
+    )
+    up.add_argument(
+        "--replace-leftovers",
+        action="store_true",
+        help="remove what an earlier run of this name left in the cloud project, then start fresh",
     )
     up.add_argument(
         "--keep-on-failure", action="store_true", help="do not roll back a failed deployment"
@@ -935,6 +1095,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_restore)
     sp = common(commands.add_parser("down", help="remove the deployment and everything it created"))
     sp.add_argument("--keep-data", action="store_true", help="keep the data (cloud: the boot disk)")
+    sp.add_argument(
+        "--forget",
+        action="store_true",
+        help="only delete the local record (the cloud resources are already gone)",
+    )
     sp.add_argument("--yes", "-y", action="store_true")
     sp.set_defaults(func=cmd_down)
     return parser
