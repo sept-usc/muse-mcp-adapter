@@ -12,7 +12,7 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import (
     __version__,
@@ -372,7 +372,104 @@ def _resolve_preset(args: argparse.Namespace) -> None:
         args.secret_name = args.secret_name or preset.secret_name
         args.display_name = args.display_name or preset.name
         args.token_help = preset.token_help
+        args.token_shape = preset.token_shape
+        args.token_kind = preset.token_kind
     args.credential = args.credential or "none"
+
+
+def _token_fits(value: str, args: argparse.Namespace) -> bool:
+    shape = getattr(args, "token_shape", None)
+    return not shape or re.fullmatch(shape, value) is not None
+
+
+def _wrong_kind_message(value: str, args: argparse.Namespace) -> str:
+    kind = getattr(args, "token_kind", None) or "the right kind of token"
+    if value.startswith("mcpa_"):
+        return (
+            "That is a Muse connector token (it starts with mcpa_). It goes into Muse, not here. "
+            f"This needs {kind}."
+        )
+    return f"That does not look like {kind}. Paste the token itself, with nothing around it."
+
+
+def _require_this_kind_of_token(value: str, args: argparse.Namespace, name: str) -> None:
+    if not _token_fits(value, args):
+        raise SystemExit(f"{name}: {_wrong_kind_message(value, args)}")
+
+
+def _ask_for_a_token(chosen: str, server_id: str, args: argparse.Namespace) -> str:
+    """The hidden prompt, checked against what this server's tokens look like (three tries)."""
+    value = _secret_value(chosen, f"The token for {server_id} ({chosen})")
+    assert value
+    for _ in range(2):
+        if _token_fits(value, args):
+            return value
+        say(f"  {_wrong_kind_message(value, args)}")
+        if not sys.stdin.isatty():
+            break
+        value = getpass.getpass(
+            f"  Paste the token for {server_id} again (Enter to stop): "
+        ).strip()
+        if not value:
+            raise SystemExit("Nothing was connected.")
+    _require_this_kind_of_token(value, args, chosen)
+    return value
+
+
+def _adapter_error(error: CommandError) -> tuple[str, str] | None:
+    """The adapter's own JSON error (code and message) from the end of a failed command."""
+    for line in reversed(f"{error.result.stderr}\n{error.result.stdout}".splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                data = cast(object, json.loads(line))
+            except ValueError:
+                continue
+            if isinstance(data, dict):
+                found = cast(dict[str, Any], data)
+                if "error" in found:
+                    return str(found["error"]), str(found.get("message", ""))
+    return None
+
+
+def _discover_with_a_second_chance(
+    admin: Admin, t: Any, server_id: str, secret_name: str | None, args: argparse.Namespace
+) -> int:
+    """Discover the server's tools. A rejected token is said in a sentence, and (at a terminal)
+    the person may paste a corrected one, up to three times, instead of getting a stack trace."""
+    for attempt in range(3):
+        try:
+            return admin.discover(server_id, token_env=secret_name)
+        except CommandError as error:
+            parsed = _adapter_error(error)
+            if parsed is None:
+                raise
+            code, message = parsed
+            if (
+                code == "DOWNSTREAM_AUTH_REJECTED"
+                and secret_name
+                and sys.stdin.isatty()
+                and attempt < 2
+            ):
+                say(f"  {message}")
+                fresh = getpass.getpass(
+                    f"  Paste a different token for {server_id} (Enter to stop): "
+                ).strip()
+                if not fresh:
+                    raise SystemExit(f"Nothing was connected. {message}") from None
+                if not _token_fits(fresh, args):
+                    say(f"  {_wrong_kind_message(fresh, args)}")
+                    continue
+                bundle.set_secret(t, secret_name, fresh)
+                say(f"  replaced {secret_name} on the VM")
+                continue
+            hint = (
+                f" Run `muse-vm add-server {server_id} --name <name>` again with a good token."
+                if code == "DOWNSTREAM_AUTH_REJECTED"
+                else ""
+            )
+            raise SystemExit(f"{message} ({code}).{hint}") from None
+    raise SystemExit("The token was rejected three times. Nothing was connected.")
 
 
 def cmd_add_server(args: argparse.Namespace) -> None:
@@ -388,6 +485,7 @@ def cmd_add_server(args: argparse.Namespace) -> None:
         secret_name = chosen
         supplied = os.environ.get(chosen)
         if supplied:  # a token given now replaces one stored earlier, such as a rejected one
+            _require_this_kind_of_token(supplied, args, chosen)
             replacing = chosen in bundle.list_secrets(t)
             bundle.set_secret(t, chosen, supplied)
             verb = "replaced" if replacing else "stored"
@@ -397,8 +495,7 @@ def cmd_add_server(args: argparse.Namespace) -> None:
         else:
             if getattr(args, "token_help", None) and sys.stdin.isatty():
                 say(f"  {args.token_help}")
-            value = _secret_value(chosen, f"The token for {server_id} ({chosen})")
-            assert value
+            value = _ask_for_a_token(chosen, server_id, args)
             bundle.set_secret(t, chosen, value)
             say(f"  stored {chosen} on the VM (readable only by the adapter)")
     profile = {"none": "none", "env_token": "bearer", "oauth": "oauth"}[args.credential]
@@ -432,7 +529,7 @@ def cmd_add_server(args: argparse.Namespace) -> None:
         input("  ")
         found = admin.discover(server_id, connection_id=linked.connection_id)
     else:
-        found = admin.discover(server_id, token_env=secret_name)
+        found = _discover_with_a_second_chance(admin, t, server_id, secret_name, args)
     say(f"  found {found} tools, resources and prompts")
 
     if args.policy:

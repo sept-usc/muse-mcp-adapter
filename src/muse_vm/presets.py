@@ -18,6 +18,8 @@ class Preset:
     summary: str
     secret_name: str | None = None
     token_help: str | None = None  # where to create the token, shown before asking for it
+    token_shape: str | None = None  # a pattern a real token matches, to catch a wrong paste
+    token_kind: str | None = None  # what to call it when it does not match ("a GitHub token")
 
 
 PRESETS: dict[str, Preset] = {
@@ -37,6 +39,8 @@ PRESETS: dict[str, Preset] = {
             "env_token",
             "repositories, issues and pull requests",
             secret_name="GITHUB_TOKEN",
+            token_shape=r"^((github_pat_|gh[pousr]_)[A-Za-z0-9_]{20,}|[0-9a-f]{40})$",
+            token_kind="a GitHub token (they start with github_pat_ or ghp_)",
             token_help=(
                 "Create a fine-grained token at "
                 "https://github.com/settings/personal-access-tokens/new limited to the "

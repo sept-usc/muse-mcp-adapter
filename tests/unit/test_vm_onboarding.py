@@ -10,7 +10,7 @@ import pytest
 
 from muse_vm import browser, cli, config, doctor, ingress, presets
 from muse_vm import setup as wizard
-from muse_vm.runner import Result
+from muse_vm.runner import CommandError, Result
 from muse_vm.selfcheck import Report
 from muse_vm.state import Deployment
 from tests.fixtures.vm_fakes import FakeRunner, FakeTarget
@@ -756,3 +756,109 @@ def test_a_blip_after_the_address_first_answers_does_not_abort_the_self_check(
     assert selfcheck._headers("https://x/health") == {"cache-control": "no-store"}  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(selfcheck, "_request", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     assert selfcheck._headers("https://x/health") == {}  # pyright: ignore[reportPrivateUsage]
+
+
+# ---- a token of the wrong kind ----------------------------------------------------------------
+def _github_args() -> Any:
+    return cli.build_parser().parse_args(["add-server", "github", "--name", "muse"])
+
+
+def _prepared_github_args() -> Any:
+    args = _github_args()
+    cli._resolve_preset(args)  # pyright: ignore[reportPrivateUsage]
+    return args
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["github_pat_" + "A1b2C3d4" * 6, "ghp_" + "x" * 36, "0123456789abcdef" * 2 + "01234567"],
+)
+def test_the_kinds_of_github_token_are_accepted(token: str) -> None:
+    assert cli._token_fits(token, _prepared_github_args())  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "mcpa_" + "x" * 40,
+        '"github_pat_' + "A" * 40 + '"',
+        "Bearer github_pat_" + "A" * 40,
+        "",
+        "abc",
+    ],
+)
+def test_something_that_is_not_a_github_token_is_refused(token: str) -> None:
+    assert not cli._token_fits(token, _prepared_github_args())  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_muse_connector_token_is_named_as_the_mistake() -> None:
+    message = cli._wrong_kind_message("mcpa_" + "x" * 40, _prepared_github_args())  # pyright: ignore[reportPrivateUsage]
+    assert "Muse connector token" in message and "goes into Muse" in message
+    assert "github_pat_" in message  # and it says what is wanted
+
+
+def test_a_wrong_token_in_the_environment_stops_before_anything_is_stored() -> None:
+    with pytest.raises(SystemExit, match="Muse connector token"):
+        cli._require_this_kind_of_token(  # pyright: ignore[reportPrivateUsage]
+            "mcpa_" + "x" * 40, _prepared_github_args(), "GITHUB_TOKEN"
+        )
+
+
+def _rejected() -> CommandError:
+    detail = '{"error": "DOWNSTREAM_AUTH_REJECTED", "message": "The server said HTTP 400."}'
+    return CommandError(["gcloud"], Result(1, "", f"warning noise\n{detail}\n"))
+
+
+class _Admin:
+    def __init__(self, outcomes: list[Any]) -> None:
+        self.outcomes = outcomes
+
+    def discover(self, *_a: Any, **_k: Any) -> int:
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return int(outcome)
+
+
+def test_a_rejected_token_can_be_replaced_on_the_spot(monkeypatch: pytest.MonkeyPatch) -> None:
+    stored: list[str] = []
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda _p="": "github_pat_" + "A1b2C3d4" * 6)
+    monkeypatch.setattr(cli.bundle, "set_secret", lambda _t, name, value: stored.append(name))
+    admin = _Admin([_rejected(), 60])
+    found = cli._discover_with_a_second_chance(  # pyright: ignore[reportPrivateUsage]
+        admin,
+        object(),
+        "github",
+        "GITHUB_TOKEN",
+        _prepared_github_args(),  # type: ignore[arg-type]
+    )
+    assert found == 60 and stored == ["GITHUB_TOKEN"]
+
+
+def test_a_rejected_token_without_a_terminal_gives_one_clear_message() -> None:
+    admin = _Admin([_rejected()])
+    with pytest.raises(SystemExit) as stopped:
+        cli._discover_with_a_second_chance(  # pyright: ignore[reportPrivateUsage]
+            admin,
+            object(),
+            "github",
+            "GITHUB_TOKEN",
+            _prepared_github_args(),  # type: ignore[arg-type]
+        )
+    text = str(stopped.value)
+    assert "HTTP 400" in text and "DOWNSTREAM_AUTH_REJECTED" in text
+    assert "Traceback" not in text and "add-server github" in text
+
+
+def test_giving_up_on_the_prompt_connects_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda _p="": "")
+    with pytest.raises(SystemExit, match="Nothing was connected"):
+        cli._discover_with_a_second_chance(  # pyright: ignore[reportPrivateUsage]
+            _Admin([_rejected()]),
+            object(),
+            "github",
+            "GITHUB_TOKEN",
+            _prepared_github_args(),  # type: ignore[arg-type]
+        )

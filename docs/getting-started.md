@@ -70,6 +70,8 @@ From a checkout, `muse-vm` builds from that checkout and records the commit. It 
 
 **Which servers?** `muse-vm presets` lists them: Microsoft Learn (no sign-in), GitHub (a token), Linear and Atlassian (you approve access in your browser). Any other MCP server works too: `muse-vm add-server myserver --endpoint https://…`.
 
+**Two different tokens.** The one you type during setup is the *server's* token (for GitHub, a `github_pat_…` token you create on github.com): it stays on the machine and is how the adapter signs in to that server. The one setup *prints* after each server connects (`Token mcpa_…`) is the *Muse connector token*: you paste that into Muse, never into setup. If you paste the wrong one, setup recognises it and asks again.
+
 **Tokens.** A token is typed at a hidden prompt on your computer and stored in a root-only folder on the machine. It never appears in a command line, a log or a database. For GitHub, create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) limited to the repositories Muse should use; read access is enough to start.
 
 **You will know it worked when** `setup` ends with `The adapter is running at https://…`, eleven green checks during Create, and a connector address for each server.
