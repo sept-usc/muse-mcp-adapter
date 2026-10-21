@@ -180,6 +180,7 @@ class GcloudTarget(Target):
             f"--project={self.project}",
             "--tunnel-through-iap",
             "--quiet",
+            "--verbosity=error",  # hides gcloud's NumPy performance warning on every command
             "--command=sudo -n sh -c " + shlex.quote(script),
             "--",
             "-o",

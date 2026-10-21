@@ -112,6 +112,87 @@ def test_the_startup_script_is_the_bundles_bootstrap_and_holds_no_secret() -> No
 
 
 # ---- GCP: preflight --------------------------------------------------------------------------
+_FULL = "The zone does not have enough resources available to fulfill the request."
+
+
+def test_a_zone_that_is_out_of_capacity_falls_back_to_another_zone_of_the_region() -> None:
+    provider, dep, runner = _gcp()
+    runner.rules.insert(0, ("instances create mma-muse --zone=us-central1-a", Result(1, "", _FULL)))
+    runner.when("zones list", stdout="us-central1-a\nus-central1-b\nus-central1-c")
+    provider.preflight()
+    provider.provision()
+
+    created = _created(runner, "instances")
+    assert len(created) == 2 and "--zone=us-central1-a" in created[0]
+    assert "--zone=us-central1-b" in created[1]  # the next zone, not the one that was full
+    assert dep.zone == "us-central1-b"  # everything after this (SSH, snapshots) uses the new zone
+    assert any(r["kind"] == "instance" and r.get("zone") == "us-central1-b" for r in dep.resources)
+    assert not runner.ran("--region=us-west")  # the regional network, firewall and NAT are reused
+
+
+def test_a_real_error_creating_the_vm_is_not_mistaken_for_a_full_zone() -> None:
+    from muse_vm.runner import CommandError
+
+    provider, _dep, runner = _gcp()
+    runner.rules.insert(0, ("instances create", Result(1, "", "Quota 'CPUS' exceeded. Limit: 8.0")))
+    provider.preflight()
+    with pytest.raises(CommandError):
+        provider.provision()
+    assert len(_created(runner, "instances")) == 1 and not runner.ran("zones list")
+
+
+def test_when_every_zone_is_full_the_message_says_what_to_try_next() -> None:
+    provider, _dep, runner = _gcp()
+    runner.rules.insert(0, ("instances create", Result(1, "", _FULL)))
+    runner.when("zones list", stdout="us-central1-a\nus-central1-b")
+    provider.preflight()
+    with pytest.raises(SystemExit, match="No zone in us-central1 has e2-small capacity"):
+        provider.provision()
+    assert len(_created(runner, "instances")) == 2  # both zones were tried, once each
+
+
+def test_the_default_output_of_creating_a_vm_is_a_few_lines_and_verbose_shows_every_step() -> None:
+    said: list[str] = []
+    provider, _dep, _runner = _gcp()
+    provider.say = said.append  # type: ignore[method-assign]
+    provider.preflight()
+    provider.provision()
+    quiet = [line for line in said if line.startswith("  ")]
+    assert any("network, firewall rules and Cloud NAT" in line for line in quiet)
+    assert not any("deleting" in line or "creating firewall rules" in line for line in quiet)
+    assert len(quiet) <= 6
+
+    loud_said: list[str] = []
+    provider, _dep, runner = _gcp()
+    runner.verbose = True  # type: ignore[attr-defined]
+    provider.say = loud_said.append  # type: ignore[method-assign]
+    provider.preflight()
+    provider.provision()
+    assert any("creating firewall rules" in line for line in loud_said)
+
+
+def test_gcloud_ssh_hides_gcloud_own_performance_warning() -> None:
+    from muse_vm.targets import GcloudTarget
+
+    target = GcloudTarget(
+        FakeRunner(),  # pyright: ignore[reportArgumentType]
+        "mma-x",
+        "us-central1-a",
+        "my-proj",
+        "/opt/muse-adapter",
+    )
+    assert "--verbosity=error" in target._argv("true")  # pyright: ignore[reportPrivateUsage]
+
+
+def test_raw_tool_output_is_captured_unless_verbose() -> None:
+    from muse_vm.runner import Runner
+
+    quiet = Runner(verbose=False)(["sh", "-c", "echo build output"], stream=True)
+    assert quiet.stdout == "build output\n"  # captured, so it is not printed to the screen
+    loud = Runner(verbose=True)(["sh", "-c", "echo build output"], stream=True)
+    assert loud.stdout == ""  # streamed to the terminal instead
+
+
 def test_preflight_refuses_without_confirmation_when_it_would_spend_money(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

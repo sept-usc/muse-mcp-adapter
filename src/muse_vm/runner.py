@@ -27,7 +27,7 @@ class Result:
 class CommandError(RuntimeError):
     def __init__(self, argv: list[str], result: Result) -> None:
         self.argv, self.result = argv, result
-        tail = (result.stderr or result.stdout).strip().splitlines()[-8:]
+        tail = (result.stderr or result.stdout).strip().splitlines()[-12:]
         super().__init__(
             f"command failed ({result.returncode}): {_short(argv)}\n  " + "\n  ".join(tail)
         )
@@ -50,6 +50,7 @@ class Runner:
         timeout: float | None = None,
         stream: bool = False,
     ) -> Result:
+        stream = stream and self.verbose  # raw tool output (builds, pulls) only with -v
         if self.verbose:
             print(f"  $ {_short(argv)}", file=sys.stderr)
         data = input.encode() if isinstance(input, str) else input

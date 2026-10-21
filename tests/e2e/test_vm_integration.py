@@ -98,7 +98,8 @@ def _config(directory: Path) -> None:
 def _fails(argv: list[str], capsys: pytest.CaptureFixture[str], message: str) -> None:
     """The command stops with a non-zero code and says why."""
     assert cli.main(argv) == 1
-    assert message in capsys.readouterr().err
+    shown = capsys.readouterr()
+    assert message in shown.err + shown.out
 
 
 def _output(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
@@ -521,7 +522,14 @@ def test_up_rolls_back_everything_when_the_self_check_fails(
     monkeypatch.setattr(cli, "provider_for", make)
     monkeypatch.setattr(ingress, "interactive_login", _no_login)
     monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
-    _fails(_up_args(), capsys, "self-check failed")
+    assert cli.main(_up_args()) == 1
+    shown = capsys.readouterr()
+    assert shown.out.count("The self-check failed.") == 1  # the reason is printed once, not twice
+    assert "The self-check failed." not in shown.err
+    assert "Rolled back: nothing this run created is left." in shown.out
+    # the person approved a Tailscale sign-in, and Tailscale keeps that device until it is deleted
+    assert "Tailscale keeps the device you signed in (muse-adapter-muse)" in shown.out
+    assert "muse-vm setup" in shown.out
     assert holder["p"].torn_down is True
     assert Deployment.all() == []  # no half-made deployment is left in the state
 
