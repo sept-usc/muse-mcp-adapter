@@ -37,6 +37,7 @@ from ..domain.errors import (
     OperationCancelledError,
     OperationInProgressError,
     OperationNotFoundError,
+    PublishedPolicyError,
     RateLimitExceededError,
     ReauthorizationRequiredError,
     RequestTooLargeError,
@@ -370,6 +371,19 @@ def retry_guidance(error: Exception) -> RetryGuidance:
         return RetryGuidance(False, "More is needed from the user before this can run.")
     if isinstance(error, OperationNotFoundError | EntityNotFoundError):
         return RetryGuidance(False, "There is no such operation. Do not repeat the call.")
+    if isinstance(error, DownstreamContentError):
+        return RetryGuidance(
+            False,
+            "The MCP server's result broke this operation's published limits (the message says "
+            "which), so nothing was returned. Repeating the same call gets the same result: ask "
+            "for less, for example a narrower query or a smaller part, or tell the user.",
+        )
+    if isinstance(error, PublishedPolicyError):
+        return RetryGuidance(
+            False,
+            "This operation's published settings are invalid. Repeating will not help: tell the "
+            "user; the owner must fix the policy and publish again.",
+        )
     if isinstance(error, DataPlaneError) and _status(error) >= 500:
         return RetryGuidance(True, "An internal error occurred. Repeating once may succeed.", 5)
     return RetryGuidance(False, "Do not repeat this call unchanged.")

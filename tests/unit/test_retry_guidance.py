@@ -22,6 +22,8 @@ FINAL = [
     e.RequestValidationError("bad arguments"),
     e.OperationNotFoundError("none"),
     e.ReauthorizationRequiredError("sign in again"),
+    e.DownstreamContentError("Resource exceeds the published size limit of 262144 bytes"),
+    e.PublishedPolicyError("Published timeoutSeconds is invalid"),
 ]
 
 
@@ -49,3 +51,14 @@ def test_an_unreachable_server_is_not_confused_with_a_server_that_said_no() -> N
 
 def test_an_unknown_error_defaults_to_do_not_repeat() -> None:
     assert retry_guidance(ValueError("surprise")).retryable is False
+
+
+def test_a_rejected_result_says_repeating_gets_the_same_result_and_what_to_do_instead() -> None:
+    """Found with a real Muse: a page over the size limit was answered "An internal error
+    occurred. Repeating once may succeed.", and the same page would be rejected again."""
+    error = e.DownstreamContentError("Resource exceeds the published size limit of 262144 bytes")
+    advice = retry_guidance(error)
+    assert advice.retryable is False
+    assert "same result" in advice.next_step and "ask for less" in advice.next_step
+    assert "internal error" not in advice.next_step.lower()
+    assert http_app._status(error) == 502  # type: ignore[reportPrivateUsage]
