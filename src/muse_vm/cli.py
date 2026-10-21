@@ -124,8 +124,16 @@ def _show_linked(linked: Linked, *, copy: bool) -> None:
 def cmd_up(args: argparse.Namespace) -> None:
     name = check_name(args.name)
     if Deployment.path_for(name).exists():
+        earlier = Deployment.load(name)
+        unfinished = (
+            f"An earlier run named {name!r} did not finish (it is {earlier.status}). Remove what "
+            f"it created with `muse-vm down --name {name}`; if the cloud resources are already "
+            f"gone, `muse-vm down --name {name} --forget` clears the record."
+        )
         raise SystemExit(
-            f"A deployment named {name!r} already exists (`muse-vm status --name {name}`, "
+            unfinished
+            if earlier.status != "ready"
+            else f"A deployment named {name!r} already exists (`muse-vm status --name {name}`, "
             f"or `muse-vm down --name {name}` first)."
         )
     provider_name = "local" if args.local else "ssh" if args.ssh else args.cloud
@@ -726,6 +734,14 @@ def cmd_restore(args: argparse.Namespace) -> None:
 
 def cmd_down(args: argparse.Namespace) -> None:
     dep = _pick(args.name)
+    if args.forget:
+        _confirm(
+            f"Forget deployment {dep.name!r}? Nothing in the cloud or on the machine is touched.",
+            args.yes,
+        )
+        dep.delete()
+        say(f"Forgot {dep.name!r}: only the local record was removed.")
+        return
     provider = provider_for(dep, _runner(args), say, {"yes": args.yes})
     _confirm(f"Remove deployment {dep.name!r} and everything it created?", args.yes)
     provider.teardown(keep_data=args.keep_data)
@@ -935,6 +951,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_restore)
     sp = common(commands.add_parser("down", help="remove the deployment and everything it created"))
     sp.add_argument("--keep-data", action="store_true", help="keep the data (cloud: the boot disk)")
+    sp.add_argument(
+        "--forget",
+        action="store_true",
+        help="only delete the local record (the cloud resources are already gone)",
+    )
     sp.add_argument("--yes", "-y", action="store_true")
     sp.set_defaults(func=cmd_down)
     return parser

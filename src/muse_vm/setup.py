@@ -215,6 +215,36 @@ def _up_argv(plan: config.Plan, name: str) -> list[str]:
     return argv
 
 
+def _clear_unfinished(name: str, io: Io, run_command: Callable[[list[str]], int]) -> None:
+    """An earlier run that stopped half way (Ctrl-C, a crash) leaves a record that blocks a new one.
+
+    Offer to remove what it created and start fresh. The record is only dropped for good by `down`.
+    """
+    if not Deployment.path_for(name).exists():
+        return
+    earlier = Deployment.load(name)
+    if earlier.status == "ready":
+        return
+    where = f" in project {earlier.project}" if earlier.project else ""
+    advice = (
+        f"Remove it with `muse-vm down --name {name}`; if the cloud resources are already "
+        f"gone, `muse-vm down --name {name} --forget` clears the record."
+    )
+    if not io.interactive:
+        raise SystemExit(
+            f"An earlier run named {name!r} did not finish ({earlier.status}{where}). {advice}"
+        )
+    io.say("")
+    io.say(f"An earlier run named {name!r} did not finish (it is {earlier.status}{where}).")
+    if not io.confirm("Remove what it created and start fresh?"):
+        raise SystemExit(f"Nothing was changed. {advice}")
+    if run_command(["down", "--name", name, "--yes"]) != 0:
+        raise SystemExit(
+            "It could not be removed automatically (see above). If the cloud resources are "
+            f"already gone, run `muse-vm down --name {name} --forget` and then setup again."
+        )
+
+
 def _own_server(url: str, io: Io) -> config.ServerPlan:
     """A server that is not in the list, given by its address."""
     host = urlsplit(url).hostname or ""
@@ -323,6 +353,7 @@ def run(
     if plan.tailscale_authkey_file:
         os.environ["TS_AUTHKEY"] = _read_secret_file(plan.tailscale_authkey_file)
 
+    _clear_unfinished(name, io, run_command)
     existing = Deployment.path_for(name).exists() and Deployment.load(name).status == "ready"
     if existing:
         io.say("")

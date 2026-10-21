@@ -13,6 +13,7 @@ through Tailscale Funnel, which needs no inbound connection.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import time
@@ -516,10 +517,30 @@ class GcpProvider(Provider):
             check=False,
         )
         if not result.ok:
-            raise CommandError(
-                ["gcloud", "compute", "instances", "describe", self.instance], result
-            )
+            raise SystemExit(self._explain_lookup_failure(result))
         return result.stdout.strip()
+
+    def _explain_lookup_failure(self, result: Result) -> str:
+        """Say in a sentence why the VM could not be read, and what to do about it."""
+        dep, text = self.dep, result.stderr + result.stdout
+        forget = (
+            f"If this deployment no longer exists, `muse-vm down --name {dep.name} --forget` "
+            "clears it."
+        )
+        if "SERVICE_DISABLED" in text:
+            url = re.search(r"https://console\.developers\.google\.com/\S+", text)
+            return (
+                f"The Compute Engine API is not enabled in project {dep.project}"
+                + (f" (enable it at {url.group(0)})" if url else "")
+                + f". {forget}"
+            )
+        lowered = text.lower()
+        if "was not found" in lowered or "notfound" in lowered:
+            return (
+                f"The VM {self.instance} was not found in project {dep.project}, zone {dep.zone}. "
+                + forget
+            )
+        return f"The VM {self.instance} could not be read: {_last_line(result)}. {forget}"
 
     def ensure_ready(self) -> None:
         state = self.vm_status()

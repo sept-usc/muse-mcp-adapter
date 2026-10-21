@@ -193,6 +193,37 @@ def test_raw_tool_output_is_captured_unless_verbose() -> None:
     assert loud.stdout == ""  # streamed to the terminal instead
 
 
+def test_a_disabled_api_is_explained_in_a_sentence_not_an_api_dump() -> None:
+    provider, dep, runner = _gcp()
+    dep.project, dep.zone = "other-proj", "us-central1-a"
+    runner.rules.insert(
+        0,
+        (
+            "instances describe",
+            Result(
+                1,
+                "",
+                "reason: SERVICE_DISABLED\nactivationUrl: https://console.developers.google.com/"
+                "apis/api/compute.googleapis.com/overview?project=other-proj\n",
+            ),
+        ),
+    )
+    with pytest.raises(SystemExit) as stopped:
+        provider.vm_status()
+    message = str(stopped.value)
+    assert "Compute Engine API is not enabled in project other-proj" in message
+    assert "console.developers.google.com" in message and "--forget" in message
+    assert "domain:" not in message and "reason:" not in message  # no raw dump
+
+
+def test_a_missing_vm_is_explained_with_the_way_to_clear_the_record() -> None:
+    provider, dep, runner = _gcp()
+    dep.project, dep.zone = "my-proj", "us-central1-a"
+    runner.rules.insert(0, ("instances describe", Result(1, "", "The resource was not found")))
+    with pytest.raises(SystemExit, match="was not found in project my-proj"):
+        provider.vm_status()
+
+
 def test_preflight_refuses_without_confirmation_when_it_would_spend_money(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

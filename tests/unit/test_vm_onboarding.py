@@ -342,6 +342,53 @@ def _up_of(commands: _Commands) -> list[str]:
     return commands.calls[0]
 
 
+def _unfinished(status: str = "creating") -> None:
+    from muse_vm.state import Deployment
+
+    Deployment(
+        name="muse", provider="gcp", ingress="tailscale-funnel", status=status, project="p"
+    ).save()
+
+
+def test_an_unfinished_earlier_run_is_offered_for_removal_before_a_new_one() -> None:
+    _unfinished()
+    term, commands = _Terminal("y", "y"), _Commands()  # remove it; cost
+    _run(config.Plan(cloud="gcp", project="p", zone="us-central1-a"), term, commands)
+    assert "An earlier run named 'muse' did not finish" in term.text
+    assert commands.calls[0] == ["down", "--name", "muse", "--yes"]  # cleaned up first
+    assert commands.calls[1][0] == "up"
+
+
+def test_declining_to_remove_an_unfinished_run_changes_nothing() -> None:
+    _unfinished()
+    commands = _Commands()
+    with pytest.raises(SystemExit, match="Nothing was changed"):
+        _run(
+            config.Plan(cloud="gcp", project="p", zone="us-central1-a"),
+            _Terminal("y", "n"),
+            commands,
+        )
+    assert commands.calls == []
+
+
+def test_a_script_is_told_how_to_clear_an_unfinished_run() -> None:
+    _unfinished("failed")
+    with pytest.raises(SystemExit, match="down --name muse --forget"):
+        _run(config.Plan(cloud="gcp", yes=True), _Terminal(interactive=False), _Commands())
+
+
+def test_if_the_old_run_cannot_be_removed_the_person_is_told_about_forget() -> None:
+    _unfinished()
+
+    class Fails(_Commands):
+        def __call__(self, argv: list[str]) -> int:
+            super().__call__(argv)
+            return 1 if argv[0] == "down" else 0
+
+    with pytest.raises(SystemExit, match="--forget"):
+        _run(config.Plan(cloud="gcp", project="p", zone="us-central1-a"), _Terminal("y"), Fails())
+
+
 def test_the_google_cloud_settings_are_shown_and_the_defaults_can_be_kept() -> None:
     term, commands = _Terminal("1", "", "y"), _Commands()  # where; Enter keeps the settings; cost
     _run(config.Plan(), term, commands)

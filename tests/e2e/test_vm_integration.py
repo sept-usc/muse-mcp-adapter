@@ -561,8 +561,34 @@ def test_up_refuses_a_name_that_is_already_in_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
-    Deployment(name="muse", provider="gcp", ingress="tailscale-funnel").save()
+    Deployment(name="muse", provider="gcp", ingress="tailscale-funnel", status="ready").save()
     _fails(_up_args(), capsys, "already exists")
+
+
+def test_up_explains_an_unfinished_earlier_run_and_how_to_clear_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+    Deployment(name="muse", provider="gcp", ingress="tailscale-funnel", status="creating").save()
+    assert cli.main(_up_args()) == 1
+    shown = capsys.readouterr()
+    text = shown.out + shown.err
+    assert "did not finish" in text and "muse-vm down --name muse --forget" in text
+
+
+def test_down_forget_removes_only_the_local_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+    Deployment(name="muse", provider="gcp", ingress="tailscale-funnel", status="creating").save()
+
+    def never(*_a: Any) -> Any:
+        raise AssertionError("nothing in the cloud may be touched by --forget")
+
+    monkeypatch.setattr(cli, "provider_for", never)
+    assert cli.main(["down", "--name", "muse", "--forget", "--yes"]) == 0
+    assert "only the local record was removed" in capsys.readouterr().out
+    assert Deployment.all() == []
 
 
 def test_up_needs_to_be_told_where_to_run(
