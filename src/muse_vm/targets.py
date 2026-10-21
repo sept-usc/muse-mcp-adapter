@@ -21,6 +21,8 @@ ROOT = "/opt/muse-adapter"
 # as opposed to the remote command failing. IAP tunnels and busy hosts drop connections now and
 # then, so such a failure is retried; every operation here is safe to run again.
 CONNECTION_FAILED = 255
+# A script meant for the deployment directory exits with this when the directory is not there.
+NO_DEPLOYMENT_DIRECTORY = 97
 RETRY_DELAYS = (3.0, 8.0, 20.0)
 _pause = time.sleep
 
@@ -53,7 +55,9 @@ class Target:
         A dropped connection is retried unless `retry` is False (a diagnostic should fail fast).
         """
         if cwd_root:
-            script = f"cd {shlex.quote(self.root)} && {script}"
+            # Not `cd … && script`: in `cd … && a; b`, b would still run, in whatever directory
+            # the shell started in (the login directory, or yours with --local).
+            script = f"cd {shlex.quote(self.root)} || exit {NO_DEPLOYMENT_DIRECTORY}; {script}"
         argv = self._argv(script)
         result = Result(CONNECTION_FAILED, "", "")
         for delay in (*RETRY_DELAYS, None) if (retry and self.retries) else (None,):

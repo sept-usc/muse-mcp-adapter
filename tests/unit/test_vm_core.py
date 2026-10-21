@@ -206,3 +206,23 @@ def test_a_failing_local_command_is_not_retried_like_a_dropped_connection(
     with pytest.raises(CommandError):
         LocalTarget(runner).sh("exit 255")  # type: ignore[arg-type]
     assert len(runner.calls) == 1
+
+
+def test_a_script_for_the_deployment_never_runs_anywhere_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `cd <deployment> && a; b`, b ran wherever the shell started when the directory was
+    gone: `muse-vm down --keep-data` then deleted everything there but `data` and `backups`."""
+    from muse_vm.targets import LocalTarget
+
+    here = tmp_path / "where-muse-vm-runs"
+    here.mkdir()
+    (here / "notes.txt").write_text("keep me")
+    monkeypatch.chdir(here)
+    monkeypatch.setattr("muse_vm.targets.os.geteuid", lambda: 0)
+    target = LocalTarget(Runner(), root=str(tmp_path / "no-deployment"))
+
+    result = target.sh("true; find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +", check=False)
+
+    assert not result.ok
+    assert (here / "notes.txt").read_text() == "keep me"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import shlex
 from collections.abc import Callable
 from typing import Any
 
@@ -81,10 +82,11 @@ class Provider:
         self.leave_tailnet()
         bundle.remove_units(t)
         images = " ".join(bundle.local_images())
+        root = shlex.quote(self.root)
         wipe = (
-            "find . -mindepth 1 -maxdepth 1 ! -name data ! -name backups -exec rm -rf {} +"
+            f"find {root} -mindepth 1 -maxdepth 1 ! -name data ! -name backups -exec rm -rf {{}} +"
             if keep_data
-            else f"cd / && rm -rf {self.root}"
+            else f"cd / && rm -rf {root}"
         )
         t.sh(
             "if [ -f compose.yml ]; then docker compose down -v --remove-orphans; fi; "

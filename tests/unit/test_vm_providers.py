@@ -314,3 +314,11 @@ def test_the_local_provider_installs_on_this_machine_and_refuses_other_systems(
     monkeypatch.setattr("muse_vm.providers.local.sys.platform", "darwin")
     with pytest.raises(SystemExit, match="must be\nLinux|must be Linux"):
         provider.preflight()
+
+
+def test_keeping_data_names_the_deployment_directory_rather_than_the_current_one() -> None:
+    provider, runner = _ssh()
+    provider.teardown(keep_data=True)
+    script = " ".join(runner.lines())
+    assert "find /opt/muse-adapter -mindepth 1 -maxdepth 1" in script
+    assert "find . " not in script
