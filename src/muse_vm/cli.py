@@ -34,6 +34,11 @@ from .selfcheck import Report
 from .state import Deployment, check_name
 
 DEFAULT_NAME = "muse"
+PENDING_NOTE = (
+    "  Its public name has not reached public DNS yet. That is normal for a new name and can take "
+    "up to 20 minutes; everything inside the machine is healthy. Check again with "
+    "`muse-vm selfcheck --name {name}`, and connect Muse once it passes."
+)
 
 
 def say(message: str = "") -> None:
@@ -238,6 +243,8 @@ def cmd_up(args: argparse.Namespace) -> None:
         if not report.ok:
             _show_logs(t)
             raise SystemExit("The self-check failed.")
+        if report.address_pending:
+            dep.extra["address_pending"] = True
         if bundle.forget_auth_key(t):
             say("  removing the Tailscale auth key from the machine (the device has joined)")
             t.compose("up -d --no-deps tailscale", stream=True)
@@ -279,6 +286,8 @@ def cmd_up(args: argparse.Namespace) -> None:
         raise SystemExit(1) from None  # the reason was printed above; do not print it twice
     say()
     say(f"The adapter is running at https://{dep.hostname}")
+    if dep.extra.get("address_pending"):
+        say(PENDING_NOTE.format(name=name))
     say("Next, connect an MCP server and link it to Muse:")
     say(f"  muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp --name {name}")
 
@@ -642,6 +651,11 @@ def cmd_selfcheck(args: argparse.Namespace) -> None:
         say(line)
     if not report.ok:
         raise SystemExit(1)
+    if report.address_pending:
+        say(PENDING_NOTE.format(name=dep.name))
+    elif dep.extra.pop("address_pending", None):
+        dep.save()
+        say("The public address now answers.")
 
 
 def cmd_start(args: argparse.Namespace) -> None:

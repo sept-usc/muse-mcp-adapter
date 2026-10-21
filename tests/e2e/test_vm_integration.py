@@ -534,6 +534,38 @@ def test_up_rolls_back_everything_when_the_self_check_fails(
     assert Deployment.all() == []  # no half-made deployment is left in the state
 
 
+def test_up_keeps_a_working_install_whose_new_name_has_not_reached_dns_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+    pending = Report(address_pending=True)
+    pending.add("public HTTPS /health answers", False, "the new name has not reached DNS", False)
+    pending.add("egress guard rules installed", True)
+    monkeypatch.setattr(selfcheck, "run", _returning(pending))
+    vm = ContainerTarget(tmp_path / "vm")
+    holder: dict[str, _FakeProvider] = {}
+
+    def make(dep: Deployment, runner: Any, say: Any, opts: Any) -> _FakeProvider:
+        holder["p"] = _FakeProvider(dep, vm)
+        return holder["p"]
+
+    monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "interactive_login", _no_login)
+    monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
+    assert cli.main(_up_args()) == 0  # not rolled back
+    shown = capsys.readouterr().out
+    assert "has not reached public DNS yet" in shown and "muse-vm selfcheck --name muse" in shown
+    assert holder["p"].torn_down is False
+    dep = Deployment.load("muse")
+    assert dep.status == "ready" and dep.extra.get("address_pending") is True
+
+    # once the name resolves, checking again clears the note
+    monkeypatch.setattr(selfcheck, "run", _returning(_passing()))
+    assert cli.main(["selfcheck", "--name", "muse"]) == 0
+    assert "answers" in capsys.readouterr().out
+    assert "address_pending" not in Deployment.load("muse").extra
+
+
 def test_up_keeps_a_failed_deployment_when_asked_to_for_debugging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

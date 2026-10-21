@@ -40,11 +40,17 @@ print(json.dumps(result))
 """
 
 
+NAME_PENDING = "the name does not resolve yet"
+
+
 @dataclass
 class Report:
     checks: list[tuple[str, bool, str, bool]] = field(
         default_factory=list[tuple[str, bool, str, bool]]
     )
+    # Everything inside passed, but the public name has not reached public DNS yet (normal for a
+    # brand-new name): a note, not a failure.
+    address_pending: bool = False
 
     def add(self, name: str, ok: bool, detail: str = "", required: bool = True) -> None:
         self.checks.append((name, ok, detail, required))
@@ -201,20 +207,21 @@ def wait_healthy(
 ) -> tuple[bool, str]:
     """Wait for https://host/health: a certificate or a tunnel can take minutes to be ready."""
     deadline = time.monotonic() + timeout
-    last, said = "", False
+    last, said, unresolved = "", False, False
     while time.monotonic() < deadline:
         try:
             status, _, body = _request("GET", base_url + "/health", timeout=10)
             if status == 200 and '"ok"' in body:
                 return True, ""
-            last = f"HTTP {status}"
+            last, unresolved = f"HTTP {status}", False
         except (OSError, ValueError) as error:  # DNS not ready, TLS not ready, connection refused
             last = f"{type(error).__name__}: {error}"
+            unresolved = isinstance(getattr(error, "reason", error), socket.gaierror)
         if not said:
             say(f"  waiting for {base_url}/health (certificate or tunnel)…")
             said = True
         sleep(5)
-    return False, last
+    return False, f"{NAME_PENDING}: {last}" if unresolved else last
 
 
 def _headers(url: str) -> dict[str, str]:
@@ -249,11 +256,24 @@ def run(
 ) -> Report:
     report = Report()
     healthy, why = wait_healthy(base_url, wait, say)
-    report.add("public HTTPS /health answers", healthy, why)
     if not healthy:
         # Still look inside: it tells a broken deployment from an address that is not reachable.
-        report.checks.extend(inside_checks(target).checks)
+        inside = inside_checks(target)
+        if why.startswith(NAME_PENDING) and inside.ok:
+            # A brand-new name can take a while to reach public DNS. Nothing is wrong, so this
+            # is a note (not a reason to tear down a working install).
+            report.add(
+                "public HTTPS /health answers",
+                False,
+                "the new name has not reached public DNS yet; this can take up to 20 minutes",
+                required=False,
+            )
+            report.address_pending = True
+        else:
+            report.add("public HTTPS /health answers", False, why)
+        report.checks.extend(inside.checks)
         return report
+    report.add("public HTTPS /health answers", True)
 
     headers = _headers(base_url + "/health")
     report.add(

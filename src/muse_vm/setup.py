@@ -397,6 +397,11 @@ def run(
     )
     if dep and dep.base_url:
         io.say(f"  The adapter is running at {dep.base_url}")
+        if dep.extra.get("address_pending"):
+            io.say(
+                "  Its public name has not reached public DNS yet (normal for a new name; up to "
+                f"20 minutes). Check with `muse-vm selfcheck --name {name}`, then connect Muse."
+            )
     for server in failed:
         io.say(
             f"  Not connected: {server.server}. Fix the reason shown above (often a rejected or "
