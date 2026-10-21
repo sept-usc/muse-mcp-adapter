@@ -61,7 +61,25 @@ class SSHProvider(Provider):
         return t
 
     def teardown(self, keep_data: bool = False) -> None:
-        self.remove_from_host(self.target(), keep_data)
+        t = self.target()
+        self.say(f"  contacting {self.where}…")
+        why = self.reachable(t)
+        if why:
+            raise SystemExit(self._unreachable(why))
+        self.remove_from_host(t, keep_data)
+
+    def ensure_ready(self) -> None:
+        why = self.reachable(self.target())
+        if why:
+            raise SystemExit(self._unreachable(why))
+
+    def _unreachable(self, why: str) -> str:
+        name = self.dep.name
+        return (
+            f"Could not reach {self.where} ({why}). It may be powered off, or its address "
+            f"changed. Start it and run the command again; if it no longer exists, "
+            f"`muse-vm down --name {name} --forget` removes the record."
+        )
 
     def status(self) -> dict[str, Any]:
         return {

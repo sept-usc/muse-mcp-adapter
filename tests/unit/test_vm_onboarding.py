@@ -389,6 +389,40 @@ def test_if_the_old_run_cannot_be_removed_the_person_is_told_about_forget() -> N
         _run(config.Plan(cloud="gcp", project="p", zone="us-central1-a"), _Terminal("y"), Fails())
 
 
+def _runner_with_cloud_leftovers() -> FakeRunner:
+    runner = _gcloud()
+    runner.rules.insert(0, ("networks describe mma-muse", Result(0, "mma-deployment=muse", "")))
+    return runner
+
+
+def test_cloud_leftovers_of_an_earlier_run_are_offered_for_removal() -> None:
+    term, commands = _Terminal("y", "y"), _Commands()  # the cost, then remove the leftovers
+    plan = config.Plan(cloud="gcp", project="p", zone="us-central1-a")
+    _run(plan, term, commands, runner=_runner_with_cloud_leftovers())
+    assert "left a network (mma-muse) in project p" in term.text
+    assert "--replace-leftovers" in _up_of(commands)
+
+
+def test_declining_to_remove_cloud_leftovers_changes_nothing() -> None:
+    commands = _Commands()
+    plan = config.Plan(cloud="gcp", project="p", zone="us-central1-a")
+    with pytest.raises(SystemExit, match="Nothing was changed"):
+        _run(plan, _Terminal("y", "n"), commands, runner=_runner_with_cloud_leftovers())
+    assert commands.calls == []
+
+
+def test_a_script_is_told_about_the_flag_for_cloud_leftovers() -> None:
+    plan = config.Plan(cloud="gcp", yes=True, project="p", zone="us-central1-a")
+    with pytest.raises(SystemExit, match="--replace-leftovers"):
+        _run(plan, _Terminal(interactive=False), _Commands(), runner=_runner_with_cloud_leftovers())
+
+
+def test_no_leftovers_means_no_question() -> None:
+    term, commands = _Terminal("y"), _Commands()
+    _run(config.Plan(cloud="gcp", project="p", zone="us-central1-a"), term, commands)
+    assert "left a network" not in term.text and "--replace-leftovers" not in _up_of(commands)
+
+
 def test_the_google_cloud_settings_are_shown_and_the_defaults_can_be_kept() -> None:
     term, commands = _Terminal("1", "", "y"), _Commands()  # where; Enter keeps the settings; cost
     _run(config.Plan(), term, commands)

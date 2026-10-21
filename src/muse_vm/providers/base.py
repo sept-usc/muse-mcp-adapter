@@ -73,6 +73,17 @@ class Provider:
     def restart_adapter(self, t: Target) -> None:
         t.compose("up -d --force-recreate --no-deps adapter", stream=True)
 
+    def reachable(self, t: Target) -> str | None:
+        """None when the machine answers, otherwise a short reason.
+
+        One quick try, no retries: a powered-off machine must not cost minutes of silence.
+        """
+        probe = t.sh("true", check=False, timeout=60, retry=False, cwd_root=False)
+        if probe.ok:
+            return None
+        lines = (probe.stderr or probe.stdout).strip().splitlines()
+        return (lines[-1] if lines else "no answer")[:160]
+
     def leave_tailnet(self) -> None:
         """Sign the adapter's Tailscale device out, so it does not linger in the owner's tailnet.
 
@@ -80,7 +91,15 @@ class Provider:
         """
         # nothing here may stop the removal that follows
         with contextlib.suppress(Exception):
-            self.target().compose("exec -T tailscale tailscale logout", check=False, timeout=60)
+            t = self.target()
+            why = self.reachable(t)
+            if why:
+                self.say(
+                    f"  could not reach the machine ({why}), so its Tailscale device was not "
+                    "signed out: delete it under Machines in the Tailscale admin page"
+                )
+                return
+            t.compose("exec -T tailscale tailscale logout", check=False, timeout=60)
 
     def remove_from_host(self, t: Target, keep_data: bool) -> None:
         self.leave_tailnet()

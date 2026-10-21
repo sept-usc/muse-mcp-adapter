@@ -106,3 +106,76 @@ def test_a_real_public_failure_is_not_softened(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(selfcheck, "inside_checks", _inside_is(True))
     report = selfcheck.run(FakeTarget(), URL, wait=0, say=_quiet)
     assert not report.ok and not report.address_pending
+
+
+class _Clock:
+    """A clock that only moves when the code sleeps, so waiting minutes takes no time."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_a_name_with_no_dns_record_stops_the_wait_after_the_grace_period(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(selfcheck, "_request", _unresolved)
+    clock = _Clock()
+    said: list[str] = []
+    healthy, why = selfcheck.wait_healthy(
+        URL, timeout=600, say=said.append, sleep=clock.sleep, clock=clock, dns_grace=240
+    )
+    assert not healthy and why.startswith(NAME_PENDING)
+    assert 240 <= clock.now < 260  # not the full ten minutes of silence
+    assert any("published by Tailscale" in line for line in said)
+
+
+def test_the_wait_reports_progress_every_half_minute(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(selfcheck, "_request", _unresolved)
+    clock = _Clock()
+    said: list[str] = []
+    selfcheck.wait_healthy(
+        URL, timeout=600, say=said.append, sleep=clock.sleep, clock=clock, dns_grace=100
+    )
+    notes = [line for line in said if "still waiting after" in line]
+    assert notes[0].startswith("  still waiting after 0m30s") and len(notes) >= 2
+    assert "no public DNS record yet" in notes[0]
+    assert "Ctrl-C" in said[0]  # it tells the person they can stop waiting
+
+
+def test_a_real_failure_keeps_the_full_wait_and_names_the_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(selfcheck, "_request", _refused)
+    clock = _Clock()
+    said: list[str] = []
+    healthy, why = selfcheck.wait_healthy(
+        URL, timeout=600, say=said.append, sleep=clock.sleep, clock=clock, dns_grace=240
+    )
+    assert not healthy and "refused" in why and clock.now >= 600  # grace applies to DNS only
+
+
+def test_ctrl_c_while_waiting_stops_the_wait_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    def interrupted(*_a: Any, **_k: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt
+        return _unresolved()
+
+    monkeypatch.setattr(selfcheck, "_request", interrupted)
+    clock = _Clock()
+    said: list[str] = []
+    healthy, why = selfcheck.wait_healthy(
+        URL, timeout=600, say=said.append, sleep=clock.sleep, clock=clock
+    )
+    assert not healthy and why.startswith(NAME_PENDING)  # the install can then be kept
+    assert any("stopped waiting" in line for line in said)

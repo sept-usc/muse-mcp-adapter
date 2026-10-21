@@ -566,6 +566,58 @@ def test_up_keeps_a_working_install_whose_new_name_has_not_reached_dns_yet(
     assert "address_pending" not in Deployment.load("muse").extra
 
 
+def _interrupted_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str
+) -> tuple[int, "_FakeProvider"]:
+    monkeypatch.setenv("MUSE_VM_HOME", str(tmp_path / "state"))
+
+    def interrupted(*_a: Any, **_k: Any) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(selfcheck, "run", interrupted)
+    vm = ContainerTarget(tmp_path / "vm")
+    holder: dict[str, _FakeProvider] = {}
+
+    def make(dep: Deployment, runner: Any, say: Any, opts: Any) -> _FakeProvider:
+        holder["p"] = _FakeProvider(dep, vm)
+        return holder["p"]
+
+    monkeypatch.setattr(cli, "provider_for", make)
+    monkeypatch.setattr(ingress, "interactive_login", _no_login)
+    monkeypatch.setattr(ingress, "hostname_after_start", _returning("adapter.tail1.ts.net"))
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _q="": answer)
+    return cli.main(_up_args()), holder["p"]
+
+
+def test_ctrl_c_asks_before_throwing_away_the_install_and_n_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, provider = _interrupted_up(tmp_path, monkeypatch, "n")
+    shown = capsys.readouterr().out
+    assert code == 130 and provider.torn_down is False
+    assert "Kept." in shown and "muse-vm down --name muse" in shown
+    assert Deployment.load("muse").status == "failed"  # the record stays so it can be removed
+
+
+def test_ctrl_c_followed_by_enter_rolls_everything_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, provider = _interrupted_up(tmp_path, monkeypatch, "")
+    assert code == 130 and provider.torn_down is True
+    assert "Rolled back" in capsys.readouterr().out
+    assert Deployment.all() == []
+
+
+def test_without_a_terminal_an_interrupt_rolls_back_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, _provider = _interrupted_up(tmp_path, monkeypatch, "n")
+    assert code == 130
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    assert cli._keep_after_interrupt("muse") is False  # pyright: ignore[reportPrivateUsage]
+
+
 def test_up_keeps_a_failed_deployment_when_asked_to_for_debugging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -199,28 +199,67 @@ def _request(
         )
 
 
+# How long a brand-new public name may stay out of public DNS before setup carries on. The record
+# is published by Tailscale, not by us, and was seen to take from a minute to over ten minutes.
+DNS_GRACE = 240.0
+
+
+def _elapsed(seconds: float) -> str:
+    return f"{int(seconds // 60)}m{int(seconds % 60):02d}s"
+
+
 def wait_healthy(
     base_url: str,
     timeout: float = 300,
     say: Callable[[str], None] = print,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    dns_grace: float = DNS_GRACE,
 ) -> tuple[bool, str]:
-    """Wait for https://host/health: a certificate or a tunnel can take minutes to be ready."""
-    deadline = time.monotonic() + timeout
-    last, said, unresolved = "", False, False
-    while time.monotonic() < deadline:
-        try:
-            status, _, body = _request("GET", base_url + "/health", timeout=10)
-            if status == 200 and '"ok"' in body:
-                return True, ""
-            last, unresolved = f"HTTP {status}", False
-        except (OSError, ValueError) as error:  # DNS not ready, TLS not ready, connection refused
-            last = f"{type(error).__name__}: {error}"
-            unresolved = isinstance(getattr(error, "reason", error), socket.gaierror)
-        if not said:
-            say(f"  waiting for {base_url}/health (certificate or tunnel)…")
-            said = True
-        sleep(5)
+    """Wait for https://host/health: a certificate or a tunnel can take minutes to be ready.
+
+    It says what it is waiting for and how long it has been, gives up waiting for a name that
+    still has no DNS record after `dns_grace` (that is Tailscale's side, so the caller can carry
+    on and check again later), and treats Ctrl-C as "stop waiting", not as "undo everything".
+    """
+    started = clock()
+    deadline = started + timeout
+    last, unresolved = "", False
+    unresolved_since: float | None = None
+    next_note = 30.0
+    say(
+        f"  waiting for {base_url}/health: a new public name can take a few minutes "
+        "to appear (Ctrl-C stops waiting and keeps the install)…"
+    )
+    try:
+        while clock() < deadline:
+            try:
+                status, _, body = _request("GET", base_url + "/health", timeout=10)
+                if status == 200 and '"ok"' in body:
+                    return True, ""
+                last, unresolved = f"HTTP {status}", False
+            except (OSError, ValueError) as error:  # DNS or TLS not ready, connection refused
+                last = f"{type(error).__name__}: {error}"
+                unresolved = isinstance(getattr(error, "reason", error), socket.gaierror)
+            now = clock()
+            unresolved_since = (unresolved_since or now) if unresolved else None
+            if unresolved_since is not None and now - unresolved_since >= dns_grace:
+                say(
+                    f"  the name still has no public DNS record after {_elapsed(now - started)}; "
+                    "that is published by Tailscale, so setup carries on without it"
+                )
+                break
+            if now - started >= next_note:
+                reason = (
+                    "the name has no public DNS record yet (Tailscale publishes it)"
+                    if unresolved
+                    else last
+                )
+                say(f"  still waiting after {_elapsed(now - started)}: {reason}")
+                next_note += 30.0
+            sleep(5)
+    except KeyboardInterrupt:
+        say("\n  stopped waiting")
     return False, f"{NAME_PENDING}: {last}" if unresolved else last
 
 

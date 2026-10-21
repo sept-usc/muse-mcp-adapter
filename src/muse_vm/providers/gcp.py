@@ -121,15 +121,7 @@ class GcpProvider(Provider):
                 )
             self.say("  enabling compute.googleapis.com…")
             self._g("services", "enable", "compute.googleapis.com")
-        for kind, args in (
-            ("instance", ["compute", "instances", "describe", self.instance, f"--zone={dep.zone}"]),
-            ("network", ["compute", "networks", "describe", self.instance]),
-        ):
-            if self._g(*args, "--format=value(name)", check=False).ok:
-                raise SystemExit(
-                    f"A {kind} named {self.instance} already exists in {dep.project}. "
-                    "Choose another --name or remove it."
-                )
+        self._deal_with_existing_resources()
         machine = dep.extra["machine_type"]
         cost = MONTHLY_USD.get(machine)
         extras = " + about $1 for NAT"
@@ -147,6 +139,67 @@ class GcpProvider(Provider):
                 "yes",
             ):
                 raise SystemExit("Aborted.")
+
+    def find_leftovers(self) -> list[dict[str, Any]]:
+        """What an earlier run of this deployment name left in the project, if it is ours.
+
+        Ours means it carries muse-vm's own marker (`mma-deployment=<name>` on the network's
+        description or the VM's labels). Anything else is someone else's and is never touched.
+        """
+        dep, name = self.dep, self.instance
+        zone, region = dep.zone, self.region
+        marker = f"mma-deployment={dep.name}"
+        vm = self._g(
+            "compute", "instances", "describe", name, f"--zone={zone}",
+            "--format=value(labels.mma-deployment)", check=False,
+        )  # fmt: skip
+        net = self._g(
+            "compute", "networks", "describe", name, "--format=value(description)", check=False
+        )
+        has_vm = vm.ok
+        has_net = net.ok
+        if not (has_vm or has_net):
+            return []
+        ours = (has_vm and vm.stdout.strip() == dep.name) or (has_net and marker in net.stdout)
+        if not ours:
+            raise SystemExit(
+                f"{'A VM' if has_vm else 'A network'} named {name} already exists in "
+                f"{dep.project} and was not created by muse-vm for this name. Choose another "
+                "--name, or remove it yourself."
+            )
+        found: list[dict[str, Any]] = []
+        if has_vm:
+            found.append({"kind": "instance", "name": name, "zone": zone})
+        regional = {"region": region}
+        probes: list[tuple[str, str, list[str], dict[str, str]]] = [
+            ("snapshot-schedule", name, ["resource-policies", "describe", name], regional),
+            ("router", name, ["routers", "describe", name], regional),
+            ("firewall", f"{name}-iap-ssh", ["firewall-rules", "describe", f"{name}-iap-ssh"], {}),
+            ("subnet", name, ["networks", "subnets", "describe", name], regional),
+        ]
+        for kind, found_name, command, where in probes:
+            scope = [f"--region={region}"] if where else []
+            if self._g("compute", *command, *scope, "--format=value(name)", check=False).ok:
+                found.append({"kind": kind, "name": found_name, **where})
+        if has_net:
+            found.append({"kind": "network", "name": name})
+        return found
+
+    def _deal_with_existing_resources(self) -> None:
+        leftovers = self.find_leftovers()
+        if not leftovers:
+            return
+        listed = ", ".join(f"{item['kind']} {item['name']}" for item in leftovers)
+        if not self.opts.get("replace_leftovers"):
+            raise SystemExit(
+                f"An earlier run named {self.dep.name!r} left resources in {self.dep.project}: "
+                f"{listed}. Remove them and start fresh by running again with "
+                "--replace-leftovers (`muse-vm setup` asks you instead)."
+            )
+        self.say(f"  removing what an earlier run left behind: {listed}…")
+        self.dep.resources = leftovers
+        self._remove_resources(keep_data=False)
+        self.dep.resources = []
 
     # ---- provisioning ------------------------------------------------------------------------
     def provision(self) -> Target:
@@ -431,9 +484,12 @@ class GcpProvider(Provider):
 
     # ---- removing it -------------------------------------------------------------------------
     def teardown(self, keep_data: bool = False) -> None:
-        dep = self.dep
-        if any(item["kind"] == "instance" for item in dep.resources):
+        if any(item["kind"] == "instance" for item in self.dep.resources):
             self.leave_tailnet()
+        self._remove_resources(keep_data)
+
+    def _remove_resources(self, keep_data: bool) -> None:
+        dep = self.dep
         ordered = sorted(
             dep.resources,
             key=lambda item: (

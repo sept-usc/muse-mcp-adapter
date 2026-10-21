@@ -14,13 +14,20 @@ ACTIONLINT_IMAGE="rhysd/actionlint:1.7.7"
 TRIVY_IMAGE="aquasec/trivy:0.58.1"
 quick=0; [ "${1:-}" = "--quick" ] && quick=1
 
+# A git hook gives every child process the repository being committed (GIT_DIR and friends).
+# The tests must not see it: they create their own throwaway repositories, and with an absolute
+# GIT_DIR (a worktree) those operations landed on the real one and committed to it.
+clean_git=(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY
+  -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_PREFIX -u GIT_NAMESPACE
+  -u GIT_QUARANTINE_PATH)
+
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 fail() { printf '\n\033[31mFAILED: %s\033[0m\n' "$1" >&2; exit 1; }
 
 if [ "$quick" = 1 ]; then
   step "lint";  .venv/bin/ruff check src tests || fail "ruff"
   step "types"; .venv/bin/pyright || fail "pyright"
-  step "tests"; .venv/bin/pytest -q || fail "pytest"
+  step "tests"; "${clean_git[@]}" .venv/bin/pytest -q || fail "pytest"
   echo; echo "quick checks passed (this is NOT the commit gate)"; exit 0
 fi
 
@@ -58,7 +65,7 @@ COPYFILE_DISABLE=1 tar --exclude='._*' --exclude=.DS_Store --exclude=.git --excl
 step "this machine's own virtualenv: the same checks (catches a newer Python's differences)"
 .venv/bin/ruff check src tests || fail "ruff (local)"
 .venv/bin/pyright || fail "pyright (local)"
-.venv/bin/pytest -q --cov || fail "pytest (local)"
+"${clean_git[@]}" .venv/bin/pytest -q --cov || fail "pytest (local)"
 
 step "the images build"
 docker build -q -t mma-adapter:verify . >/dev/null || fail "adapter image build"

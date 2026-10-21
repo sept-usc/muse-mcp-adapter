@@ -178,6 +178,7 @@ def cmd_up(args: argparse.Namespace) -> None:
         "snapshots": not args.no_snapshots,
         "yes": args.yes,
         "reuse_dir": args.force,
+        "replace_leftovers": getattr(args, "replace_leftovers", False),
     }
     runner = _runner(args)
     provider = provider_for(dep, runner, say, options)
@@ -261,7 +262,12 @@ def cmd_up(args: argparse.Namespace) -> None:
             )
             raise
         if isinstance(error, KeyboardInterrupt):
-            say("\nInterrupted. Rolling back…")
+            say("\nInterrupted.")
+            if _keep_after_interrupt(name):
+                dep.status = "failed"
+                dep.save()
+                raise SystemExit(130) from None
+            say("Rolling back…")
         else:
             say(f"\n✗ {error or type(error).__name__}\nRolling back…")
         try:
@@ -290,6 +296,26 @@ def cmd_up(args: argparse.Namespace) -> None:
         say(PENDING_NOTE.format(name=name))
     say("Next, connect an MCP server and link it to Muse:")
     say(f"  muse-vm add-server learn --endpoint https://learn.microsoft.com/api/mcp --name {name}")
+
+
+def _keep_after_interrupt(name: str) -> bool:
+    """After Ctrl-C, ask before throwing away what was built (it can take ten minutes).
+
+    Returns True to keep it. Without a terminal, or on a second Ctrl-C, it rolls back as before.
+    """
+    if not sys.stdin.isatty():
+        return False
+    try:
+        answer = input("  Remove everything created so far? [Y/n] ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return False
+    if answer in ("n", "no"):
+        say(
+            f"Kept. See it with `muse-vm status --name {name}`, check it with `muse-vm selfcheck "
+            f"--name {name}`, or remove it with `muse-vm down --name {name}`."
+        )
+        return True
+    return False
 
 
 def _refuse_unreviewed(source: bundle.BuildSource, allow: bool) -> None:
@@ -482,6 +508,8 @@ def _plan_from(args: argparse.Namespace) -> tuple[config.Plan, Path | None]:
         plan.local = bool(args.local)
     if args.yes:
         plan.yes = True
+    if getattr(args, "replace_leftovers", False):
+        plan.replace_leftovers = True
     if args.server:
         plan.servers = [config.ServerPlan(server=item) for item in args.server]
     return plan, path
@@ -824,6 +852,11 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
     up.add_argument(
         "--force", action="store_true", help="reuse an existing deployment directory on the host"
+    )
+    up.add_argument(
+        "--replace-leftovers",
+        action="store_true",
+        help="remove what an earlier run of this name left in the cloud project, then start fresh",
     )
     up.add_argument(
         "--keep-on-failure", action="store_true", help="do not roll back a failed deployment"
