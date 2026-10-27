@@ -129,3 +129,50 @@ def test_a_tool_with_no_slots_publishes_its_schema_unchanged() -> None:
     object.__setattr__(plain, "policy", cast(Mapping[str, object], freeze_json({})))
     unchanged: dict = _allow_sealed_values(schema, plain)  # type: ignore[assignment]
     assert unchanged["properties"]["to"]["format"] == "email"
+
+
+def test_text_rules_are_checked() -> None:
+    good = {
+        "text": [{"find": "email", "label": "contact.email", "rung": "handle", "keep": ["a@b.c"]}]
+    }
+    assert issues(good) == []
+    assert any(
+        "release.text find" in i
+        for i in issues({"text": [{"find": "name", "label": "a.b", "rung": "handle"}]})
+    )
+    assert any(
+        "release.text label" in i
+        for i in issues({"text": [{"find": "phone", "label": "phone", "rung": "handle"}]})
+    )
+    assert any(
+        "release.text rung" in i
+        for i in issues({"text": [{"find": "phone", "label": "a.b", "rung": "redact"}]})
+    )
+    assert any(
+        "release.text keep" in i
+        for i in issues(
+            {"text": [{"find": "phone", "label": "a.b", "rung": "handle", "keep": "x"}]}
+        )
+    )
+    assert any(
+        "unknown setting: extra" in i
+        for i in issues({"text": [{"find": "phone", "label": "a.b", "rung": "handle", "extra": 1}]})
+    )
+    assert any("release.text for" in i and "must be a list" in i for i in issues({"text": "email"}))
+    assert any("not an object" in i for i in issues({"text": ["email"]}))
+
+
+def test_a_regex_text_rule_needs_a_valid_short_pattern_and_only_it() -> None:
+    def rule(**extra):
+        return {"text": [{"find": "regex", "label": "a.b", "rung": "withhold", **extra}]}
+
+    assert issues(rule(pattern="(?m)^Notes: .*$")) == []
+    assert any("needs a pattern" in i for i in issues(rule()))
+    assert any("not valid" in i for i in issues(rule(pattern="(")))
+    assert any("over 200" in i for i in issues(rule(pattern="a" * 201)))
+    assert any(
+        "only goes with find: regex" in i
+        for i in issues(
+            {"text": [{"find": "email", "label": "a.b", "rung": "handle", "pattern": "x"}]}
+        )
+    )

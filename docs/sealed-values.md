@@ -77,8 +77,38 @@ Add a `release` block to a tool's policy (see the [policy reference](usage.md#2-
 | `fields` | A list of `{path, label, rung}`. `path` is `$` followed by `.name` and `[*]` steps. `label` names what the value is (`contact.email`, two or more lowercase words joined by dots). |
 | `slots` | For arguments of this tool, the labels whose handles may be filled in there. A nested argument uses a dotted name (`meta.who`). |
 | `patterns` | What `redact` blanks out: any of `card` (checked by the card number checksum), `ssn`, `iban`. Default: all three. |
+| `text` | Rules for servers that answer in prose rather than fields. See the next section. |
 
 The same value can be shown fully by one tool and sealed by another. A lookup of one person may show a phone number in full, while a bulk export of everyone's seals it. That is how you keep a convenient answer without letting one call hand over the whole book.
+
+## Servers that answer in prose
+
+Many servers return one block of formatted text instead of fields: a contact card as lines, a message as headers and a body. There is no path to point a field rule at. A `text` rule finds the value inside the text instead:
+
+```json
+{
+  "primitiveKey": "tool:get_contact",
+  "allowed": true,
+  "publicOperationId": "get_contact",
+  "classification": "read",
+  "maxResultBytes": 262144,
+  "release": {
+    "text": [
+      {"find": "email", "label": "contact.email", "rung": "handle", "keep": ["me@example.com"]},
+      {"find": "phone", "label": "contact.phone", "rung": "handle"},
+      {"find": "regex", "label": "contact.private", "rung": "withhold",
+       "pattern": "(?m)^(?:Notes|Address|Birthday): .*$"}
+    ]
+  }
+}
+```
+
+* `find` is `email`, `phone`, or `regex` with your own `pattern` (up to 200 characters), such as a `Notes:` line.
+* `rung` is `handle` or `withhold`. A withheld match becomes `[withheld]`.
+* `keep` lists values that stay readable whatever the rule, such as your own address.
+* The rule applies to every string in the result, structured or plain text, and to every sender, recipient and body in it. The same address gets the same handle everywhere, so a sender shown in a header can be replied to by its handle in a `to` slot.
+
+A text rule finds what is shaped like an address or a number, or what your pattern matches. It cannot know that a sentence names a diagnosis. For that, keep the sensitive field somewhere a rule can reach, or withhold the whole line it sits on.
 
 ## Check that your rules match
 
@@ -102,6 +132,7 @@ muse-mcp-adapter --database adapter.db verify-ledger
 ## What it does not do
 
 * **It governs only what passes through the adapter.** Data the agent reaches some other way (a built-in connector, a browser, what you type in the chat, its own memory) is outside it.
-* **Free text is only partly covered.** Card, national-ID and bank-account numbers are found by pattern. Names, addresses and health details written into a message body are not, so treat third-party text as untrusted and keep the sensitive fields in structured results where a rule can reach them.
+* **Free text is only partly covered.** Card, national-ID and bank-account numbers are found by pattern, and `text` rules find addresses, phone numbers and whatever your own patterns match. Names, and health details written into a message body or a calendar title, are not found, so treat third-party text as untrusted and keep the sensitive fields where a rule can reach them.
+* **A sealed address in a message body can still be sent to.** Sealing the addresses in an incoming message does not stop an agent from using one as a recipient; the handle works in a `to` slot. What decides whether that message goes is [owner approval](owner-approval.md).
 * **A `full` field is gone the moment it is read.** Use it only for what the agent needs to answer you.
 * **It does not by itself stop a message from being sent.** An agent can still send what it knows to someone. Sealing means what it knows holds less; owner approval decides whether the message goes.

@@ -2,7 +2,7 @@
 
 The lab answers one question with evidence: **what changes when a personal agent reaches the owner's data through the adapter instead of straight to the server?** It plays the same scripted task, on the same synthetic data, on each path, and compares what really happened on the server.
 
-It lives in `src/trustlab` and is a development tool. It is not part of the installed `muse-vm` package and nothing in it touches real accounts.
+It lives in `src/trustlab` and is a development tool. It is not part of the installed `muse-vm` package. The lab itself never touches real accounts; the opt-in [live mode](#against-a-real-account) below does, and only one that you name.
 
 ## Running it
 
@@ -64,6 +64,23 @@ What the runs show today:
 * **A hidden held action needs the email.** When the agent hides it, nothing is sent. With the adapter's own email the owner still learns of it and declines; in `adapter-owner-silent` they never do.
 * **Sealing changes what there is to steal.** In `adapter-sealed` the hidden note still gets a message to the attacker, but with no contact details in it: the agent only ever held handles, and its attempt to paste them into the body was refused. Holding the action as well (`adapter-full`) stops the message too. In `overshare`, the agent that pastes a whole contact card is refused, retries with just the phone number the owner asked for, and sends no health note and no address.
 * **The owner's reply still works.** In the sealed arms the agent replies to Dana by naming her handle; the real address is filled in by the adapter, the approval page shows the real address, and nothing about her address, notes or birthday ever reached the agent.
+
+## Against a real account
+
+`python -m trustlab.live` runs the same scripted agents against a real mail, calendar and contacts connector (a Google Workspace MCP server) signed in to a **throwaway account** that holds only the synthetic household, once straight to the connector and once through the adapter with your policy. What happened is judged from the account itself: its Sent folder says what really left, whatever the agent reported.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m trustlab.live check --account <throwaway address>
+PYTHONPATH=src .venv/bin/python -m trustlab.live run --account <throwaway address> --allow-sends
+```
+
+It is built to be hard to point at the wrong thing:
+
+* `--account` is required, and every run first checks that the account holds the household. Anything else is refused.
+* Sending needs `--allow-sends`, and a guard refuses any send whose recipient is not on a reserved test domain. The injected-instruction scenario sends to an address that cannot exist.
+* The policy it applies (`sealing`, `owner_controls` in `live.py`) is written the way an owner would write it for this connector, using `text` rules ([sealed-values.md](sealed-values.md#servers-that-answer-in-prose)) because the connector answers in prose.
+
+`tests/lab/google_stub.py` is a stand-in that answers in the same formats, so the whole harness is tested without an account.
 
 ## What it does not show
 

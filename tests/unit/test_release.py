@@ -2,6 +2,7 @@
 """Sealing results and opening arguments: the policy applied to plain data."""
 
 import json
+import re
 
 import pytest
 
@@ -323,3 +324,101 @@ def test_a_value_the_adapter_filled_in_is_sealed_again_if_the_tool_repeats_it() 
     )
     assert body_of(sealed) == {"sent": True, "to": "[contact.email:abcdefg2]"}
     assert "dana@x.test" not in sealed.texts[0]
+
+
+# --- text rules: servers that answer in prose --------------------------------------------------
+
+PROSE = (
+    "From: Dana Whitfield <dana.whitfield@family.test>\n"
+    "To: owner@mail.test\n"
+    "Call me on +1 555 0101 or (555) 010-1234. Sent 2026-10-23T08:15:00Z, id 1a17e6b37b7b40cd."
+)
+
+
+def text_rules(*items: tuple[str, str, str], keep: tuple[str, ...] = ()) -> ReleasePolicy:
+    from muse_mcp_adapter.data_plane.release import TextRule
+
+    return ReleasePolicy(
+        text=tuple(
+            TextRule(find, label, rung, frozenset(k.lower() for k in keep))
+            for find, label, rung in items
+        )
+    )
+
+
+def test_text_rules_seal_emails_and_phones_in_prose_and_leave_the_rest() -> None:
+    policy = text_rules(("email", "contact.email", "handle"), ("phone", "contact.phone", "handle"))
+    sealed = seal(policy, {"result": PROSE}, [PROSE])
+    for text in (sealed.texts[0], body_of(sealed)["result"]):
+        assert "dana.whitfield@family.test" not in text and "owner@mail.test" not in text
+        assert "555 0101" not in text and "010-1234" not in text
+        assert "Dana Whitfield <[contact.email:" in text
+        assert "2026-10-23T08:15:00Z" in text and "1a17e6b37b7b40cd" in text
+    assert sealed.sealed == 4
+
+
+def test_text_rules_keep_listed_values_readable_whatever_their_case() -> None:
+    policy = text_rules(("email", "contact.email", "handle"), keep=("Owner@Mail.test",))
+    sealed = seal(policy, {"result": PROSE}, [PROSE])
+    assert "To: owner@mail.test" in sealed.texts[0]
+    assert "dana.whitfield@family.test" not in sealed.texts[0]
+
+
+def test_a_withhold_text_rule_removes_the_value_without_a_handle() -> None:
+    vault = FakeVault()
+    sealed = seal(text_rules(("phone", "contact.phone", "withhold")), None, [PROSE], vault=vault)
+    assert "[withheld]" in sealed.texts[0] and "555" not in sealed.texts[0]
+    assert vault.items == {} and sealed.withheld == 2
+
+
+def test_the_same_address_gets_the_same_handle_in_every_place_it_appears() -> None:
+    policy = text_rules(("email", "contact.email", "handle"))
+    data = {"result": "a@x.test wrote to a@x.test", "other": ["a@x.test"]}
+    sealed = seal(policy, data, [json.dumps(data)])
+    tokens = set(re.findall(r"\[contact\.email:\w+\]", sealed.texts[0]))
+    assert len(tokens) == 1 and body_of(sealed)["other"][0] in tokens
+
+
+def test_text_rules_cover_structured_text_with_the_ledger_never_holding_the_value() -> None:
+    ledger = FakeLedger()
+    policy = text_rules(("email", "contact.email", "handle"))
+    seal(policy, {"result": PROSE}, [PROSE], ledger=ledger)
+    assert ledger.rows and all("dana.whitfield" not in " ".join(row) for row in ledger.rows)
+    assert all(kind == "sealed" for kind, _, _ in ledger.rows)
+
+
+def test_a_sealed_address_from_prose_can_be_filled_into_an_allowed_slot() -> None:
+    vault = FakeVault()
+    policy = text_rules(("email", "contact.email", "handle"))
+    sealed = seal(policy, None, ["From: Dana <dana@x.test>"], vault=vault)
+    token = sealed.texts[0].split("<")[1].rstrip(">")
+    opened = open_arguments(
+        ReleasePolicy(slots={"to": ("contact.email",)}),
+        {"to": token, "body": "hello"},
+        vault=vault, ledger=None, connection_id="c1", operation="op", now=NOW,
+    )  # fmt: skip
+    assert opened == {"to": "dana@x.test", "body": "hello"}
+
+
+def test_a_regex_rule_withholds_or_seals_whatever_the_owner_pattern_matches() -> None:
+    from muse_mcp_adapter.data_plane.release import TextRule
+
+    card = "Name: Dana\nEmail: d@x.test\nNotes: Allergic to penicillin\nAddress: 14 Alder Lane"
+    policy = ReleasePolicy(
+        text=(
+            TextRule("regex", "contact.notes", "withhold", pattern=r"(?m)^(?:Notes|Address): .*$"),
+        )
+    )
+    sealed = seal(policy, {"result": card}, [card])
+    for text in (sealed.texts[0], body_of(sealed)["result"]):
+        assert "Allergic" not in text and "Alder" not in text
+        assert "Name: Dana" in text and "Email: d@x.test" in text
+    assert sealed.withheld == 2
+
+
+def test_structured_text_is_logged_once_when_there_is_no_text_copy() -> None:
+    ledger = FakeLedger()
+    seal(
+        text_rules(("email", "contact.email", "handle")), {"result": "a@x.test"}, [], ledger=ledger
+    )
+    assert [kind for kind, _, _ in ledger.rows] == ["sealed"]

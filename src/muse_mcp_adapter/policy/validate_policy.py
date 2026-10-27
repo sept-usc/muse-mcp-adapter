@@ -236,7 +236,10 @@ def _owner_controls_issues(value: object, key: str, classification: object) -> l
     return issues
 
 
-_RELEASE_KEYS = frozenset({"fields", "slots", "patterns"})
+_RELEASE_KEYS = frozenset({"fields", "slots", "patterns", "text"})
+_TEXT_FINDS = ("email", "phone", "regex")
+_TEXT_PATTERN_MAX = 200
+_TEXT_RUNGS = ("handle", "withhold")
 _RELEASE_RUNGS = ("full", "handle", "withhold", "redact")
 _LABEL = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
 _FIELD_PATH = re.compile(r"^\$(?:\.[A-Za-z_][\w-]*|\[\*\])+$")
@@ -286,6 +289,47 @@ def _release_issues(value: object, key: str) -> list[str]:
         names = _string_list(patterns)
         if names is None or any(name not in _PATTERN_NAMES for name in names):
             issues.append(f"release.patterns for {key} must be from: {', '.join(_PATTERN_NAMES)}")
+    issues.extend(_text_rule_issues(release.get("text"), key))
+    return issues
+
+
+def _text_rule_issues(value: object, key: str) -> list[str]:
+    if value is None:
+        return []
+    if not _sequence(value):
+        return [f"release.text for {key} must be a list"]
+    issues: list[str] = []
+    for item in cast(list[object], value):
+        rule = _string_mapping(item)
+        if rule is None:
+            issues.append(f"release.text for {key} has an entry that is not an object")
+            continue
+        for name in sorted(set(rule) - {"find", "label", "rung", "keep", "pattern"}):
+            issues.append(f"release.text for {key} has an unknown setting: {name}")
+        if rule.get("find") not in _TEXT_FINDS:
+            issues.append(f"release.text find for {key} must be one of {', '.join(_TEXT_FINDS)}")
+        label = rule.get("label")
+        if not isinstance(label, str) or not _LABEL.fullmatch(label):
+            issues.append(f"release.text label {label!r} for {key} must look like a.b")
+        if rule.get("rung") not in _TEXT_RUNGS:
+            issues.append(f"release.text rung for {key} must be one of {', '.join(_TEXT_RUNGS)}")
+        if "keep" in rule and _string_list(rule["keep"]) is None:
+            issues.append(f"release.text keep for {key} must be a list of strings")
+        pattern = rule.get("pattern")
+        if rule.get("find") == "regex":
+            if not isinstance(pattern, str) or not pattern:
+                issues.append(f"release.text regex for {key} needs a pattern")
+            elif len(pattern) > _TEXT_PATTERN_MAX:
+                issues.append(
+                    f"release.text pattern for {key} is over {_TEXT_PATTERN_MAX} characters"
+                )
+            else:
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    issues.append(f"release.text pattern for {key} is not valid: {error}")
+        elif pattern is not None:
+            issues.append(f"release.text pattern for {key} only goes with find: regex")
     return issues
 
 

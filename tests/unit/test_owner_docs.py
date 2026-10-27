@@ -47,7 +47,11 @@ def test_the_sealed_values_examples_pass_the_publishing_checks() -> None:
     text = SEALED.read_text(encoding="utf-8")
     blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
     policies = [json.loads(block) for block in blocks]
-    assert [p["publicOperationId"] for p in policies] == ["contacts_search", "mail_send"]
+    assert [p["publicOperationId"] for p in policies] == [
+        "contacts_search",
+        "mail_send",
+        "get_contact",
+    ]
     for policy in policies:
         name = policy["primitiveKey"].split(":", 1)[1]
         primitive = {

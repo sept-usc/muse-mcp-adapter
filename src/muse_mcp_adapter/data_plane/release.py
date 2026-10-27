@@ -13,6 +13,12 @@ A tool's policy may carry a ``release`` block:
     other place is refused: a sealed email address can be the ``to`` of a message and nothing else.
 ``patterns``
     The patterns used by ``redact``, and applied to every text block of the result.
+``text``
+    For servers that answer in prose rather than fields: find email addresses (``email``) or phone
+    numbers (``phone``), or whatever the owner's own ``regex`` (a ``pattern`` of up to 200
+    characters, such as a ``Notes:`` line) matches anywhere in the result's text, and give each a
+    label and a rung of ``handle`` or ``withhold``. ``keep`` lists values that stay readable, such
+    as the owner's own address. The rule covers every string in the result, structured or not.
 
 The adapter has no model and does not decide what is sensitive; the owner's policy does, field by
 field. What it adds is that the rule is enforced on the way out and on the way back in, where the
@@ -25,6 +31,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import Any, Protocol, cast
 
 from ..catalog.canonical import freeze_json, thaw_json
@@ -42,6 +49,13 @@ _STEP = re.compile(r"\.([A-Za-z_][\w-]*)|\[\*\]")
 _CARD = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
 _SSN = re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])")
 _IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b")
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+_PHONE = re.compile(
+    r"(?<![\w+.])\+\d[\d .()-]{6,16}\d(?!\w)"
+    r"|(?<![\w.-])\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?![\w-])"
+)
+TEXT_FINDERS = {"email": _EMAIL, "phone": _PHONE}
+TEXT_RUNGS = ("handle", "withhold")
 _REMOVE = object()
 
 
@@ -53,14 +67,24 @@ class FieldRule:
 
 
 @dataclass(frozen=True, slots=True)
+class TextRule:
+    find: str
+    label: str
+    rung: str
+    keep: frozenset[str] = frozenset()
+    pattern: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ReleasePolicy:
     fields: tuple[FieldRule, ...] = ()
     slots: Mapping[str, tuple[str, ...]] = field(default_factory=dict[str, tuple[str, ...]])
     patterns: tuple[str, ...] = ()
+    text: tuple[TextRule, ...] = ()
 
     @property
     def active(self) -> bool:
-        return bool(self.fields or self.slots or self.patterns)
+        return bool(self.fields or self.slots or self.patterns or self.text)
 
 
 class Vault(Protocol):
@@ -98,12 +122,29 @@ def release_of(primitive: PublishedPrimitive) -> ReleasePolicy:
         else {}
     )
     patterns = data.get("patterns")
+    text: list[TextRule] = []
+    for item in cast(list[object], data.get("text") or []):
+        if isinstance(item, Mapping):
+            rule = cast(Mapping[str, object], item)
+            keep = rule.get("keep")
+            text.append(
+                TextRule(
+                    str(rule["find"]),
+                    str(rule["label"]),
+                    str(rule["rung"]),
+                    frozenset(str(v).lower() for v in cast(list[object], keep))
+                    if isinstance(keep, list)
+                    else frozenset(),
+                    str(rule.get("pattern") or ""),
+                )
+            )
     return ReleasePolicy(
         fields=tuple(fields),
         slots=slots,
         patterns=tuple(str(p) for p in cast(list[object], patterns))
         if isinstance(patterns, list)
         else (),
+        text=tuple(text),
     )
 
 
@@ -177,6 +218,14 @@ def seal_result(
             replacements[value] = redacted
         return redacted
 
+    def scrub(text: str, record: Any = note) -> str:
+        for rule in policy.text:
+            text = _apply_text_rule(rule, text, vault, connection_id, now, record)
+        return text
+
+    def quiet(kind: str, label: str, detail: str) -> None:
+        """The structured copy of a result is sealed too, but its text copy is the one logged."""
+
     if rewritten is not None:
         for rule in policy.fields:
             matched = [0]
@@ -195,11 +244,18 @@ def seal_result(
                 )  # fmt: skip
         if echoes:
             rewritten = _reseal(rewritten, echoes, note)
+        if policy.text:
+            record = quiet if texts else note
+            rewritten = _map_strings(
+                rewritten, lambda value: _clean(scrub(value, record), policy, record)
+            )
 
     new_texts: list[str] = []
     for text in texts:
         new_texts.append(
-            _rewrite_text(text, original, rewritten, replacements, policy, note, echoes or {})
+            _rewrite_text(
+                text, original, rewritten, replacements, policy, note, echoes or {}, scrub
+            )
         )
     return Sealed(rewritten, new_texts, counts["sealed"], counts["withheld"], counts["redacted"])
 
@@ -216,6 +272,52 @@ def _reseal(node: Any, echoes: Mapping[str, str], note: Any) -> Any:
         return [_reseal(item, echoes, note) for item in cast(list[Any], node)]
     if isinstance(node, dict):
         return {k: _reseal(v, echoes, note) for k, v in cast(dict[str, Any], node).items()}
+    return node
+
+
+def _apply_text_rule(
+    rule: TextRule,
+    text: str,
+    vault: Vault,
+    connection_id: str,
+    now: str,
+    note: Any,
+) -> str:
+    finder = TEXT_FINDERS[rule.find] if rule.find != "regex" else _compiled(rule.pattern)
+
+    def swap(match: re.Match[str]) -> str:
+        value = match.group(0)
+        if value.lower() in rule.keep:
+            return value
+        if rule.rung == "withhold":
+            note("withheld", rule.label, "text removed")
+            return "[withheld]"
+        token = vault.handle_for(connection_id, rule.label, value, now)
+        note("sealed", rule.label, token)
+        return token
+
+    return finder.sub(swap, text)
+
+
+@lru_cache(maxsize=64)
+def _compiled(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern)
+
+
+def _clean(text: str, policy: ReleasePolicy, note: Any) -> str:
+    cleaned, hits = redact(text, policy.patterns or PATTERN_NAMES)
+    for name in hits:
+        note("redacted", f"pattern.{name}", name)
+    return cleaned
+
+
+def _map_strings(node: Any, change: Callable[[str], str]) -> Any:
+    if isinstance(node, str):
+        return change(node)
+    if isinstance(node, list):
+        return [_map_strings(item, change) for item in cast(list[Any], node)]
+    if isinstance(node, dict):
+        return {k: _map_strings(v, change) for k, v in cast(dict[str, Any], node).items()}
     return node
 
 
@@ -252,6 +354,7 @@ def _rewrite_text(
     policy: ReleasePolicy,
     note: Any,
     echoes: Mapping[str, str],
+    scrub: Callable[[str], str] = lambda text: text,
 ) -> str:
     if original is not None:
         try:
@@ -265,10 +368,7 @@ def _rewrite_text(
     for value in sorted(echoes, key=len, reverse=True):
         if len(value) >= MIN_SUBSTITUTION_LENGTH:
             text = text.replace(value, echoes[value])
-    cleaned, hits = redact(text, policy.patterns or PATTERN_NAMES)
-    for name in hits:
-        note("redacted", f"pattern.{name}", name)
-    return cleaned
+    return _clean(scrub(text), policy, note)
 
 
 def redact(text: str, patterns: Sequence[str]) -> tuple[str, list[str]]:
