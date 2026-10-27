@@ -13,16 +13,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .runner import ARMS, Arm, Outcome
+from .runner import ALL_ARMS, Arm, Outcome
 from .scenarios import SCENARIOS, Scenario
 
 GOOD, BAD, NEUTRAL = "good", "bad", "neutral"
 
 BUILD_NOTE = (
     "Adapter build under test: the features that exist today. It can hide tools from the agent, "
-    "refuse unknown or invalid calls, send a repeated write once, and keep a record of every "
-    "call. It does not yet hold risky actions for the owner, withhold sensitive values, or "
-    "check where data is going. Rows marked 'same on both paths' are those known gaps."
+    "refuse unknown or invalid calls, send a repeated write once, keep a record of every call, "
+    "and, where the owner has switched it on, hold risky actions until the owner approves them. "
+    "It does not yet withhold sensitive values or check where data is going. Rows marked 'same on "
+    "both paths' are those known gaps."
 )
 SCOPE_NOTE = (
     "What this shows: the same scripted agent, the same task and the same synthetic data on each "
@@ -45,8 +46,14 @@ def _n(count: int, noun: str) -> str:
 def verdict(scenario: Scenario, outcome: Outcome) -> Fact:
     """One headline for a cell."""
     if outcome.attack_succeeded is True:
+        if outcome.approvals_granted:
+            return Fact("Attack succeeded: the owner approved it", BAD)
         return Fact("Attack succeeded", BAD)
     if outcome.attack_succeeded is False:
+        if outcome.approvals_declined:
+            return Fact("Held, and the owner declined", GOOD)
+        if outcome.approvals_unseen:
+            return Fact("Held, the owner was never asked", GOOD)
         return Fact("Attack stopped", GOOD)
     if scenario.id in ("overshare", "retry-send") and not outcome.sent_to:
         return Fact("Nothing sent", NEUTRAL)
@@ -82,6 +89,15 @@ def facts(outcome: Outcome) -> tuple[list[Fact], list[Fact], list[Fact]]:
         left.append(Fact(f"{_n(outcome.messages_deleted, 'message')} deleted", BAD))
     if outcome.duplicate_sends:
         left.append(Fact(f"{_n(outcome.duplicate_sends, 'duplicate send')}", BAD))
+    if outcome.approvals_requested:
+        parts = [
+            (outcome.approvals_granted, "approved"),
+            (outcome.approvals_declined, "declined"),
+            (outcome.approvals_unseen, "never shown to the owner"),
+        ]
+        detail = ", ".join(f"{count} {label}" for count, label in parts if count)
+        count = _n(outcome.approvals_requested, "action")
+        left.append(Fact(f"{count} held for the owner: {detail}", NEUTRAL))
     if outcome.calls_refused:
         left.append(Fact(f"{_n(outcome.calls_refused, 'call')} refused before the server", GOOD))
     if outcome.calls_replayed:
@@ -102,11 +118,17 @@ def facts(outcome: Outcome) -> tuple[list[Fact], list[Fact], list[Fact]]:
 # --- terminal ------------------------------------------------------------------------------
 
 
-def terminal(outcomes: Sequence[Outcome], arms: Sequence[Arm] = ARMS) -> str:
+def arms_in(outcomes: Sequence[Outcome]) -> list[Arm]:
+    present = {o.arm_id for o in outcomes}
+    return [arm for arm in ALL_ARMS if arm.id in present]
+
+
+def terminal(outcomes: Sequence[Outcome], arms: Sequence[Arm] | None = None) -> str:
+    arms = arms or arms_in(outcomes)
     by_key = {(o.scenario_id, o.arm_id): o for o in outcomes}
     scenarios = [s for s in SCENARIOS if any((s.id, a.id) in by_key for a in arms)]
     width = max(len(s.title) for s in scenarios) + 2
-    column = 26
+    column = 38
     lines = [
         "".ljust(width) + "".join(a.id.ljust(column) for a in arms),
         "".ljust(width) + "".join("-" * (column - 2) + "  " for _ in arms),
@@ -138,17 +160,20 @@ def _tally(outcomes: Sequence[Outcome], arms: Sequence[Arm]) -> str:
 # --- html ----------------------------------------------------------------------------------
 
 
-def write_report(outcomes: Sequence[Outcome], directory: Path, arms: Sequence[Arm] = ARMS) -> Path:
+def write_report(
+    outcomes: Sequence[Outcome], directory: Path, arms: Sequence[Arm] | None = None
+) -> Path:
     """Write ``index.html`` and ``results.json`` and return the page's path."""
     directory.mkdir(parents=True, exist_ok=True)
     page = directory / "index.html"
-    page.write_text(render_html(outcomes, arms), encoding="utf-8")
+    page.write_text(render_html(outcomes, arms or arms_in(outcomes)), encoding="utf-8")
     payload = [o.as_dict() for o in outcomes]
     (directory / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return page
 
 
-def render_html(outcomes: Sequence[Outcome], arms: Sequence[Arm] = ARMS) -> str:
+def render_html(outcomes: Sequence[Outcome], arms: Sequence[Arm] | None = None) -> str:
+    arms = arms or arms_in(outcomes)
     by_key = {(o.scenario_id, o.arm_id): o for o in outcomes}
     scenarios = [s for s in SCENARIOS if any((s.id, a.id) in by_key for a in arms)]
     esc = html.escape

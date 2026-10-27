@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 import tempfile
 import time
-from collections.abc import Collection, Generator, Mapping
+from collections.abc import Callable, Collection, Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -27,6 +28,7 @@ from muse_mcp_adapter.application.control_plane_service import ControlPlaneServi
 from muse_mcp_adapter.application.policy_template import draft_policies
 from muse_mcp_adapter.application.serve import ServeConfig, build_application
 from muse_mcp_adapter.connections import ConnectionService
+from muse_mcp_adapter.persistence.owner_store import OwnerStore
 from muse_mcp_adapter.persistence.sqlite_repository import SqliteControlPlaneRepository
 from muse_mcp_adapter.transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
 from muse_mcp_adapter.transport.security import EndpointSecurityPolicy
@@ -113,7 +115,16 @@ class DirectPath:
 class AdapterPath:
     name = "adapter"
 
-    def __init__(self, base_url: str, token: str, operations: Mapping[str, Mapping[str, Any]]):
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        operations: Mapping[str, Mapping[str, Any]],
+        *,
+        origin: str = "",
+    ):
+        self.origin = origin
+        self.owner_log: list[dict[str, Any]] = []
         self._http = httpx.Client(base_url=base_url, timeout=60)
         self._headers = {"Authorization": f"Bearer {token}"}
         self._operations = dict(operations)
@@ -173,15 +184,27 @@ class AdapterPath:
         self._http.close()
 
 
+def _now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
 @contextmanager
 def adapter_in_front_of(
-    server_url: str, *, expose: Collection[str], directory: Path | None = None
+    server_url: str,
+    *,
+    expose: Collection[str],
+    overrides: Mapping[str, Mapping[str, Any]] | None = None,
+    owner_passcode: str | None = None,
+    clock: Callable[[], str] | None = None,
+    directory: Path | None = None,
 ) -> Generator[AdapterPath]:
     """Stand the adapter up in front of an MCP server and yield the connector path to it.
 
     The owner's choice is ``expose``: the tool names that are switched on. Everything else the
     server offers stays unpublished. Classification (read, write, sensitive write) is what the
-    adapter drafts on its own from the server's hints and tool names.
+    adapter drafts on its own from the server's hints and tool names. ``overrides`` adds policy
+    fields per tool (for example ``ownerControls``). With ``owner_passcode`` the adapter runs in
+    owner-approval mode: writes wait for the owner on the approval page.
     """
     with tempfile.TemporaryDirectory(prefix="trustlab-") as scratch:
         database = (directory or Path(scratch)) / "adapter.db"
@@ -203,8 +226,11 @@ def adapter_in_front_of(
             unknown = wanted - known
             if unknown:
                 raise ValueError(f"Cannot expose tools the server does not have: {sorted(unknown)}")
+            extra = overrides or {}
             published = [
-                dict(item, allowed=True) for item in policies if item["publicOperationId"] in wanted
+                {**item, **extra.get(str(item["publicOperationId"]), {}), "allowed": True}
+                for item in policies
+                if item["publicOperationId"] in wanted
             ]
             control.publish_catalog(
                 server_id=SERVER_ID, catalog_version="1.0.0", policies=published
@@ -221,7 +247,10 @@ def adapter_in_front_of(
                 allow_private_networks=True,
                 rate_limit=100_000,
             )
-            app = build_application(repository, config, {}, database=database)
+            if owner_passcode is not None:
+                config = replace(config, approval_mode="owner")
+                OwnerStore(repository).set_passcode(owner_passcode, _now())
+            app = build_application(repository, config, {}, database=database, clock=clock)
             with serve(app, port):
                 base = f"{config.public_url}/c/{link.record.slug}"
                 spec = httpx.get(f"{base}/openapi.json", timeout=30).json()
@@ -230,7 +259,7 @@ def adapter_in_front_of(
                     for path, item in spec["paths"].items()
                     if path.startswith("/operations/")
                 }
-                path = AdapterPath(base, link.token, operations)
+                path = AdapterPath(base, link.token, operations, origin=config.public_url)
                 try:
                     yield path
                 finally:

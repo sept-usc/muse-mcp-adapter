@@ -18,7 +18,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ..catalog.canonical import thaw_json
 from ..data_plane.serde import response_to_dict
 from ..domain.errors import (
+    ApprovalDeniedError,
     ApprovalRequiredError,
+    ArgumentNotAllowedError,
     AuthenticationError,
     AuthorizationError,
     ConflictError,
@@ -185,6 +187,10 @@ def create_http_app(
             payload["operationId"] = error.operation_id
         if isinstance(error, ApprovalRequiredError):
             payload["actionDigest"] = error.action_digest
+            if error.approval_url:
+                payload["approvalUrl"] = error.approval_url
+            if error.reasons:
+                payload["reasons"] = list(error.reasons)
         if isinstance(error, InputRequiredError):
             payload["schema"] = thaw_json(error.schema)
             payload["nextStep"] = (
@@ -366,6 +372,8 @@ def retry_guidance(error: Exception) -> RetryGuidance:
         return RetryGuidance(
             False, "The request is invalid. Fix the arguments before trying again."
         )
+    if isinstance(error, ApprovalDeniedError | ArgumentNotAllowedError):
+        return RetryGuidance(False, "The owner does not allow this. Do not repeat the call.")
     if isinstance(error, ApprovalRequiredError | InputRequiredError):
         return RetryGuidance(False, "More is needed from the user before this can run.")
     if isinstance(error, OperationNotFoundError | EntityNotFoundError):
@@ -379,7 +387,14 @@ def _status(error: Exception) -> int:
     """Map adapter errors to HTTP statuses a Muse connector can act on."""
     if isinstance(error, AuthenticationError | ReauthorizationRequiredError):
         return 401
-    if isinstance(error, AuthorizationError | ServerDisabledError | CredentialResolutionError):
+    if isinstance(
+        error,
+        AuthorizationError
+        | ServerDisabledError
+        | CredentialResolutionError
+        | ApprovalDeniedError
+        | ArgumentNotAllowedError,
+    ):
         return 403
     if isinstance(error, OperationNotFoundError | EntityNotFoundError):
         return 404

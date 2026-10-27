@@ -124,6 +124,48 @@ CREATE TABLE IF NOT EXISTS approval_consumptions (
     consumed_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS owner_secret (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    salt TEXT NOT NULL,
+    secret_hash TEXT NOT NULL,
+    set_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS owner_failures (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+    request_id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    connection_id TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    public_operation_id TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    arguments_json TEXT NOT NULL,
+    reasons_json TEXT NOT NULL,
+    recipients_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'used')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by TEXT,
+    used_at TEXT,
+    operation_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS approval_requests_by_digest
+    ON approval_requests(connection_id, content_digest, created_at);
+
+CREATE TABLE IF NOT EXISTS known_recipients (
+    connection_id TEXT NOT NULL,
+    value TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (connection_id, value)
+);
+
 CREATE TABLE IF NOT EXISTS admin_audit (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     occurred_at TEXT NOT NULL,

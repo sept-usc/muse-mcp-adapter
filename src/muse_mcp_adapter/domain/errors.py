@@ -49,10 +49,32 @@ class DownstreamContentError(DataPlaneError):
 class ApprovalRequiredError(DataPlaneError):
     code = "APPROVAL_REQUIRED"
 
-    def __init__(self, message: str, *, operation_id: str, action_digest: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation_id: str,
+        action_digest: str,
+        approval_url: str | None = None,
+        reasons: tuple[str, ...] = (),
+    ) -> None:
         self.operation_id = operation_id
         self.action_digest = action_digest
+        self.approval_url = approval_url
+        self.reasons = reasons
         super().__init__(message)
+
+
+class ApprovalDeniedError(DataPlaneError):
+    """The owner looked at the exact action and said no."""
+
+    code = "APPROVAL_DENIED"
+
+
+class ArgumentNotAllowedError(DataPlaneError):
+    """An argument is outside what the owner's policy allows for this operation."""
+
+    code = "ARGUMENT_NOT_ALLOWED"
 
 
 class IdempotencyConflictError(DataPlaneError):

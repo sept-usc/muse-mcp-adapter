@@ -9,6 +9,7 @@ from ..connections import ConnectionService
 from ..credentials.resolver import CredentialResolver
 from ..data_plane.approval import ApprovalVerifier
 from ..data_plane.mcp_client import McpReadClient
+from ..data_plane.owner_gate import OwnerGate
 from ..data_plane.read_service import ReadDataPlaneService
 from ..data_plane.tool_client import McpToolClient
 from ..data_plane.tool_service import ToolDataPlaneService
@@ -21,6 +22,7 @@ from ..operations.runtime_controls import (
     RequestConcurrencyLimiter,
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from .approval_web import ApprovalWeb
 from .http_app import WebAuthorization, create_http_app
 from .muse_oauth import MuseAuthorizationServer
 from .oauth_web import OAuthWebFlow
@@ -36,6 +38,8 @@ def build_http_application(
     public_url: str,
     clock: Callable[[], str],
     approval_verifier: ApprovalVerifier | None = None,
+    owner_gate: OwnerGate | None = None,
+    approval_web: ApprovalWeb | None = None,
     oauth_flow: OAuthWebFlow | None = None,
     rate_limit: int = 60,
     rate_window_seconds: float = 60,
@@ -56,6 +60,8 @@ def build_http_application(
         credential_resolver,
         mcp_client,  # type: ignore[arg-type]
         approval_verifier=approval_verifier,
+        owner_gate=owner_gate,
+        approval_link=approval_web.link if approval_web is not None else None,
         clock=clock,
         cancellation_registry=cancellations,
     )
@@ -89,4 +95,6 @@ def build_http_application(
     ]
     if oauth_flow is not None:
         web.append(oauth_flow)
+    if approval_web is not None:
+        web.append(approval_web)
     return create_http_app(runtime=runtime, web_authorization=web)

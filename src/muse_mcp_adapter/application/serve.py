@@ -22,12 +22,15 @@ from starlette.applications import Starlette
 from ..connections import ConnectionCredentialResolver
 from ..data_plane.approval import HmacApprovalVerifier
 from ..data_plane.mcp_client import McpReadClient
+from ..data_plane.owner_gate import OwnerGate
 from ..data_plane.tool_client import McpToolClient
 from ..domain.errors import InvalidStateError
+from ..persistence.owner_store import OwnerStore
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from ..transport.oauth import EncryptedFileOAuthStorageBackend
 from ..transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
 from ..transport.security import EndpointSecurityPolicy
+from .approval_web import ApprovalWeb
 from .bootstrap import build_http_application
 from .oauth_web import OAuthClientSeed, OAuthWebFlow, runtime_auth_factory
 
@@ -93,8 +96,8 @@ def load_serve_config(path: Path) -> ServeConfig:
         )
 
     mode = config.get("approvalMode", "muse")
-    if mode not in ("muse", "signed"):
-        raise InvalidStateError("approvalMode must be 'muse' or 'signed'")
+    if mode not in ("muse", "signed", "owner"):
+        raise InvalidStateError("approvalMode must be 'muse', 'signed' or 'owner'")
     approval_env = config.get("approvalSecretEnv")
     if mode == "signed" and not isinstance(approval_env, str):
         raise InvalidStateError("approvalMode 'signed' requires approvalSecretEnv")
@@ -209,6 +212,18 @@ def build_application(
         if config.approval_mode == "signed"
         else None
     )
+    owner_gate: OwnerGate | None = None
+    approval_web: ApprovalWeb | None = None
+    if config.approval_mode == "owner":
+        repository.initialize()
+        store = OwnerStore(repository)
+        if not store.passcode_is_set():
+            raise InvalidStateError(
+                "approvalMode 'owner' needs an approval passcode first. Set it with: "
+                "muse-mcp-adapter owner-passcode"
+            )
+        owner_gate = OwnerGate(repository, store)
+        approval_web = ApprovalWeb(store=store, clock=clock, public_url=config.public_url)
     artifact_root = config.artifact_root or Path(database).parent / "artifacts"
     artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     return build_http_application(
@@ -219,6 +234,8 @@ def build_application(
         public_url=config.public_url,
         clock=clock,
         approval_verifier=verifier,
+        owner_gate=owner_gate,
+        approval_web=approval_web,
         oauth_flow=flow,
         rate_limit=config.rate_limit,
         rate_window_seconds=config.rate_window_seconds,

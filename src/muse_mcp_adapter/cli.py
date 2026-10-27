@@ -1,4 +1,5 @@
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -24,6 +25,7 @@ from .data_plane.tool_service import ToolDataPlaneService
 from .discovery.client import ManifestDiscoveryClient
 from .domain.errors import (
     CatalogValidationError,
+    ConflictError,
     ControlPlaneError,
     DataPlaneError,
     EntityNotFoundError,
@@ -36,6 +38,7 @@ from .domain.models import (
     ResolvedCredential,
     ServerRegistration,
 )
+from .persistence.owner_store import OwnerStore
 from .persistence.sqlite_repository import SqliteControlPlaneRepository
 from .transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
 from .transport.security import EndpointSecurityPolicy
@@ -295,6 +298,9 @@ def _execute(
     if args.command == "reconcile":
         return _reconcile(args, repository)
 
+    if args.command in ("owner-passcode", "approvals", "approval-decide"):
+        return _owner(args, repository)
+
     raise AssertionError(f"Unhandled command {args.command}")
 
 
@@ -359,6 +365,45 @@ def _reconcile(args: argparse.Namespace, repository: SqliteControlPlaneRepositor
         args.operation_id, actor=args.actor, outcome=args.outcome, response=response
     )
     return {"operationId": record.operation_id, "status": record.status}
+
+
+def _owner(args: argparse.Namespace, repository: SqliteControlPlaneRepository) -> object:
+    """The owner's side of approvals, from the machine the adapter runs on."""
+    store = OwnerStore(repository)
+    now = ConnectionService(repository)._clock()  # pyright: ignore[reportPrivateUsage]
+    if args.command == "owner-passcode":
+        name = args.passcode_env
+        passcode = os.environ.get(name, "") if name else getpass.getpass("New approval passcode: ")
+        if not name and getpass.getpass("Repeat it: ") != passcode:
+            raise ControlPlaneError("The two passcodes did not match")
+        try:
+            store.set_passcode(passcode, now)
+        except ValueError as error:
+            raise ControlPlaneError(str(error)) from error
+        return {
+            "passcode": "set",
+            "note": "Enter it only on the approval page. Never tell the assistant.",
+        }
+    if args.command == "approvals":
+        return [
+            {
+                "requestId": item.request_id,
+                "status": item.status,
+                "operation": item.public_operation_id,
+                "reasons": list(item.reasons),
+                "arguments": item.arguments,
+                "createdAt": item.created_at,
+                "expiresAt": item.expires_at,
+            }
+            for item in store.list_requests(None if args.all else "pending")
+        ]
+    try:
+        decided = store.decide(args.request_id, approve=args.approve, by=args.actor, now=now)
+    except ConflictError as error:
+        raise ControlPlaneError(str(error)) from error
+    if args.approve and args.remember and decided.recipients:
+        store.remember_recipients(decided.connection_id, decided.recipients, now)
+    return {"requestId": decided.request_id, "status": decided.status, "by": args.actor}
 
 
 def _connector_url(public_url: str, record: ConnectionRecord) -> str:
@@ -495,6 +540,30 @@ def _parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--operation-id", required=True)
     reconcile.add_argument("--outcome", choices=("not_applied", "completed"), required=True)
     reconcile.add_argument("--response", help="JSON file with the result (for 'completed')")
+
+    passcode = commands.add_parser(
+        "owner-passcode",
+        help="Set the passcode that approves held actions (asked for, never shown)",
+    )
+    passcode.add_argument(
+        "--passcode-env", help="Read the passcode from this environment variable (for automation)"
+    )
+
+    approvals = commands.add_parser("approvals", help="List actions waiting for the owner")
+    approvals.add_argument("--all", action="store_true", help="Include decided and used ones")
+
+    decide = commands.add_parser(
+        "approval-decide", help="Approve or decline a held action from this machine"
+    )
+    decide.add_argument("--request-id", required=True)
+    choice = decide.add_mutually_exclusive_group(required=True)
+    choice.add_argument("--approve", action="store_true")
+    choice.add_argument("--decline", action="store_true")
+    decide.add_argument(
+        "--remember",
+        action="store_true",
+        help="With --approve: do not ask again for its recipients",
+    )
     return parser
 
 

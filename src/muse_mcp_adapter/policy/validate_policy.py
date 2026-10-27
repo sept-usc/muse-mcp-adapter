@@ -157,6 +157,8 @@ def validate_exposure_policy(
         if content_types is not None and not _unique_strings(content_types):
             issues.append(f"Tool policy for {key} has invalid allowedResultContentTypes")
 
+    issues.extend(_owner_controls_issues(policy.get("ownerControls"), key, classification))
+
     if primitive.get("type") == PrimitiveType.PROMPT:
         prompt = _string_mapping(policy.get("prompt"))
         roles = _string_list(prompt.get("allowedRoles")) if prompt is not None else None
@@ -179,6 +181,57 @@ def validate_exposure_policy(
         if prompt is not None:
             issues.extend(_argument_pattern_issues(prompt.get("argumentPatterns"), key))
 
+    return issues
+
+
+_OWNER_CONTROL_KEYS = frozenset(
+    {
+        "approval",
+        "recipients",
+        "knownRecipients",
+        "untrusted",
+        "untrustedWindowSeconds",
+        "arguments",
+    }
+)
+
+
+def _owner_controls_issues(value: object, key: str, classification: object) -> list[str]:
+    if value is None:
+        return []
+    controls = _string_mapping(value)
+    if controls is None:
+        return [f"ownerControls for {key} must be an object"]
+    issues: list[str] = []
+    for name in sorted(set(controls) - _OWNER_CONTROL_KEYS):
+        issues.append(f"ownerControls for {key} has an unknown setting: {name}")
+    approval = controls.get("approval")
+    if approval is not None and approval not in ("always", "risk", "never"):
+        issues.append(f"ownerControls.approval for {key} must be always, risk or never")
+    if approval == "never" and classification == MuseClassification.SENSITIVE_WRITE:
+        issues.append(f"{key} cannot cause damage that cannot be undone and also skip approval")
+    for name in ("recipients", "knownRecipients"):
+        if name in controls and not _unique_strings(controls[name]):
+            issues.append(f"ownerControls.{name} for {key} must be unique non-empty strings")
+    if "untrusted" in controls and not isinstance(controls["untrusted"], bool):
+        issues.append(f"ownerControls.untrusted for {key} must be true or false")
+    window = controls.get("untrustedWindowSeconds")
+    if window is not None and not _bounded_int(window, 86_400):
+        issues.append(f"ownerControls.untrustedWindowSeconds for {key} must be 1 to 86400")
+    arguments = controls.get("arguments")
+    if arguments is not None:
+        limits = _string_mapping(arguments)
+        if limits is None:
+            issues.append(f"ownerControls.arguments for {key} must be an object")
+        else:
+            for path, patterns in limits.items():
+                if not _unique_strings(patterns):
+                    issues.append(f"ownerControls.arguments.{path} for {key} must be patterns")
+                    continue
+                for pattern in cast(list[str], patterns):
+                    issues.extend(
+                        _regex_issues(pattern, f"ownerControls.arguments.{path} for {key}")
+                    )
     return issues
 
 

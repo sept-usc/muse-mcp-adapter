@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .report import terminal, write_report
-from .runner import ARMS, arms_by_id, run_all
+from .runner import ALL_ARMS, ARMS, arms_by_id, run_all
 from .scenarios import SCENARIOS
 
 
@@ -25,14 +25,14 @@ def main(argv: list[str] | None = None) -> int:
         for scenario in SCENARIOS:
             print(f"{scenario.id:20} {scenario.title}")
         print()
-        for arm in ARMS:
-            print(f"{arm.id:20} {arm.label}")
+        for arm in ALL_ARMS:
+            print(f"{arm.id:24} {arm.label}")
         return 0
 
     chosen = [s for s in SCENARIOS if not args.scenario or s.id in args.scenario]
     arms = arms_by_id(args.arm) if args.arm else list(ARMS)
     unknown = set(args.scenario or []) - {s.id for s in SCENARIOS}
-    unknown |= set(args.arm or []) - {a.id for a in ARMS}
+    unknown |= set(args.arm or []) - {a.id for a in ALL_ARMS}
     if unknown or not chosen or not arms:
         print(f"Nothing to run; unknown names: {sorted(unknown)}", file=sys.stderr)
         return 2

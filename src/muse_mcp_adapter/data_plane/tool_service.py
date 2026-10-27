@@ -12,6 +12,7 @@ from jsonschema.validators import validator_for
 from ..catalog.canonical import canonical_json, digest, freeze_json, thaw_json
 from ..credentials.resolver import CredentialResolver
 from ..domain.errors import (
+    ApprovalDeniedError,
     ApprovalRequiredError,
     ConflictError,
     CredentialResolutionError,
@@ -50,6 +51,7 @@ from .content import (
     normalize_block,
     too_large,
 )
+from .owner_gate import OwnerGate, check_arguments
 from .serde import response_from_dict, response_to_dict
 from .tool_client import (
     McpAuthRejected,
@@ -101,6 +103,8 @@ class ToolDataPlaneService:
         mcp_client: McpToolClient,
         *,
         approval_verifier: ApprovalVerifier | None = None,
+        owner_gate: OwnerGate | None = None,
+        approval_link: Callable[[str], str] | None = None,
         clock: Callable[[], str],
         operation_id_factory: Callable[[], str] | None = None,
         cancellation_registry: CancellationRegistry | None = None,
@@ -109,6 +113,8 @@ class ToolDataPlaneService:
         self._credential_resolver = credential_resolver
         self._mcp_client = mcp_client
         self._approval_verifier = approval_verifier
+        self._owner_gate = owner_gate
+        self._approval_link = approval_link
         self._clock = clock
         self._operation_id_factory = operation_id_factory or (lambda: str(uuid4()))
         self._cancellations = cancellation_registry or CancellationRegistry()
@@ -121,6 +127,7 @@ class ToolDataPlaneService:
             instance=request.arguments,
             label="Tool input",
         )
+        check_arguments(operation, request.arguments)
         if operation.classification != "read" and not request.idempotency_key:
             raise RequestValidationError("Write tools require an idempotency key")
 
@@ -351,6 +358,10 @@ class ToolDataPlaneService:
     ) -> str | None:
         if operation.classification == "read":
             return None
+        if self._owner_gate is not None:
+            return self._authorize_by_owner(
+                request, operation, operation_id, now, from_status=from_status
+            )
         if self._approval_verifier is None:
             # Muse asks its user before consequential actions and only then calls the write
             # operation, so the call itself is the confirmation. The request ID ties the
@@ -383,6 +394,64 @@ class ToolDataPlaneService:
                 updated_at=now,
             )
         raise ApprovalRequiredError(reason, operation_id=operation_id, action_digest=action_digest)
+
+    def _authorize_by_owner(
+        self,
+        request: DataPlaneRequest,
+        operation: PublishedPrimitive,
+        operation_id: str,
+        now: str,
+        *,
+        from_status: str,
+    ) -> str:
+        """Run a write only when the owner's gate lets it through; otherwise hold or refuse it."""
+        assert self._owner_gate is not None
+        content = _content_digest(request, definition_digest=operation.definition_digest)
+        decision = self._owner_gate.decide(
+            primitive=operation,
+            server_id=request.server_id,
+            connection_id=request.connection_id,
+            arguments=request.arguments,
+            content_digest=content,
+            operation_id=operation_id,
+            now=now,
+        )
+        if decision.outcome == "run":
+            assert decision.approval_id is not None
+            return decision.approval_id
+        if decision.outcome == "denied":
+            self._repository.transition_operation(
+                operation_id,
+                expected_statuses=(from_status,),
+                status=FAILED,
+                updated_at=now,
+                error_code=ApprovalDeniedError.code,
+                error_message="The owner declined this action",
+                retryable=False,
+            )
+            raise ApprovalDeniedError(
+                "The owner looked at this action and declined it. Do not try it again or try to "
+                "get around it: tell the user it was declined."
+            )
+        if from_status == PENDING:
+            self._repository.transition_operation(
+                operation_id,
+                expected_statuses=(PENDING,),
+                status=APPROVAL_REQUIRED,
+                updated_at=now,
+            )
+        url = (
+            self._approval_link(decision.token)
+            if decision.token is not None and self._approval_link is not None
+            else None
+        )
+        raise ApprovalRequiredError(
+            _owner_message(operation.public_operation_id, decision.reasons, url),
+            operation_id=operation_id,
+            action_digest=content,
+            approval_url=url,
+            reasons=decision.reasons,
+        )
 
     def _resume_existing(
         self,
@@ -791,6 +860,40 @@ def _action_digest(
             "idempotencyKey": request.idempotency_key,
             "arguments": request.arguments,
         }
+    )
+
+
+def _content_digest(request: DataPlaneRequest, *, definition_digest: str) -> str:
+    """What an owner's approval is bound to: this tool, this connection, these exact arguments.
+
+    The idempotency key is left out on purpose, so an agent that repeats the call with a new key
+    after approval is still the same action, and an approval is spent once either way.
+    """
+    return digest(
+        {
+            "serverId": request.server_id,
+            "definitionDigest": definition_digest,
+            "publicOperationId": request.public_operation_id,
+            "connectionId": request.connection_id,
+            "arguments": request.arguments,
+        }
+    )
+
+
+def _owner_message(operation: str, reasons: Sequence[str], url: str | None) -> str:
+    why = " ".join(f"{reason}." for reason in reasons)
+    if url is None:
+        return (
+            f"This action ({operation}) is waiting for the owner's approval. {why} Do not repeat "
+            "it yet: tell the user it is waiting, and call it again with exactly the same "
+            "arguments once they say they approved it."
+        )
+    return (
+        f"This action ({operation}) needs the owner's approval before it can run. {why} "
+        f"Tell the user to open this one-time link, check the action and approve it with "
+        f"their approval passcode: {url} . Never enter or ask for the passcode yourself. After "
+        "they say they approved it, call this operation again with exactly the same arguments. "
+        "If they decline, do not try again."
     )
 
 

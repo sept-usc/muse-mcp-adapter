@@ -90,6 +90,7 @@ Then, in a new Muse chat, say: *"Create a connector called GitHub from the API s
 | Controls and guarantees | [Security model](docs/security.md) and [security policy](SECURITY.md) |
 | Configuration, policy reference, API | [Usage guide](docs/usage.md) |
 | How parity with a direct MCP connection is tested | [Validation guide](docs/validation.md) |
+| Holding risky actions until you approve them | [Owner approval](docs/owner-approval.md) |
 | What changes when an agent goes through the adapter, shown side by side | [Trust lab](docs/trust-lab.md) |
 | How it is built | [System design](docs/design.md), [control plane](docs/control-plane.md), [data plane](docs/data-plane.md) |
 | Running it without `muse-vm`, and the provider packs | [Run it by hand](docs/run-by-hand.md) |

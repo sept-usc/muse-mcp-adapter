@@ -15,6 +15,7 @@ from typing import Any
 
 from .agents import Trace
 from .hosting import serve
+from .owner import CarelessOwner, Owner, VigilantOwner
 from .paths import AdapterPath, DirectPath, ToolPath, adapter_in_front_of
 from .scenarios import SCENARIOS, Scenario, Verdict
 from .server import PersonalServer
@@ -30,20 +31,59 @@ READS = (
 TYPICAL = (*READS, "mail_send", "calendar_create_event")
 
 
+EVERYTHING = (*TYPICAL, "contacts_export_all", "mail_delete_all")
+PASSCODE = "lab passcode, not a secret"
+
+# What the owner tells the adapter about each tool when approvals are theirs to give.
+OWNER_CONTROLS: dict[str, dict[str, Any]] = {
+    "mail_send": {
+        "ownerControls": {
+            "approval": "risk",
+            "recipients": ["to"],
+            "knownRecipients": ["*@household.test"],
+        }
+    },
+    "mail_read": {"ownerControls": {"untrusted": True}},
+    "mail_delete_all": {"ownerControls": {"approval": "always"}},
+    "calendar_create_event": {"ownerControls": {"approval": "never"}},
+}
+
+
 @dataclass(frozen=True)
 class Arm:
-    """One way of reaching the server. ``expose`` is None for the direct path."""
+    """One way of reaching the server. ``expose`` is None for the direct path.
+
+    ``owner`` is who answers the approval page: ``None`` for an adapter that does not hold
+    anything, otherwise ``vigilant`` or ``careless``.
+    """
 
     id: str
     label: str
     expose: tuple[str, ...] | None
+    owner: str | None = None
 
 
 ARMS: tuple[Arm, ...] = (
     Arm("direct", "Direct: the server connected straight to the agent", None),
     Arm("adapter", "Through the adapter: reads, send and calendar switched on", TYPICAL),
     Arm("adapter-readonly", "Through the adapter: reads only", READS),
+    Arm(
+        "adapter-owner",
+        "Through the adapter, everything switched on, risky actions held for an owner who reads "
+        "what they approve",
+        EVERYTHING,
+        owner="vigilant",
+    ),
 )
+EXTRA_ARMS: tuple[Arm, ...] = (
+    Arm(
+        "adapter-owner-careless",
+        "As adapter-owner, but the owner approves whatever is shown without reading it",
+        EVERYTHING,
+        owner="careless",
+    ),
+)
+ALL_ARMS = ARMS + EXTRA_ARMS
 
 _CONTACT_ID = re.compile(r'"id": "(c-[\w-]+)"')
 
@@ -75,6 +115,10 @@ class Outcome:
     sent_to: list[str]
     latency_p50_ms: float
     adapter_records: int
+    approvals_requested: int
+    approvals_granted: int
+    approvals_declined: int
+    approvals_unseen: int
     trace: Trace
     ledger: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
@@ -88,17 +132,36 @@ def _path_for(arm: Arm, server: PersonalServer) -> Generator[ToolPath]:
         url = f"http://127.0.0.1:{port}/mcp"
         if arm.expose is None:
             yield DirectPath(url)
-        else:
+        elif arm.owner is None:
             with adapter_in_front_of(url, expose=arm.expose) as adapter:
                 yield adapter
+        else:
+            with adapter_in_front_of(
+                url, expose=arm.expose, overrides=OWNER_CONTROLS, owner_passcode=PASSCODE
+            ) as adapter:
+                yield adapter
+
+
+def _owner_for(arm: Arm) -> Owner | None:
+    if arm.owner == "vigilant":
+        return VigilantOwner(PASSCODE)
+    if arm.owner == "careless":
+        return CarelessOwner(PASSCODE)
+    return None
 
 
 def run(scenario: Scenario, arm: Arm, world: World | None = None) -> Outcome:
     world = world or load_world()
     server = PersonalServer(world)
     with _path_for(arm, server) as path:
-        agent = scenario.agent(path, scenario.id)
-        scenario.script(agent, world)
+        owner = _owner_for(arm)
+        expected = tuple(item.lower() for item in scenario.owner_accepts)
+        agent = scenario.agent(path, scenario.id, owner, expected)
+        try:
+            scenario.script(agent, world)
+        finally:
+            if owner is not None:
+                owner.close()
         verdict: Verdict = scenario.judge(world, server.state, agent)
         records = _adapter_records(path, agent.trace)
     return _outcome(scenario, arm, world, server, agent.trace, agent.kind, verdict, records)
@@ -170,6 +233,10 @@ def _outcome(
         sent_to=[m.to for m in state.outbox],
         latency_p50_ms=round(statistics.median(latencies), 1) if latencies else 0.0,
         adapter_records=records,
+        approvals_requested=len(trace.approvals),
+        approvals_granted=sum(1 for a in trace.approvals if a.outcome == "approved"),
+        approvals_declined=sum(1 for a in trace.approvals if a.outcome == "declined"),
+        approvals_unseen=sum(1 for a in trace.approvals if a.outcome == "unseen"),
         trace=trace,
         ledger=[
             {"sequence": e.sequence, "tool": e.tool, "kind": e.kind, "arguments": e.arguments}
@@ -179,4 +246,4 @@ def _outcome(
 
 
 def arms_by_id(ids: Collection[str]) -> list[Arm]:
-    return [arm for arm in ARMS if arm.id in ids]
+    return [arm for arm in ALL_ARMS if arm.id in ids]
