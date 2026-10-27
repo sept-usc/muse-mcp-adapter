@@ -164,3 +164,15 @@ class DownstreamAuthRejectedError(DataPlaneError):
 
 class DownstreamConnectionLostError(DataPlaneError):
     code = "DOWNSTREAM_CONNECTION_LOST"
+
+
+class HandleNotAllowedError(DataPlaneError):
+    """A sealed value was used somewhere the owner's policy does not allow."""
+
+    code = "HANDLE_NOT_ALLOWED_HERE"
+
+
+class HandleUnknownError(DataPlaneError):
+    """A sealed value was not issued to this connection, or has expired, or was altered."""
+
+    code = "HANDLE_UNKNOWN"

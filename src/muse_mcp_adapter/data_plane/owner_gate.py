@@ -88,7 +88,7 @@ def check_arguments(primitive: PublishedPrimitive, arguments: Mapping[str, objec
 
 def values_at(arguments: Mapping[str, object], path: str) -> list[str]:
     """The text values at a dotted path, flattening lists. Anything that is not text is skipped."""
-    nodes: list[object] = [arguments]
+    nodes: list[object] = [thaw_json(arguments)]
     for part in path.split("."):
         following: list[object] = []
         for node in nodes:
@@ -149,6 +149,7 @@ class OwnerGate:
         operation_id: str,
         now: str,
     ) -> Decision:
+        arguments = cast(Mapping[str, object], thaw_json(arguments))
         controls = controls_of(primitive)
         signals = self._signals(primitive, controls, server_id, connection_id, arguments, now)
         needs_owner = (

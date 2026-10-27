@@ -1,0 +1,107 @@
+# Sealed values: control what reaches the agent
+
+An agent that reads your mail and contacts holds all of it for as long as it runs. Anything in its context can be repeated, pasted into a message, or sent to a stranger by a hidden instruction. Owner approval ([owner-approval.md](owner-approval.md)) decides what the agent may *do*. Sealed values decide what it gets to *know*.
+
+For each tool, you say field by field what the agent sees. The adapter applies that to every result on the way out, and to every call on the way back in.
+
+## The four rungs
+
+| Rung | What the agent gets |
+| --- | --- |
+| `full` | The value, as it is. For things the agent needs to answer you, such as a phone number you asked for. |
+| `handle` | An opaque token, `[contact.email:k3f9a2bq]`. The adapter keeps the value. |
+| `withhold` | Nothing. The field is not in the result. For health notes, ID numbers, birthdays. |
+| `redact` | The text, with card, national-ID and bank-account numbers blanked out: `[redacted:card]`. For free text written by other people, such as an email body. |
+
+No model decides what is sensitive. You do, in the policy, and the adapter enforces it where the agent cannot argue with it.
+
+## What a handle is for
+
+A handle stands in for a value the agent has no business reading but may need to *use*. The usual case is an email address: to reply to Dana, the agent does not need to know her address, only to name her.
+
+```
+agent reads:   "from_email": "[contact.email:k3f9a2bq]"
+agent sends:   mail_send {"to": "[contact.email:k3f9a2bq]", ...}
+adapter sends: mail_send {"to": "dana.whitfield@family.example", ...}
+```
+
+The policy says where a handle may be filled in (`slots`). A handle anywhere else is **refused**, and the agent is told where it may go:
+
+> `[contact.email:k3f9a2bq]` is a sealed value and cannot be used in 'body'. It can only be used in: to. Remove it and use only what the owner asked you to share.
+
+So an agent that pastes everything it has read into a message gets an error, not a leak. A handle that is made up, edited, from another connection or expired is refused too. Handles are tied to one connection, last 24 hours, and are forgotten when you unlink the connection.
+
+Properties worth knowing:
+
+* **The same value always gets the same handle**, so the agent can compare and repeat it.
+* **Values are encrypted at rest**, with a key kept in an owner-only file beside the database.
+* **Your approval page and your hard limits see the real value.** When an approval is needed, the page shows `dana.whitfield@family.example`, not the handle. A limit like "only to my own domain" is checked against the real address.
+* **A tool that repeats a value back is sealed again.** If the server's receipt says `"to": "dana.whitfield@family.example"`, the agent receives the handle.
+* **Muse is told a field may be a handle.** In the published connector description, the argument that accepts handles has its `format` and length limits removed, so a field typed as an email address does not make Muse refuse a handle before the call. The adapter checks the real value against the original schema after filling it in.
+
+## Writing the policy
+
+Add a `release` block to a tool's policy (see the [policy reference](usage.md#2-policy-file)).
+
+```json
+{
+  "primitiveKey": "tool:contacts_search",
+  "allowed": true,
+  "publicOperationId": "contacts_search",
+  "classification": "read",
+  "maxResultBytes": 262144,
+  "release": {
+    "fields": [
+      {"path": "$.contacts[*].email", "label": "contact.email", "rung": "handle"},
+      {"path": "$.contacts[*].address", "label": "contact.address", "rung": "handle"},
+      {"path": "$.contacts[*].notes", "label": "contact.notes", "rung": "withhold"},
+      {"path": "$.contacts[*].phone", "label": "contact.phone", "rung": "full"}
+    ]
+  }
+}
+```
+
+```json
+{
+  "primitiveKey": "tool:mail_send",
+  "allowed": true,
+  "publicOperationId": "mail_send",
+  "classification": "write",
+  "maxResultBytes": 262144,
+  "release": {"slots": {"to": ["contact.email"]}}
+}
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `fields` | A list of `{path, label, rung}`. `path` is `$` followed by `.name` and `[*]` steps. `label` names what the value is (`contact.email`, two or more lowercase words joined by dots). |
+| `slots` | For arguments of this tool, the labels whose handles may be filled in there. A nested argument uses a dotted name (`meta.who`). |
+| `patterns` | What `redact` blanks out: any of `card` (checked by the card number checksum), `ssn`, `iban`. Default: all three. |
+
+The same value can be shown fully by one tool and sealed by another. A lookup of one person may show a phone number in full, while a bulk export of everyone's seals it. That is how you keep a convenient answer without letting one call hand over the whole book.
+
+## Check that your rules match
+
+A path that does not fit what the server really returns protects nothing, and nothing says so. The adapter notices: when a rule matches no field in a result, it records an `unmatched` entry. Look for them after the first real calls:
+
+```bash
+muse-mcp-adapter --database adapter.db activity
+```
+
+## The record
+
+Every sealing, withholding, redaction, fill-in and refusal is recorded with its label and its handle, never its value. Each entry carries the hash of the one before it, so an entry removed or changed later breaks the chain.
+
+```bash
+muse-mcp-adapter --database adapter.db activity --since 2026-10-26T00:00:00Z
+muse-mcp-adapter --database adapter.db verify-ledger
+```
+
+`activity` is a digest: how many of each kind, per label, and whether the record is intact, plus how many actions are waiting for you. `verify-ledger` exits with an error and names the first entry that does not fit if the record was changed.
+
+## What it does not do
+
+* **It governs only what passes through the adapter.** Data the agent reaches some other way (a built-in connector, a browser, what you type in the chat, its own memory) is outside it.
+* **Free text is only partly covered.** Card, national-ID and bank-account numbers are found by pattern. Names, addresses and health details written into a message body are not, so treat third-party text as untrusted and keep the sensitive fields in structured results where a rule can reach them.
+* **A `full` field is gone the moment it is read.** Use it only for what the agent needs to answer you.
+* **It does not by itself stop a message from being sent.** An agent can still send what it knows to someone. Sealing means what it knows holds less; owner approval decides whether the message goes.

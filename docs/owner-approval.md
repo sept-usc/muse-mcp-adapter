@@ -107,5 +107,5 @@ muse-mcp-adapter --database adapter.db approval-decide --request-id <id> --decli
 
 * **A held action the agent never mentions is only as visible as your email.** If the agent hides it, nothing is sent, which is safe. With email notifications set up, you are told anyway; without them you are not.
 * **It is only as good as the person approving.** An owner who approves without reading approves an attack too. The [trust lab](trust-lab.md) measures this with an owner who reads and one who does not.
-* **It looks at who and what is sent, not yet at what is inside.** An agent that pastes more about a person than it should into an approved message still gets that message through. Withholding sensitive values is a separate step.
-* **Reads are not held.** Data that is read reaches the agent. Holding writes decides what the agent can *do* with it.
+* **It shows you what is sent, and it is only as good as your reading.** An agent that pastes more about a person than it should into a message still gets that message in front of you for approval. [Sealed values](sealed-values.md) make that less likely: what the agent was never given, it cannot paste.
+* **Reads are not held.** Data that is read reaches the agent. Holding writes decides what the agent can *do* with it; [sealed values](sealed-values.md) decide what it gets to know.

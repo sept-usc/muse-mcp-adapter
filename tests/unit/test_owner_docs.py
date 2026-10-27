@@ -38,3 +38,21 @@ def test_the_notification_example_is_a_fragment_of_valid_configuration() -> None
     )
     email = json.loads("{" + block + "}")["notifications"]["email"]
     assert {"host", "port", "from", "to", "usernameEnv", "passwordEnv"} <= set(email)
+
+
+SEALED = Path(__file__).parents[2] / "docs" / "sealed-values.md"
+
+
+def test_the_sealed_values_examples_pass_the_publishing_checks() -> None:
+    text = SEALED.read_text(encoding="utf-8")
+    blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
+    policies = [json.loads(block) for block in blocks]
+    assert [p["publicOperationId"] for p in policies] == ["contacts_search", "mail_send"]
+    for policy in policies:
+        name = policy["primitiveKey"].split(":", 1)[1]
+        primitive = {
+            **TOOL,
+            "name": name,
+            "annotations": {"readOnlyHint": policy["classification"] == "read"},
+        }
+        assert validate_exposure_policy(primitive, policy) == [], name

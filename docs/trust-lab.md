@@ -12,7 +12,7 @@ PYTHONPATH=src .venv/bin/python -m trustlab run --out trust-demo
 PYTHONPATH=src .venv/bin/python -m trustlab run --scenario injected-forward --arm direct --arm adapter
 ```
 
-`run` prints a table to the terminal and writes `index.html` (a self-contained page, no external files) and `results.json` (every outcome, call by call) to the output folder. A full run with the default arms takes about twenty seconds. `adapter-owner-careless` is available with `--arm` and is included in the tests.
+`run` prints a table to the terminal and writes `index.html` (a self-contained page, no external files) and `results.json` (every outcome, call by call) to the output folder. A full run with the default arms takes under a minute. `adapter-owner-careless` is available with `--arm` and is included in the tests.
 
 ## What is in it
 
@@ -23,7 +23,7 @@ PYTHONPATH=src .venv/bin/python -m trustlab run --scenario injected-forward --ar
 | Stand-in server (`server.py`) | An ordinary MCP server with nine tools: contact search, get and export, mail list, read, send and delete-all, calendar list and create. Typed output schemas, honest read-only and destructive hints. It does not know about the adapter and does not defend itself. |
 | Ledger | The server records every call it receives and applies writes to in-memory state. This is the ground truth. |
 | Paths (`paths.py`) | **Direct:** an MCP client talking to the server. **Adapter:** the server registered, discovered and published through the adapter, then called over the connector's HTTP face with a bearer token, as Muse calls it. Both answer with the same `ToolResult`, so a script cannot tell which it is on. |
-| Arms (`runner.py`) | `direct`; `adapter` (the owner switched on reads, send and calendar create); `adapter-readonly` (reads only); `adapter-owner` (every tool on, risky actions held for an owner who reads what they approve); `adapter-owner-silent` (the same, but the owner is not emailed, so they hear of a held action only if the agent tells them); `adapter-owner-careless` (the same as `adapter-owner`, but the owner approves whatever is shown). The owner's choices are the only thing that differs between the adapter arms. |
+| Arms (`runner.py`) | `direct`; `adapter` (the owner switched on reads, send and calendar create); `adapter-readonly` (reads only); `adapter-owner` (every tool on, risky actions held for an owner who reads what they approve); `adapter-sealed` (the owner's [release policy](sealed-values.md): addresses behind handles, notes and ID numbers withheld, card numbers blanked, nothing held); `adapter-full` (both); `adapter-owner-silent` (the same, but the owner is not emailed, so they hear of a held action only if the agent tells them); `adapter-owner-careless` (the same as `adapter-owner`, but the owner approves whatever is shown). The owner's choices are the only thing that differs between the adapter arms. The default report shows `direct`, `adapter`, `adapter-owner`, `adapter-sealed` and `adapter-full`; `--arm` picks others. |
 | Scripted agents (`agents.py`) | Deterministic programs that play the agent's part, with no model. *Obedient* does the task. *Injection follower* also does what a hidden note in a message tells it to, and tries another route when the first is refused; it either hides a held action from the owner or asks the owner about it. *Retrier* repeats a send. *Oversharer* pastes everything it knows into a message. When the adapter holds an action, a scripted agent that relays it passes the link to the owner and tries again. |
 | Owners (`owner.py`) | Play the person at the approval page, over HTTP like a browser: open the link, read what the page shows, post a decision with the passcode. The *vigilant* owner approves only a send whose recipients they asked for. The *careless* owner approves everything. If the page did not show the exact action, a vigilant owner could not tell, and the scenario would fail. |
 | Scenarios (`scenarios.py`) | Eight tasks, each with a judge that reads the ledger. |
@@ -44,23 +44,26 @@ PYTHONPATH=src .venv/bin/python -m trustlab run --scenario injected-forward --ar
 
 ## How to read the result
 
-The adapter build under test is whatever is checked out, and the page says so. It can hide tools from the agent, refuse unknown or invalid calls, send a repeated write once, keep a record of every call, limit what an argument may be, and hold risky actions for the owner ([owner approval](owner-approval.md)). It does not yet withhold sensitive values. So some rows still show **no difference between the paths**; the page marks them "same on both paths". They are the known gaps, kept visible on purpose.
+The adapter build under test is whatever is checked out, and the page says so. It can hide tools from the agent, refuse unknown or invalid calls, send a repeated write once, keep a record of every call, limit what an argument may be, hold risky actions for the owner ([owner approval](owner-approval.md)), and control what of the owner's data reaches the agent ([sealed values](sealed-values.md)). Rows that still show **no difference between the paths** are marked "same on both paths": they are known gaps, kept visible on purpose.
 
 What the runs show today:
 
-| | direct | adapter | adapter-readonly | adapter-owner | adapter-owner-careless |
-| --- | --- | --- | --- | --- | --- |
-| Tasks done (of 8) | 8 | 7 | 4 | 8 | 8 |
-| Attacks that succeeded (of 3) | 3 | 2 | 0 | 0 | 1 |
+| | direct | adapter | adapter-readonly | adapter-owner | adapter-sealed | adapter-full |
+| --- | --- | --- | --- | --- | --- | --- |
+| Tasks done (of 8) | 8 | 7 | 4 | 8 | 8 | 8 |
+| Attacks that succeeded (of 3) | 3 | 2 | 0 | 0 | 0 | 0 |
+| Contact details the agent sees when the owner asks for a full export | 499 | none (refused) | none (refused) | 499 | 0 | 0 |
+| Sensitive values sent to the wrong person when the agent oversharers | 2 | 2 | 0 (nothing sent) | 2 | 0 | 0 |
 
-(`adapter-owner-silent` matches `adapter-owner` on these two rows; the difference is whether the owner hears of a held action the agent hid.)
+(`adapter-owner-silent` matches `adapter-owner` on the first two rows; the difference is whether the owner hears of a held action the agent hid. `adapter-owner-careless` is fooled once.)
 
-* **Hiding the export tool is not enough.** In `injected-forward` the `adapter` arm shows 25 contact records in the agent's context against 250 direct, but the attack still succeeds: a determined agent falls back to a search that matches everyone, and the send tool is switched on. Limiting what the agent can see shrinks the leak; it does not stop it.
-* **Read-only is safe and costly.** In `adapter-readonly` all three attacks fail, and so does the ordinary reply. The owner who wants replies must switch send on.
+* **Hiding the export tool is not enough.** In `injected-forward` the `adapter` arm shows 49 contact details in the agent's context against 499 direct, but the attack still succeeds: a determined agent falls back to a search that matches everyone, and the send tool is switched on. Limiting what the agent can see shrinks the leak; it does not stop it.
+* **Read-only is safe and costly.** In `adapter-readonly` all three attacks fail, and so does the ordinary reply.
 * **Holding the action is what stops it.** In `adapter-owner` every tool is on, including mass delete and bulk export, and no attack gets through. The cost is one approval for the first reply to a new person and one for a repeated send, and nothing for reads.
-* **The owner is part of the system.** When the agent asks the owner (`injected-forward-relayed`), a vigilant owner sees the stranger's address and declines; a careless owner approves and the attack succeeds. Approval is only as strong as the reading.
-* **A hidden held action needs the email.** When the agent hides it, nothing is sent. With the adapter's own email the owner still learns of it and declines; in `adapter-owner-silent` they never do, and the report counts it as "never shown to the owner".
-* **Reads are not held, and approval looks at who, not what.** In `adapter-owner` the contact list still reaches the agent, and `overshare` still passes the owner's check, because the recipient is who they asked for. Controlling what enters the agent's context and what a message may carry is the next step.
+* **The owner is part of the system.** When the agent asks the owner (`injected-forward-relayed`), a vigilant owner sees the stranger's address and declines; a careless owner approves and the attack succeeds.
+* **A hidden held action needs the email.** When the agent hides it, nothing is sent. With the adapter's own email the owner still learns of it and declines; in `adapter-owner-silent` they never do.
+* **Sealing changes what there is to steal.** In `adapter-sealed` the hidden note still gets a message to the attacker, but with no contact details in it: the agent only ever held handles, and its attempt to paste them into the body was refused. Holding the action as well (`adapter-full`) stops the message too. In `overshare`, the agent that pastes a whole contact card is refused, retries with just the phone number the owner asked for, and sends no health note and no address.
+* **The owner's reply still works.** In the sealed arms the agent replies to Dana by naming her handle; the real address is filled in by the adapter, the approval page shows the real address, and nothing about her address, notes or birthday ever reached the agent.
 
 ## What it does not show
 

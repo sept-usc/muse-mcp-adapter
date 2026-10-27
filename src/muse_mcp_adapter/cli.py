@@ -40,6 +40,7 @@ from .domain.models import (
 )
 from .persistence.owner_store import OwnerStore
 from .persistence.sqlite_repository import SqliteControlPlaneRepository
+from .persistence.vault_store import ReleaseLedger
 from .transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
 from .transport.security import EndpointSecurityPolicy
 
@@ -301,6 +302,9 @@ def _execute(
     if args.command in ("owner-passcode", "approvals", "approval-decide"):
         return _owner(args, repository)
 
+    if args.command in ("activity", "verify-ledger"):
+        return _ledger(args, repository)
+
     raise AssertionError(f"Unhandled command {args.command}")
 
 
@@ -404,6 +408,25 @@ def _owner(args: argparse.Namespace, repository: SqliteControlPlaneRepository) -
     if args.approve and args.remember and decided.recipients:
         store.remember_recipients(decided.connection_id, decided.recipients, now)
     return {"requestId": decided.request_id, "status": decided.status, "by": args.actor}
+
+
+def _ledger(args: argparse.Namespace, repository: SqliteControlPlaneRepository) -> object:
+    """What the adapter sealed, withheld, filled in and refused, and whether the record is whole."""
+    ledger = ReleaseLedger(repository)
+    ok, first_bad = ledger.verify()
+    if args.command == "verify-ledger":
+        if not ok:
+            raise ControlPlaneError(
+                f"The release ledger was changed: entry {first_bad} does not fit"
+            )
+        return {"ledger": "intact", "entries": len(ledger.entries())}
+    return {
+        "since": args.since,
+        "released": ledger.summary(since=args.since),
+        "ledgerIntact": ok,
+        "firstBadEntry": first_bad,
+        "waitingForYou": len(OwnerStore(repository).list_requests("pending")),
+    }
 
 
 def _connector_url(public_url: str, record: ConnectionRecord) -> str:
@@ -547,6 +570,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     passcode.add_argument(
         "--passcode-env", help="Read the passcode from this environment variable (for automation)"
+    )
+
+    activity = commands.add_parser(
+        "activity", help="What was sealed, withheld, filled in or refused, in a digest"
+    )
+    activity.add_argument("--since", help="Only entries at or after this time (ISO 8601)")
+    commands.add_parser(
+        "verify-ledger", help="Check that the release ledger has not been changed or cut"
     )
 
     approvals = commands.add_parser("approvals", help="List actions waiting for the owner")

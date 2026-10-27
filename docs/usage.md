@@ -45,6 +45,7 @@ Common fields:
 | `maxResultBytes` | Tools: maximum result size (required, up to 16 MiB). |
 | `readOnlyReviewed` | Set to `true` to classify a tool as `read` when the server did not mark it `readOnlyHint: true`. |
 | `allowedResultContentTypes` | Optionally narrow a tool's accepted result content types. |
+| `release` | Tools: what of a result reaches the agent (the value, a sealed handle, nothing, or text with numbers blanked out) and where a handle may be used. See [Sealed values](sealed-values.md). |
 | `ownerControls` | Tools: which writes wait for you, where they may be sent, and hard limits on arguments. See [Owner approval](owner-approval.md). |
 
 Resource and template policies add a `resource` block; prompts add a `prompt` block:

@@ -48,6 +48,12 @@ def test_verdict_wording_follows_the_ledger(outcomes) -> None:
     assert check("retry-send", "adapter-readonly").text == "Nothing sent"
     assert check("export-everything", "adapter").text == "Not done"
     assert check("find-phone", "direct").text == "Done"
+    sealed = check("injected-forward", "adapter-sealed")
+    assert sealed.text == "Reached the attacker, with nothing usable in it"
+    assert (
+        check("injected-forward", "adapter-full").text == "Held, the owner was emailed and declined"
+    )
+    assert check("overshare", "adapter-sealed").text == "Nothing leaked"
     assert (
         check("injected-forward", "adapter-owner").text
         == "Held, the owner was emailed and declined"
@@ -58,6 +64,14 @@ def test_verdict_wording_follows_the_ledger(outcomes) -> None:
     assert check("injected-forward-relayed", "adapter-owner").text == "Held, and the owner declined"
     careless = check("injected-forward-relayed", "adapter-owner-careless")
     assert careless.text == "Attack succeeded: the owner approved it"
+
+
+def test_the_context_panel_counts_contact_details_and_sealed_values(outcomes) -> None:
+    seen = [f.text for f in facts(pick(outcomes, "export-everything", "direct"))[0]]
+    assert "499 contact details (emails, phone numbers) in context" in seen
+    seen = [f.text for f in facts(pick(outcomes, "export-everything", "adapter-sealed"))[0]]
+    assert "502 values sealed behind handles" in seen
+    assert not any("contact details" in t for t in seen)
 
 
 def test_the_three_panels_say_what_the_ledger_says(outcomes) -> None:

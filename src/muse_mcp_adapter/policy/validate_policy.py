@@ -158,6 +158,7 @@ def validate_exposure_policy(
             issues.append(f"Tool policy for {key} has invalid allowedResultContentTypes")
 
     issues.extend(_owner_controls_issues(policy.get("ownerControls"), key, classification))
+    issues.extend(_release_issues(policy.get("release"), key))
 
     if primitive.get("type") == PrimitiveType.PROMPT:
         prompt = _string_mapping(policy.get("prompt"))
@@ -232,6 +233,59 @@ def _owner_controls_issues(value: object, key: str, classification: object) -> l
                     issues.extend(
                         _regex_issues(pattern, f"ownerControls.arguments.{path} for {key}")
                     )
+    return issues
+
+
+_RELEASE_KEYS = frozenset({"fields", "slots", "patterns"})
+_RELEASE_RUNGS = ("full", "handle", "withhold", "redact")
+_LABEL = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
+_FIELD_PATH = re.compile(r"^\$(?:\.[A-Za-z_][\w-]*|\[\*\])+$")
+_PATTERN_NAMES = ("card", "ssn", "iban")
+
+
+def _release_issues(value: object, key: str) -> list[str]:
+    if value is None:
+        return []
+    release = _string_mapping(value)
+    if release is None:
+        return [f"release for {key} must be an object"]
+    issues: list[str] = []
+    for name in sorted(set(release) - _RELEASE_KEYS):
+        issues.append(f"release for {key} has an unknown setting: {name}")
+    fields = release.get("fields", [])
+    if not _sequence(fields):
+        issues.append(f"release.fields for {key} must be a list")
+    else:
+        for item in cast(list[object], fields):
+            rule = _string_mapping(item)
+            if rule is None:
+                issues.append(f"release.fields for {key} has an entry that is not an object")
+                continue
+            path = rule.get("path")
+            if not isinstance(path, str) or not _FIELD_PATH.fullmatch(path):
+                issues.append(f"release.fields path {path!r} for {key} is not a supported path")
+            label = rule.get("label")
+            if not isinstance(label, str) or not _LABEL.fullmatch(label):
+                issues.append(f"release.fields label {label!r} for {key} must look like a.b")
+            if rule.get("rung") not in _RELEASE_RUNGS:
+                issues.append(
+                    f"release.fields rung for {key} must be one of {', '.join(_RELEASE_RUNGS)}"
+                )
+    slots = release.get("slots")
+    if slots is not None:
+        mapping = _string_mapping(slots)
+        if mapping is None:
+            issues.append(f"release.slots for {key} must be an object")
+        else:
+            for slot, labels in mapping.items():
+                items = _string_list(labels)
+                if items is None or not all(_LABEL.fullmatch(label) for label in items):
+                    issues.append(f"release.slots.{slot} for {key} must be a list of labels")
+    patterns = release.get("patterns")
+    if patterns is not None:
+        names = _string_list(patterns)
+        if names is None or any(name not in _PATTERN_NAMES for name in names):
+            issues.append(f"release.patterns for {key} must be from: {', '.join(_PATTERN_NAMES)}")
     return issues
 
 

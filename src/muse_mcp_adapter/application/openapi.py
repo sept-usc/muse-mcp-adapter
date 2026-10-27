@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from ..catalog.canonical import thaw_json
+from ..data_plane.release import release_of
 from ..domain.models import PublishedCatalog, PublishedPrimitive
 
 GET_OPERATION_ID = "get_operation_status"
@@ -209,7 +210,8 @@ def _argument_schema(
     kind = primitive.primitive_type
     if kind == "tool":
         raw = thaw_json(primitive.definition.get("inputSchema", {"type": "object"}))
-        return _localize(raw, primitive.public_operation_id, components)
+        schema = _localize(raw, primitive.public_operation_id, components)
+        return _allow_sealed_values(schema, primitive)
     if kind == "resource":
         return None
     if kind == "resource_template":
@@ -224,6 +226,41 @@ def _argument_schema(
             "additionalProperties": False,
         }
     return _prompt_schema(primitive)
+
+
+_FORMAT_KEYS = ("format", "pattern", "minLength", "maxLength", "enum", "const")
+
+
+def _allow_sealed_values(
+    schema: dict[str, object], primitive: PublishedPrimitive
+) -> dict[str, object]:
+    """Let an argument that takes sealed values accept one where its schema would not.
+
+    A field typed as an email address would make Muse refuse ``[contact.email:k3f9a2bq]`` before
+    it ever reached the adapter. For the arguments the owner's policy names, the constraints on
+    the text itself are dropped from the published description; the adapter checks the real value
+    against the original schema after it has filled the handle in.
+    """
+    slots = {slot.split(".")[0] for slot in release_of(primitive).slots}
+    properties = schema.get("properties")
+    if not slots or not isinstance(properties, dict):
+        return schema
+    for name in slots:
+        prop = cast(dict[str, object], properties).get(name)
+        if isinstance(prop, dict):
+            _relax(cast(dict[str, object], prop))
+    return schema
+
+
+def _relax(prop: dict[str, object]) -> None:
+    for key in _FORMAT_KEYS:
+        prop.pop(key, None)
+    items = prop.get("items")
+    if isinstance(items, dict):
+        _relax(cast(dict[str, object], items))
+    note = "May be a sealed value such as [label:abcd2345] from an earlier result."
+    description = prop.get("description")
+    prop["description"] = f"{description} {note}" if isinstance(description, str) else note
 
 
 def _prompt_schema(primitive: PublishedPrimitive) -> dict[str, object]:

@@ -12,6 +12,7 @@ from ..data_plane.approval import ApprovalVerifier
 from ..data_plane.mcp_client import McpReadClient
 from ..data_plane.owner_gate import OwnerGate
 from ..data_plane.read_service import ReadDataPlaneService
+from ..data_plane.release import ReleaseEngine
 from ..data_plane.tool_client import McpToolClient
 from ..data_plane.tool_service import ToolDataPlaneService
 from ..operations.artifacts import FileArtifactStore
@@ -43,6 +44,7 @@ def build_http_application(
     owner_gate: OwnerGate | None = None,
     approval_web: ApprovalWeb | None = None,
     notifier: Notifier | None = None,
+    release: ReleaseEngine | None = None,
     oauth_flow: OAuthWebFlow | None = None,
     rate_limit: int = 60,
     rate_window_seconds: float = 60,
@@ -66,6 +68,7 @@ def build_http_application(
         owner_gate=owner_gate,
         approval_link=approval_web.link if approval_web is not None else None,
         on_held=_notify(notifier),
+        release=release,
         clock=clock,
         cancellation_registry=cancellations,
     )

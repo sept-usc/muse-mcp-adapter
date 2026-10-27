@@ -7,6 +7,7 @@ call, and with which downstream credential) live in the database and are managed
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections.abc import Callable, Mapping
@@ -23,10 +24,12 @@ from ..connections import ConnectionCredentialResolver
 from ..data_plane.approval import HmacApprovalVerifier
 from ..data_plane.mcp_client import McpReadClient
 from ..data_plane.owner_gate import OwnerGate
+from ..data_plane.release import ReleaseEngine
 from ..data_plane.tool_client import McpToolClient
 from ..domain.errors import InvalidStateError
 from ..persistence.owner_store import OwnerStore
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from ..persistence.vault_store import HandleVault, ReleaseLedger
 from ..transport.oauth import EncryptedFileOAuthStorageBackend
 from ..transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
 from ..transport.security import EndpointSecurityPolicy
@@ -270,12 +273,23 @@ def build_application(
         owner_gate=owner_gate,
         approval_web=approval_web,
         notifier=notifier or _smtp(config, env),
+        release=_release_engine(repository, database, clock),
         oauth_flow=flow,
         rate_limit=config.rate_limit,
         rate_window_seconds=config.rate_window_seconds,
         per_server_concurrency=config.per_server_concurrency,
         idempotency_window_seconds=config.idempotency_window_seconds,
     )
+
+
+def _release_engine(
+    repository: SqliteControlPlaneRepository, database: str | Path, clock: Callable[[], str]
+) -> ReleaseEngine:
+    """The vault for sealed values; its key sits beside the database, owner-readable only."""
+    repository.initialize()
+    key_file = Path(database).parent / "vault.key"
+    master = base64.urlsafe_b64decode(_load_or_create_key(key_file))
+    return ReleaseEngine(HandleVault(repository, master), ReleaseLedger(repository), clock)
 
 
 def _smtp(config: ServeConfig, env: Mapping[str, str]) -> Notifier | None:

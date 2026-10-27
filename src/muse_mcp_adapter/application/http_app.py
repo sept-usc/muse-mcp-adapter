@@ -33,6 +33,8 @@ from ..domain.errors import (
     DownstreamToolError,
     DownstreamUnavailableError,
     EntityNotFoundError,
+    HandleNotAllowedError,
+    HandleUnknownError,
     IdempotencyConflictError,
     InputRequiredError,
     InvalidStateError,
@@ -374,6 +376,13 @@ def retry_guidance(error: Exception) -> RetryGuidance:
         )
     if isinstance(error, ApprovalDeniedError | ArgumentNotAllowedError):
         return RetryGuidance(False, "The owner does not allow this. Do not repeat the call.")
+    if isinstance(error, HandleNotAllowedError | HandleUnknownError):
+        return RetryGuidance(
+            False,
+            "A sealed value was used where it is not allowed or was not recognised. Do not repeat "
+            "the call as it is: take the value from a fresh result, use it only where the message "
+            "says it may go, or leave it out.",
+        )
     if isinstance(error, ApprovalRequiredError | InputRequiredError):
         return RetryGuidance(False, "More is needed from the user before this can run.")
     if isinstance(error, OperationNotFoundError | EntityNotFoundError):
@@ -393,7 +402,8 @@ def _status(error: Exception) -> int:
         | ServerDisabledError
         | CredentialResolutionError
         | ApprovalDeniedError
-        | ArgumentNotAllowedError,
+        | ArgumentNotAllowedError
+        | HandleNotAllowedError,
     ):
         return 403
     if isinstance(error, OperationNotFoundError | EntityNotFoundError):
@@ -425,7 +435,7 @@ def _status(error: Exception) -> int:
         | UnsafeEndpointError,
     ):
         return 502
-    if isinstance(error, RequestValidationError | UnsupportedPrimitiveError):
+    if isinstance(error, RequestValidationError | UnsupportedPrimitiveError | HandleUnknownError):
         return 400
     if isinstance(error, DataPlaneError):
         return 500

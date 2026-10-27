@@ -167,6 +167,28 @@ CREATE TABLE IF NOT EXISTS known_recipients (
     PRIMARY KEY (connection_id, value)
 );
 
+CREATE TABLE IF NOT EXISTS handles (
+    connection_id TEXT NOT NULL,
+    handle_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    value_enc BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (connection_id, handle_id)
+);
+
+CREATE TABLE IF NOT EXISTS release_ledger (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    connection_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    prev_hash TEXT NOT NULL,
+    entry_hash TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS admin_audit (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     occurred_at TEXT NOT NULL,

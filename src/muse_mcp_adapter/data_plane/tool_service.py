@@ -52,6 +52,7 @@ from .content import (
     too_large,
 )
 from .owner_gate import OwnerGate, check_arguments
+from .release import ReleaseEngine
 from .serde import response_from_dict, response_to_dict
 from .tool_client import (
     McpAuthRejected,
@@ -106,6 +107,7 @@ class ToolDataPlaneService:
         owner_gate: OwnerGate | None = None,
         approval_link: Callable[[str], str] | None = None,
         on_held: Callable[[str, Sequence[str], str, str], None] | None = None,
+        release: ReleaseEngine | None = None,
         clock: Callable[[], str],
         operation_id_factory: Callable[[], str] | None = None,
         cancellation_registry: CancellationRegistry | None = None,
@@ -117,6 +119,7 @@ class ToolDataPlaneService:
         self._owner_gate = owner_gate
         self._approval_link = approval_link
         self._on_held = on_held
+        self._release = release
         self._clock = clock
         self._operation_id_factory = operation_id_factory or (lambda: str(uuid4()))
         self._cancellations = cancellation_registry or CancellationRegistry()
@@ -124,6 +127,8 @@ class ToolDataPlaneService:
     def execute(self, request: DataPlaneRequest) -> DataPlaneResponse:
         _validate_request(request)
         catalog_version, endpoint, operation, policy = self._resolve(request)
+        if self._release is not None:
+            request = self._release.open_request(request, operation)
         _validate_schema(
             schema=operation.definition.get("inputSchema"),
             instance=request.arguments,
@@ -213,6 +218,8 @@ class ToolDataPlaneService:
         """Continue an INPUT_REQUIRED operation by re-running the call with the user's answer."""
         _validate_request(request)
         catalog_version, endpoint, operation, policy = self._resolve(request)
+        if self._release is not None:
+            request = self._release.open_request(request, operation)
         existing = self._repository.get_operation(operation_id)
         action_digest = _action_digest(
             request,
@@ -686,6 +693,8 @@ class ToolDataPlaneService:
                     operation_id=operation_id,
                 ) from error
 
+            if self._release is not None:
+                response = self._release.seal_response(request, operation, response)
             self._complete(operation_id, response, is_read=is_read)
             return response
         except BaseException:

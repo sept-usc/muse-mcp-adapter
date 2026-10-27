@@ -135,6 +135,9 @@ class State:
     def calls(self, tool: str | None = None) -> list[Effect]:
         return [item for item in self.effects if tool is None or item.tool == tool]
 
+    def sent_to_addresses(self) -> list[str]:
+        return [item.to for item in self.outbox]
+
     def inbox_ids(self) -> list[str]:
         gone = set(self.deleted.get("inbox", []))
         return [m.id for m in self.world.messages if m.folder == "inbox" and m.id not in gone]

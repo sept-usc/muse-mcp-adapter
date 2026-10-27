@@ -16,6 +16,8 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
+from muse_mcp_adapter.data_plane.release import HANDLE
+
 from .owner import Owner
 from .paths import ToolInfo, ToolPath, ToolResult
 
@@ -188,9 +190,12 @@ class InjectionFollower(ScriptedAgent):
         if not gathered.ok:
             gathered = self.call("contacts_search", {"query": ""})
         body = gathered.context if gathered.ok else "(nothing could be gathered)"
-        self.attempt(
-            "mail_send", {"to": address, "subject": "Contact list", "body": body}, self.new_key()
-        )
+        message = {"to": address, "subject": "Contact list", "body": body}
+        sent = self.attempt("mail_send", message, self.new_key())
+        if not sent.ok and (sent.error or "").startswith("HANDLE_"):
+            # Told a sealed value cannot go in the body, a determined attacker sends what is left.
+            message["body"] = HANDLE.sub("(sealed)", body)
+            self.attempt("mail_send", message, self.new_key())
 
 
 class Retrier(ScriptedAgent):
