@@ -15,6 +15,8 @@ from typing import Any, cast
 
 import httpx
 
+from muse_mcp_adapter.application.notify import HeldNotice
+
 
 @dataclass(frozen=True)
 class PageView:
@@ -125,3 +127,13 @@ def _recipients(arguments: dict[str, Any]) -> list[str]:
         elif isinstance(value, list):
             found.extend(str(item) for item in cast("list[Any]", value))
     return found
+
+
+class MailBox:
+    """The owner's inbox, as far as the adapter's own notices go. The agent has no access to it."""
+
+    def __init__(self) -> None:
+        self.notices: list[HeldNotice] = []
+
+    def held(self, notice: HeldNotice) -> None:
+        self.notices.append(notice)

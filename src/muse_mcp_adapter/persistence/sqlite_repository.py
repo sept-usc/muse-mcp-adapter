@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS owner_failures (
 CREATE TABLE IF NOT EXISTS approval_requests (
     request_id TEXT PRIMARY KEY,
     token_hash TEXT NOT NULL UNIQUE,
+    owner_token_hash TEXT NOT NULL UNIQUE,
     connection_id TEXT NOT NULL,
     server_id TEXT NOT NULL,
     public_operation_id TEXT NOT NULL,

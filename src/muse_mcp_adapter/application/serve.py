@@ -32,6 +32,7 @@ from ..transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
 from ..transport.security import EndpointSecurityPolicy
 from .approval_web import ApprovalWeb
 from .bootstrap import build_http_application
+from .notify import Notifier, SmtpNotifier
 from .oauth_web import OAuthClientSeed, OAuthWebFlow, runtime_auth_factory
 
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -43,6 +44,17 @@ class OAuthClientSetting:
 
     client_id: str
     client_secret_env: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmailSetting:
+    host: str
+    port: int
+    sender: str
+    to: str
+    starttls: bool = True
+    username_env: str | None = None
+    password_env: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +76,7 @@ class ServeConfig:
     oauth_clients: Mapping[str, OAuthClientSetting] = field(
         default_factory=dict[str, OAuthClientSetting]
     )
+    email: EmailSetting | None = None  # where to tell the owner an action is waiting
 
 
 def load_serve_config(path: Path) -> ServeConfig:
@@ -112,6 +125,7 @@ def load_serve_config(path: Path) -> ServeConfig:
 
     artifact_root = config.get("artifactRoot")
     secrets_dir = config.get("secretsDir")
+    email = _email(config)
     return ServeConfig(
         public_url=public_url.rstrip("/"),
         host=host,
@@ -128,6 +142,24 @@ def load_serve_config(path: Path) -> ServeConfig:
         per_server_concurrency=_int(limits, "perServerConcurrency", 8),
         idempotency_window_seconds=_int(config, "idempotencyWindowSeconds", 30),
         oauth_clients=clients,
+        email=email,
+    )
+
+
+def _email(config: Mapping[str, object]) -> EmailSetting | None:
+    notifications = _mapping(config.get("notifications", {}), "notifications")
+    raw = notifications.get("email")
+    if raw is None:
+        return None
+    item = _mapping(raw, "notifications.email")
+    return EmailSetting(
+        host=_string(item, "host"),
+        port=_int(item, "port", 587),
+        sender=_string(item, "from"),
+        to=_string(item, "to"),
+        starttls=item.get("starttls", True) is not False,
+        username_env=cast(str | None, item.get("usernameEnv")),
+        password_env=cast(str | None, item.get("passwordEnv")),
     )
 
 
@@ -192,6 +224,7 @@ def build_application(
     mcp_client: McpReadClient | McpToolClient | None = None,
     clock: Callable[[], str] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    notifier: Notifier | None = None,
 ) -> Starlette:
     clock = clock or _utc_now
     policy = endpoint_policy(config)
@@ -236,11 +269,27 @@ def build_application(
         approval_verifier=verifier,
         owner_gate=owner_gate,
         approval_web=approval_web,
+        notifier=notifier or _smtp(config, env),
         oauth_flow=flow,
         rate_limit=config.rate_limit,
         rate_window_seconds=config.rate_window_seconds,
         per_server_concurrency=config.per_server_concurrency,
         idempotency_window_seconds=config.idempotency_window_seconds,
+    )
+
+
+def _smtp(config: ServeConfig, env: Mapping[str, str]) -> Notifier | None:
+    email = config.email
+    if email is None or config.approval_mode != "owner":
+        return None
+    return SmtpNotifier(
+        host=email.host,
+        port=email.port,
+        sender=email.sender,
+        to=email.to,
+        starttls=email.starttls,
+        username=env.get(email.username_env) if email.username_env else None,
+        password=env.get(email.password_env) if email.password_env else None,
     )
 
 

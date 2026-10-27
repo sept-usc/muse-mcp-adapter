@@ -118,7 +118,8 @@ class Decision:
     approval_id: str | None = None
     reasons: tuple[str, ...] = ()
     request: ApprovalRequest | None = None
-    token: str | None = None  # the one-time link token, only when a request was just created
+    token: str | None = None  # the link token for the chat (new or reissued)
+    owner_token: str | None = None  # the owner's own link token, only when just created
 
 
 class OwnerGate:
@@ -179,7 +180,7 @@ class OwnerGate:
         recipients = tuple(
             value for path in controls.recipients for value in values_at(arguments, path)
         )
-        created, token = self._store.create_request(
+        created, token, owner_token = self._store.create_request(
             connection_id=connection_id,
             server_id=server_id,
             public_operation_id=primitive.public_operation_id,
@@ -191,7 +192,9 @@ class OwnerGate:
             now=now,
             ttl_seconds=self._ttl,
         )
-        return Decision("wait", reasons=reasons, request=created, token=token)
+        return Decision(
+            "wait", reasons=reasons, request=created, token=token, owner_token=owner_token
+        )
 
     # --- risk signals ------------------------------------------------------------------
 

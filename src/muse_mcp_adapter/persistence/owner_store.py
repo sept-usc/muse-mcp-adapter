@@ -127,20 +127,27 @@ class OwnerStore:
         recipients: Sequence[str],
         now: str,
         ttl_seconds: int,
-    ) -> tuple[ApprovalRequest, str]:
-        """Store a held action and return it with its one-time link token."""
+    ) -> tuple[ApprovalRequest, str, str]:
+        """Store a held action and return it with two one-time link tokens.
+
+        The first is for the agent to show the owner in the chat. The second is for the owner
+        alone, sent by a channel the agent is not on, so it never changes while the first may be
+        replaced when the agent asks again.
+        """
         token = secrets.token_urlsafe(32)
+        owner_token = secrets.token_urlsafe(32)
         request_id = secrets.token_hex(8)
         expires = (_time(now) + timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z")
         self._repository.run(
             lambda db: db.execute(
-                "INSERT INTO approval_requests (request_id, token_hash, connection_id, server_id, "
-                "public_operation_id, classification, content_digest, arguments_json, "
-                "reasons_json, recipients_json, status, created_at, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                "INSERT INTO approval_requests (request_id, token_hash, owner_token_hash, "
+                "connection_id, server_id, public_operation_id, classification, content_digest, "
+                "arguments_json, reasons_json, recipients_json, status, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
                 (
                     request_id,
                     _hash(token),
+                    _hash(owner_token),
                     connection_id,
                     server_id,
                     public_operation_id,
@@ -154,7 +161,7 @@ class OwnerStore:
                 ),
             )
         )
-        return self.get(request_id), token
+        return self.get(request_id), token, owner_token
 
     def reissue_token(self, request_id: str) -> str:
         """A fresh one-time link for a request still waiting. The earlier link stops working."""
@@ -181,7 +188,8 @@ class OwnerStore:
     def by_token(self, token: str) -> ApprovalRequest | None:
         row = self._repository.run(
             lambda db: db.execute(
-                "SELECT * FROM approval_requests WHERE token_hash = ?", (_hash(token),)
+                "SELECT * FROM approval_requests WHERE token_hash = ? OR owner_token_hash = ?",
+                (_hash(token), _hash(token)),
             ).fetchone()
         )
         return None if row is None else _request(row)

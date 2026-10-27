@@ -100,7 +100,7 @@ def test_without_a_passcode_nothing_is_accepted(store) -> None:
 
 def test_only_the_hash_of_a_link_token_is_stored(store) -> None:
     owner, database = store
-    request, token = make(owner)
+    request, token, owner_token = make(owner)
     assert owner.by_token(token).request_id == request.request_id
     assert owner.by_token(token + "x") is None
     dump = str(sqlite3.connect(database).execute("SELECT * FROM approval_requests").fetchall())
@@ -109,7 +109,7 @@ def test_only_the_hash_of_a_link_token_is_stored(store) -> None:
 
 def test_a_request_keeps_the_exact_arguments_and_reasons(store) -> None:
     owner, _ = store
-    request, _ = make(owner)
+    request, _, _ = make(owner)
     assert request.arguments == {"to": "a@b.test"}
     assert request.reasons == ("why",) and request.recipients == ("a@b.test",)
     assert request.status == "pending" and request.expires_at == "2026-10-26T12:15:00Z"
@@ -117,7 +117,7 @@ def test_a_request_keeps_the_exact_arguments_and_reasons(store) -> None:
 
 def test_a_decision_is_made_once(store) -> None:
     owner, _ = store
-    request, _ = make(owner)
+    request, _, _ = make(owner)
     decided = owner.decide(request.request_id, approve=True, by="owner-page", now=T1)
     assert decided.status == "approved" and decided.decided_by == "owner-page"
     with pytest.raises(ConflictError):
@@ -126,7 +126,7 @@ def test_a_decision_is_made_once(store) -> None:
 
 def test_an_expired_request_cannot_be_decided(store) -> None:
     owner, _ = store
-    request, _ = make(owner, ttl=60)
+    request, _, _ = make(owner, ttl=60)
     assert request.expired(T1)
     with pytest.raises(ConflictError):
         owner.decide(request.request_id, approve=True, by="x", now=T1)
@@ -134,7 +134,7 @@ def test_an_expired_request_cannot_be_decided(store) -> None:
 
 def test_an_approval_is_spent_once(store) -> None:
     owner, _ = store
-    request, _ = make(owner)
+    request, _, _ = make(owner)
     with pytest.raises(ConflictError):
         owner.use(request.request_id, "op-1", T1)  # not approved yet
     owner.decide(request.request_id, approve=True, by="x", now=T1)
@@ -147,7 +147,7 @@ def test_an_approval_is_spent_once(store) -> None:
 
 def test_a_declined_request_cannot_be_used(store) -> None:
     owner, _ = store
-    request, _ = make(owner)
+    request, _, _ = make(owner)
     owner.decide(request.request_id, approve=False, by="x", now=T1)
     with pytest.raises(ConflictError):
         owner.use(request.request_id, "op-1", T1)
@@ -155,10 +155,10 @@ def test_a_declined_request_cannot_be_used(store) -> None:
 
 def test_the_newest_request_for_an_action_is_the_one_that_counts(store) -> None:
     owner, _ = store
-    first, _ = make(owner, now=T0)
+    first, _, _ = make(owner, now=T0)
     owner.decide(first.request_id, approve=True, by="x", now=T0)
     owner.use(first.request_id, "op-1", T0)
-    second, _ = make(owner, now=T1)
+    second, _, _ = make(owner, now=T1)
     assert owner.latest_for("c1", "d1").request_id == second.request_id
     assert owner.latest_for("c1", "other") is None
     assert owner.latest_for("c2", "d1") is None
@@ -176,7 +176,7 @@ def test_pending_requests_are_counted_per_connection_and_expire(store) -> None:
 
 def test_a_reissued_token_replaces_the_old_one(store) -> None:
     owner, _ = store
-    request, old = make(owner)
+    request, old, _ = make(owner)
     new = owner.reissue_token(request.request_id)
     assert owner.by_token(old) is None
     assert owner.by_token(new).request_id == request.request_id
@@ -184,7 +184,7 @@ def test_a_reissued_token_replaces_the_old_one(store) -> None:
 
 def test_a_reissue_does_nothing_once_decided(store) -> None:
     owner, _ = store
-    request, old = make(owner)
+    request, old, _ = make(owner)
     owner.decide(request.request_id, approve=True, by="x", now=T0)
     owner.reissue_token(request.request_id)
     assert owner.by_token(old) is not None  # unchanged: nothing was pending to reissue
@@ -199,8 +199,8 @@ def test_known_recipients_are_per_connection_and_case_insensitive(store) -> None
 
 def test_listing_filters_by_status(store) -> None:
     owner, _ = store
-    a, _ = make(owner, digest="a")
-    b, _ = make(owner, digest="b")
+    a, _, _ = make(owner, digest="a")
+    b, _, _ = make(owner, digest="b")
     owner.decide(a.request_id, approve=True, by="x", now=T0)
     assert [r.request_id for r in owner.list_requests("pending")] == [b.request_id]
     assert len(owner.list_requests()) == 2

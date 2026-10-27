@@ -105,6 +105,7 @@ class ToolDataPlaneService:
         approval_verifier: ApprovalVerifier | None = None,
         owner_gate: OwnerGate | None = None,
         approval_link: Callable[[str], str] | None = None,
+        on_held: Callable[[str, Sequence[str], str, str], None] | None = None,
         clock: Callable[[], str],
         operation_id_factory: Callable[[], str] | None = None,
         cancellation_registry: CancellationRegistry | None = None,
@@ -115,6 +116,7 @@ class ToolDataPlaneService:
         self._approval_verifier = approval_verifier
         self._owner_gate = owner_gate
         self._approval_link = approval_link
+        self._on_held = on_held
         self._clock = clock
         self._operation_id_factory = operation_id_factory or (lambda: str(uuid4()))
         self._cancellations = cancellation_registry or CancellationRegistry()
@@ -439,6 +441,14 @@ class ToolDataPlaneService:
                 expected_statuses=(PENDING,),
                 status=APPROVAL_REQUIRED,
                 updated_at=now,
+            )
+        if decision.owner_token is not None and self._on_held and self._approval_link:
+            assert decision.request is not None
+            self._on_held(
+                operation.public_operation_id,
+                decision.reasons,
+                self._approval_link(decision.owner_token),
+                decision.request.expires_at,
             )
         url = (
             self._approval_link(decision.token)

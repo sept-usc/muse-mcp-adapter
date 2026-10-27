@@ -41,7 +41,8 @@ class Approval:
     tool: str
     arguments: dict[str, Any]
     reasons: list[str]
-    outcome: str  # "approved", "declined" or "unseen" (the agent never showed the owner)
+    outcome: str  # "approved", "declined" or "unseen" (nobody showed the owner)
+    via: str = "agent"  # who put it in front of the owner: "agent" or "email"
 
 
 @dataclass

@@ -25,6 +25,7 @@ from typing import Any, Protocol
 import httpx
 
 from muse_mcp_adapter.application.control_plane_service import ControlPlaneService
+from muse_mcp_adapter.application.notify import Notifier
 from muse_mcp_adapter.application.policy_template import draft_policies
 from muse_mcp_adapter.application.serve import ServeConfig, build_application
 from muse_mcp_adapter.connections import ConnectionService
@@ -196,6 +197,7 @@ def adapter_in_front_of(
     overrides: Mapping[str, Mapping[str, Any]] | None = None,
     owner_passcode: str | None = None,
     clock: Callable[[], str] | None = None,
+    notifier: Notifier | None = None,
     directory: Path | None = None,
 ) -> Generator[AdapterPath]:
     """Stand the adapter up in front of an MCP server and yield the connector path to it.
@@ -250,7 +252,9 @@ def adapter_in_front_of(
             if owner_passcode is not None:
                 config = replace(config, approval_mode="owner")
                 OwnerStore(repository).set_passcode(owner_passcode, _now())
-            app = build_application(repository, config, {}, database=database, clock=clock)
+            app = build_application(
+                repository, config, {}, database=database, clock=clock, notifier=notifier
+            )
             with serve(app, port):
                 base = f"{config.public_url}/c/{link.record.slug}"
                 spec = httpx.get(f"{base}/openapi.json", timeout=30).json()

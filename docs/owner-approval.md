@@ -76,6 +76,21 @@ The decision is deterministic. No model is involved, and nothing the agent says 
 
 On the approval page, tick "Do not ask again" and the recipients of that action are remembered for that connection.
 
+## Being told without the agent
+
+Set up email and the adapter tells you itself, in its own message, when it holds something, so a hidden or forgotten action does not just sit there. The message names the tool and why it was held and carries a link made for you alone (the agent never sees it and it keeps working when the agent asks again). It does not repeat the arguments; the page shows them. In the service configuration:
+
+```json
+"notifications": {
+  "email": {
+    "host": "smtp.example.com", "port": 587, "from": "adapter@example.com",
+    "to": "you@example.com", "usernameEnv": "SMTP_USER", "passwordEnv": "SMTP_PASS"
+  }
+}
+```
+
+The mail credentials are read from the named environment variables. A message that cannot be sent never delays or fails the agent's call.
+
 ## From the command line
 
 On the adapter's machine, with no page needed:
@@ -90,7 +105,7 @@ muse-mcp-adapter --database adapter.db approval-decide --request-id <id> --decli
 
 ## What it does not do
 
-* **A held action the agent never mentions waits unseen.** If the agent hides it, nothing is sent, which is safe, but you are not told either. A notification that does not depend on the agent is planned.
+* **A held action the agent never mentions is only as visible as your email.** If the agent hides it, nothing is sent, which is safe. With email notifications set up, you are told anyway; without them you are not.
 * **It is only as good as the person approving.** An owner who approves without reading approves an attack too. The [trust lab](trust-lab.md) measures this with an owner who reads and one who does not.
 * **It looks at who and what is sent, not yet at what is inside.** An agent that pastes more about a person than it should into an approved message still gets that message through. Withholding sensitive values is a separate step.
 * **Reads are not held.** Data that is read reaches the agent. Holding writes decides what the agent can *do* with it.

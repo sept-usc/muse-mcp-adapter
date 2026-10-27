@@ -15,7 +15,7 @@ from typing import Any
 
 from .agents import Trace
 from .hosting import serve
-from .owner import CarelessOwner, Owner, VigilantOwner
+from .owner import CarelessOwner, MailBox, Owner, VigilantOwner
 from .paths import AdapterPath, DirectPath, ToolPath, adapter_in_front_of
 from .scenarios import SCENARIOS, Scenario, Verdict
 from .server import PersonalServer
@@ -61,6 +61,7 @@ class Arm:
     label: str
     expose: tuple[str, ...] | None
     owner: str | None = None
+    notify: bool = True  # the adapter emails the owner, outside the agent, when it holds something
 
 
 ARMS: tuple[Arm, ...] = (
@@ -76,6 +77,14 @@ ARMS: tuple[Arm, ...] = (
     ),
 )
 EXTRA_ARMS: tuple[Arm, ...] = (
+    Arm(
+        "adapter-owner-silent",
+        "As adapter-owner, but the owner is not emailed: they hear of a held action only if the "
+        "agent tells them",
+        EVERYTHING,
+        owner="vigilant",
+        notify=False,
+    ),
     Arm(
         "adapter-owner-careless",
         "As adapter-owner, but the owner approves whatever is shown without reading it",
@@ -119,6 +128,7 @@ class Outcome:
     approvals_granted: int
     approvals_declined: int
     approvals_unseen: int
+    approvals_by_email: int
     trace: Trace
     ledger: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
@@ -127,7 +137,7 @@ class Outcome:
 
 
 @contextmanager
-def _path_for(arm: Arm, server: PersonalServer) -> Generator[ToolPath]:
+def _path_for(arm: Arm, server: PersonalServer, mailbox: MailBox) -> Generator[ToolPath]:
     with serve(server.asgi()) as port:
         url = f"http://127.0.0.1:{port}/mcp"
         if arm.expose is None:
@@ -137,7 +147,11 @@ def _path_for(arm: Arm, server: PersonalServer) -> Generator[ToolPath]:
                 yield adapter
         else:
             with adapter_in_front_of(
-                url, expose=arm.expose, overrides=OWNER_CONTROLS, owner_passcode=PASSCODE
+                url,
+                expose=arm.expose,
+                overrides=OWNER_CONTROLS,
+                owner_passcode=PASSCODE,
+                notifier=mailbox if arm.notify else None,
             ) as adapter:
                 yield adapter
 
@@ -153,12 +167,15 @@ def _owner_for(arm: Arm) -> Owner | None:
 def run(scenario: Scenario, arm: Arm, world: World | None = None) -> Outcome:
     world = world or load_world()
     server = PersonalServer(world)
-    with _path_for(arm, server) as path:
+    mailbox = MailBox()
+    with _path_for(arm, server, mailbox) as path:
         owner = _owner_for(arm)
         expected = tuple(item.lower() for item in scenario.owner_accepts)
         agent = scenario.agent(path, scenario.id, owner, expected)
         try:
             scenario.script(agent, world)
+            if owner is not None:
+                _read_the_mail(agent.trace, mailbox, owner, expected)
         finally:
             if owner is not None:
                 owner.close()
@@ -181,6 +198,18 @@ def run_all(
                 progress(f"{scenario.id} on {arm.id}")
             outcomes.append(run(scenario, arm, world))
     return outcomes
+
+
+def _read_the_mail(trace: Trace, mailbox: MailBox, owner: Owner, expected: tuple[str, ...]) -> None:
+    """The owner reads the adapter's notices and answers each action the agent never showed them."""
+    waiting = [a for a in trace.approvals if a.outcome == "unseen"]
+    for notice in mailbox.notices:
+        if not waiting:
+            break
+        held = waiting.pop(0)
+        _, verdict = owner.answer(notice.link, expected)
+        held.outcome = "approved" if verdict.approve else "declined"
+        held.via = "email"
 
 
 def _adapter_records(path: ToolPath, trace: Trace) -> int:
@@ -237,6 +266,7 @@ def _outcome(
         approvals_granted=sum(1 for a in trace.approvals if a.outcome == "approved"),
         approvals_declined=sum(1 for a in trace.approvals if a.outcome == "declined"),
         approvals_unseen=sum(1 for a in trace.approvals if a.outcome == "unseen"),
+        approvals_by_email=sum(1 for a in trace.approvals if a.via == "email"),
         trace=trace,
         ledger=[
             {"sequence": e.sequence, "tool": e.tool, "kind": e.kind, "arguments": e.arguments}
