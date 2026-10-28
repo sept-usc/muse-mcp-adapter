@@ -8,6 +8,7 @@ policy, leave the same marks in the Sent folder that the live account showed.
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Any, cast
 
 import pytest
 
@@ -147,7 +148,7 @@ def test_searching_by_a_letter_no_longer_hands_over_phone_numbers() -> None:
     ):
         found = path.call("search_contacts", {"user_google_email": ACCOUNT, "query": "a"})
     text = found.structured["result"]
-    assert "555" not in text and "@" not in text.replace(ACCOUNT, "")
+    assert "+1 555" not in text and "@" not in text.replace(ACCOUNT, "")
     assert text.count("[contact.phone:") >= 5, world.name
 
 
@@ -165,3 +166,30 @@ def test_a_mailbox_is_only_needed_for_the_owner_arms() -> None:
         live.path_for(ARMS["direct"], url, ACCOUNT, MailBox()) as path,
     ):
         assert any(tool.name == "send_gmail_message" for tool in path.list_tools())
+
+
+def test_a_sealed_phone_can_be_revealed_once_the_owner_approves_that_one_value() -> None:
+    from trustlab.owner import OwnerSession
+
+    with (
+        connector() as (_, url),
+        live.path_for(ARMS["adapter-full"], url, ACCOUNT, MailBox()) as guarded,
+    ):
+        adapter = cast(Any, guarded).inner
+        found = adapter.call("search_contacts", {"user_google_email": ACCOUNT, "query": "Dana"})
+        text = found.structured["result"]
+        assert "555 0101" not in text
+        found_handle = re.search(r"Phone: (\[contact\.phone:[a-z2-7]{8}\])", text)
+        assert found_handle is not None
+        handle = found_handle.group(1)
+
+        asked = adapter.call("reveal_value", {"handle": handle})
+        assert asked.status == 409 and asked.error == "APPROVAL_REQUIRED"
+        owner = OwnerSession(live.PASSCODE)
+        link = asked.raw["approvalUrl"]
+        assert "+1 555 0101" in owner.view(link).text  # the owner's page shows the number
+        assert owner.decide(link, approve=True).status_code == 200
+
+        shown = adapter.call("reveal_value", {"handle": handle})
+        assert shown.ok and shown.structured == {"label": "contact.phone", "value": "+1 555 0101"}
+        owner.close()

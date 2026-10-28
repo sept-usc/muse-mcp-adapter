@@ -132,7 +132,7 @@ A sealed value is useless when you actually want it read out: "what is Dana's nu
 With `reveal` set on any tool of a server, the connector publishes one more operation, `reveal_value`, which takes a `handle`:
 
 1. The agent calls `reveal_value` with the handle it was given. The adapter answers `409 APPROVAL_REQUIRED` with a one-time link, and tells the agent to hand it to you.
-2. You open the link **in your own browser**, not one the agent controls. The page shows the label and **the value itself**, and asks for your passcode. You choose *Show it* or *Keep it sealed*.
+2. You open the link **in your own browser**, not one the agent controls. The page shows the label and **the value itself**, and asks for your passcode. You choose *Approve and show once* or *Decline*.
 3. If you approve, the agent calls again with the same handle and is shown the value, once. Asking again needs a new approval. If you decline, it stays declined.
 
 Only labels listed in `reveal` can be asked for. Any other handle is refused with `HANDLE_NOT_ALLOWED_HERE`, a made-up handle with `HANDLE_UNKNOWN`. The approval is for this handle on this connection, lasts 15 minutes, and is spent by one reveal. The record counts each reveal by label and handle, never the value. The same approval mechanism, passcode and lockout as [owner approval](owner-approval.md) apply, and reveal needs `approvalMode: owner`.
