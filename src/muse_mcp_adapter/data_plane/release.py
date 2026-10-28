@@ -20,6 +20,10 @@ A tool's policy may carry a ``release`` block:
     label and a rung of ``handle`` or ``withhold``. ``keep`` lists values that stay readable, such
     as the owner's own address. The rule covers every string in the result, structured or not.
 
+``reveal``
+    Labels the owner may choose to show the agent, one value at a time. The value stays sealed
+    until the agent asks to see a particular handle and the owner approves that one value.
+
 The adapter has no model and does not decide what is sensitive; the owner's policy does, field by
 field. What it adds is that the rule is enforced on the way out and on the way back in, where the
 agent cannot argue with it.
@@ -29,7 +33,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any, Protocol, cast
@@ -81,10 +85,11 @@ class ReleasePolicy:
     slots: Mapping[str, tuple[str, ...]] = field(default_factory=dict[str, tuple[str, ...]])
     patterns: tuple[str, ...] = ()
     text: tuple[TextRule, ...] = ()
+    reveal: tuple[str, ...] = ()
 
     @property
     def active(self) -> bool:
-        return bool(self.fields or self.slots or self.patterns or self.text)
+        return bool(self.fields or self.slots or self.patterns or self.text or self.reveal)
 
 
 class Vault(Protocol):
@@ -138,6 +143,7 @@ def release_of(primitive: PublishedPrimitive) -> ReleasePolicy:
                     str(rule.get("pattern") or ""),
                 )
             )
+    reveal = data.get("reveal")
     return ReleasePolicy(
         fields=tuple(fields),
         slots=slots,
@@ -145,6 +151,9 @@ def release_of(primitive: PublishedPrimitive) -> ReleasePolicy:
         if isinstance(patterns, list)
         else (),
         text=tuple(text),
+        reveal=tuple(str(label) for label in cast(list[object], reveal))
+        if isinstance(reveal, list)
+        else (),
     )
 
 
@@ -496,6 +505,29 @@ class ReleaseEngine:
         self._vault = vault
         self._ledger = ledger
         self._clock = clock
+
+    def reveal_labels(self, primitives: Iterable[PublishedPrimitive]) -> frozenset[str]:
+        """The labels any tool in the catalog lets the owner choose to reveal."""
+        return frozenset(label for item in primitives for label in release_of(item).reveal)
+
+    def find(self, connection_id: str, handle: str) -> tuple[str, str, str] | None:
+        """(label, value, handle id) for a handle this connection holds, else None."""
+        match = HANDLE.fullmatch(handle.strip())
+        if match is None:
+            return None
+        found = self._vault.lookup(connection_id, match.group(2), self._clock())
+        if found is None or found[0] != match.group(1):
+            return None
+        return found[0], found[1], match.group(2)
+
+    def note(
+        self, kind: str, *, connection_id: str, operation: str, label: str, detail: str
+    ) -> None:
+        if self._ledger is not None:
+            self._ledger.record(
+                kind, connection_id=connection_id, operation=operation, label=label,
+                detail=detail, now=self._clock(),
+            )  # fmt: skip
 
     def open_request(
         self, request: DataPlaneRequest, primitive: PublishedPrimitive

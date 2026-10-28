@@ -188,6 +188,29 @@ class AdapterRuntime:
                 duration_ms=max(0, int((self._monotonic() - started) * 1000)),
             )
 
+    def reveal(
+        self,
+        principal: Principal,
+        arguments: Mapping[str, object],
+        *,
+        request_id: str | None = None,
+    ) -> DataPlaneResponse:
+        """Ask to see one sealed value. The owner decides; see ``ToolDataPlaneService.reveal``."""
+        server = self._repository.get_server(principal.server_id)
+        if not server.enabled:
+            raise AuthorizationError("This connector is disabled")
+        request = DataPlaneRequest(
+            request_id=request_id or str(uuid4()),
+            server_id=principal.server_id,
+            public_operation_id="reveal_value",
+            local_identity_id=principal.identity_id,
+            connection_id=principal.connection_id,
+            arguments=arguments,
+            idempotency_key=None,
+        )
+        self._rate.acquire(principal.connection_id)
+        return self._tools.reveal(request)
+
     def resume(
         self,
         principal: Principal,

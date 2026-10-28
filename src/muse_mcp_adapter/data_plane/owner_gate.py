@@ -24,6 +24,7 @@ A tool's policy may carry ``ownerControls``:
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ APPROVAL_MODES = ("always", "risk", "never")
 DEFAULT_UNTRUSTED_WINDOW_SECONDS = 1800
 DEFAULT_REQUEST_TTL_SECONDS = 900
 MAX_PENDING_PER_CONNECTION = 20
+REVEAL_OPERATION_ID = "reveal_value"
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +163,68 @@ class OwnerGate:
             return Decision("run", approval_id=f"auto:{operation_id}")
 
         reasons = tuple(signals) or ("The owner asked to approve every use of this tool",)
+        recipients = tuple(
+            value for path in controls.recipients for value in values_at(arguments, path)
+        )
+        return self._ask_owner(
+            connection_id=connection_id,
+            server_id=server_id,
+            public_operation_id=primitive.public_operation_id,
+            classification=primitive.classification,
+            content_digest=content_digest,
+            arguments=arguments,
+            reasons=reasons,
+            recipients=recipients,
+            operation_id=operation_id,
+            now=now,
+        )
+
+    def decide_reveal(
+        self,
+        *,
+        connection_id: str,
+        server_id: str,
+        handle: str,
+        label: str,
+        operation_id: str,
+        now: str,
+    ) -> Decision:
+        """Whether the agent may see one sealed value. It always waits for the owner.
+
+        The approval is for this one handle on this one connection, is spent by one reveal, and
+        lapses like any other. A declined reveal stays declined.
+        """
+        digest = hashlib.sha256(f"reveal|{connection_id}|{handle}".encode()).hexdigest()
+        return self._ask_owner(
+            connection_id=connection_id,
+            server_id=server_id,
+            public_operation_id=REVEAL_OPERATION_ID,
+            classification="reveal",
+            content_digest=digest,
+            arguments={"reveal": label, "handle": handle},
+            reasons=(
+                f"The assistant asked to see a value you keep sealed ({label}). "
+                "Approving shows it this one value.",
+            ),
+            recipients=(),
+            operation_id=operation_id,
+            now=now,
+        )
+
+    def _ask_owner(
+        self,
+        *,
+        connection_id: str,
+        server_id: str,
+        public_operation_id: str,
+        classification: str,
+        content_digest: str,
+        arguments: object,
+        reasons: tuple[str, ...],
+        recipients: tuple[str, ...],
+        operation_id: str,
+        now: str,
+    ) -> Decision:
         earlier = self._store.latest_for(connection_id, content_digest)
         if earlier is not None and not earlier.expired(now):
             if earlier.status == APPROVED:
@@ -178,14 +242,11 @@ class OwnerGate:
                 "Too many actions are already waiting for the owner. Do not send more: "
                 "tell the user."
             )
-        recipients = tuple(
-            value for path in controls.recipients for value in values_at(arguments, path)
-        )
         created, token, owner_token = self._store.create_request(
             connection_id=connection_id,
             server_id=server_id,
-            public_operation_id=primitive.public_operation_id,
-            classification=primitive.classification,
+            public_operation_id=public_operation_id,
+            classification=classification,
             content_digest=content_digest,
             arguments=arguments,
             reasons=reasons,

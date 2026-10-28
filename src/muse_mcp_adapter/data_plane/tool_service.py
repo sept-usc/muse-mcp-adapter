@@ -20,6 +20,8 @@ from ..domain.errors import (
     DownstreamContentError,
     DownstreamToolError,
     DownstreamUnavailableError,
+    HandleNotAllowedError,
+    HandleUnknownError,
     IdempotencyConflictError,
     InputRequiredError,
     InvalidStateError,
@@ -51,7 +53,7 @@ from .content import (
     normalize_block,
     too_large,
 )
-from .owner_gate import OwnerGate, check_arguments
+from .owner_gate import REVEAL_OPERATION_ID, OwnerGate, check_arguments
 from .release import ReleaseEngine
 from .serde import response_from_dict, response_to_dict
 from .tool_client import (
@@ -314,6 +316,109 @@ class ToolDataPlaneService:
             data={"actor": actor, "outcome": outcome},
         )
         return record
+
+    def reveal(self, request: DataPlaneRequest) -> DataPlaneResponse:
+        """Show the agent one sealed value, once the owner has approved that one value.
+
+        The owner chooses which labels may be revealed at all (``release.reveal``). Even then the
+        value is shown only after the owner approves this handle on their own page, once.
+        """
+        if self._release is None or self._owner_gate is None:
+            raise OperationNotFoundError("Revealing sealed values is not available here")
+        handle = request.arguments.get("handle")
+        if not isinstance(handle, str) or set(request.arguments) != {"handle"}:
+            raise RequestValidationError(
+                f'{REVEAL_OPERATION_ID} takes exactly one argument: {{"handle": "[label:id]"}}'
+            )
+        catalog = self._repository.get_active_catalog(request.server_id)
+        allowed = self._release.reveal_labels(catalog.primitives)
+        if not allowed:
+            raise OperationNotFoundError("The owner has not allowed any sealed value to be shown")
+        found = self._release.find(request.connection_id, handle)
+        if found is None:
+            raise HandleUnknownError(
+                f"{handle} is not a value this connection was given, or it has expired. Do not "
+                "make up or edit sealed values: read them again from the source."
+            )
+        label, value, handle_id = found
+        if label not in allowed:
+            self._release.note(
+                "refused",
+                connection_id=request.connection_id,
+                operation=REVEAL_OPERATION_ID,
+                label=label,
+                detail=f"{handle_id} reveal not allowed",
+            )
+            raise HandleNotAllowedError(
+                f"The owner has not allowed {label} to be shown to you. Tell the user you "
+                "cannot read this value."
+            )
+        now = self._clock()
+        operation_id = self._operation_id_factory()
+        decision = self._owner_gate.decide_reveal(
+            connection_id=request.connection_id,
+            server_id=request.server_id,
+            handle=handle.strip(),
+            label=label,
+            operation_id=operation_id,
+            now=now,
+        )
+        if decision.outcome == "denied":
+            self._release.note(
+                "refused",
+                connection_id=request.connection_id,
+                operation=REVEAL_OPERATION_ID,
+                label=label,
+                detail=f"{handle_id} declined by the owner",
+            )
+            raise ApprovalDeniedError(
+                "The owner looked at this request and declined it. Do not ask again or try to "
+                "get around it: tell the user you could not read the value."
+            )
+        if decision.outcome == "wait":
+            assert decision.request is not None
+            if decision.owner_token is not None and self._on_held and self._approval_link:
+                self._on_held(
+                    REVEAL_OPERATION_ID,
+                    decision.reasons,
+                    self._approval_link(decision.owner_token),
+                    decision.request.expires_at,
+                )
+            url = (
+                self._approval_link(decision.token)
+                if decision.token is not None and self._approval_link is not None
+                else None
+            )
+            raise ApprovalRequiredError(
+                _owner_message(REVEAL_OPERATION_ID, decision.reasons, url),
+                operation_id=operation_id,
+                action_digest=decision.request.content_digest,
+                approval_url=url,
+                reasons=decision.reasons,
+            )
+        self._release.note(
+            "revealed",
+            connection_id=request.connection_id,
+            operation=REVEAL_OPERATION_ID,
+            label=label,
+            detail=handle_id,
+        )
+        provenance = cast(
+            Mapping[str, object],
+            freeze_json({"serverId": request.server_id, "kind": "reveal", "label": label}),
+        )
+        return DataPlaneResponse(
+            request_id=request.request_id,
+            catalog_version=catalog.catalog_version,
+            public_operation_id=REVEAL_OPERATION_ID,
+            primitive_type="tool",
+            provenance=provenance,
+            operation_id=operation_id,
+            operation_status=COMPLETED,
+            structured_content=cast(
+                Mapping[str, object], freeze_json({"label": label, "value": value})
+            ),
+        )
 
     def _resolve(
         self, request: DataPlaneRequest

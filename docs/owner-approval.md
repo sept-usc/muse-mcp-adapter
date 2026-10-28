@@ -103,8 +103,13 @@ muse-mcp-adapter --database adapter.db approval-decide --request-id <id> --decli
 
 `approvals` shows each waiting action with its exact arguments. `--all` includes the decided ones.
 
+## Showing one sealed value
+
+The same page and passcode also decide whether the agent may see a value you keep sealed, one at a time. See [Letting the agent see one value](sealed-values.md#letting-the-agent-see-one-value-reveal).
+
 ## What it does not do
 
+* **The passcode is only as safe as the browser you type it in.** Open approval links in your own browser or on your phone. A browser the agent can drive can capture what you type.
 * **A held action the agent never mentions is only as visible as your email.** If the agent hides it, nothing is sent, which is safe. With email notifications set up, you are told anyway; without them you are not.
 * **It is only as good as the person approving.** An owner who approves without reading approves an attack too. The [trust lab](trust-lab.md) measures this with an owner who reads and one who does not.
 * **It shows you what is sent, and it is only as good as your reading.** An agent that pastes more about a person than it should into a message still gets that message in front of you for approval. [Sealed values](sealed-values.md) make that less likely: what the agent was never given, it cannot paste.

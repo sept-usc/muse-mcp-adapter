@@ -10,7 +10,8 @@ from ..domain.models import PublishedCatalog, PublishedPrimitive
 
 GET_OPERATION_ID = "get_operation_status"
 RESUME_OPERATION_ID = "resume_operation"
-RESERVED_OPERATION_IDS = frozenset({GET_OPERATION_ID, RESUME_OPERATION_ID})
+REVEAL_OPERATION_ID = "reveal_value"
+RESERVED_OPERATION_IDS = frozenset({GET_OPERATION_ID, RESUME_OPERATION_ID, REVEAL_OPERATION_ID})
 
 _TEMPLATE_FIELD = re.compile(r"\{([A-Za-z][A-Za-z0-9_]*)\}")
 _LOCAL_REF = re.compile(r"^#/(\$defs|definitions)/(.+)$")
@@ -52,6 +53,8 @@ def compile_openapi(
     paths["/executions/{operationId}"] = {"get": _status_operation()}
     if has_tools:
         paths["/executions/{operationId}/resume"] = {"post": _resume_operation()}
+    if any(release_of(item).reveal for item in catalog.primitives):
+        paths[f"/operations/{REVEAL_OPERATION_ID}"] = {"post": _reveal_operation()}
 
     schemas: dict[str, object] = {
         "Result": _RESULT_SCHEMA,
@@ -393,6 +396,60 @@ def _status_operation() -> dict[str, object]:
             },
             "404": {
                 "description": "No such execution.",
+                "content": {
+                    "application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}
+                },
+            },
+        },
+    }
+
+
+def _reveal_operation() -> dict[str, object]:
+    return {
+        "operationId": REVEAL_OPERATION_ID,
+        "summary": "Ask the owner to let you see one sealed value",
+        "description": (
+            "Some values arrive as a handle such as [contact.phone:k3f9a2bq] because the owner "
+            "keeps them sealed. Only if the user needs to read one, call this with that handle. "
+            "It answers 409 APPROVAL_REQUIRED with a link: tell the user to open it and decide. "
+            "After they approve, call this again with the same handle and you are shown that one "
+            "value, once. If they decline, do not ask again."
+        ),
+        "x-muse-classification": "read",
+        "x-requires-confirmation": True,
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "handle": {
+                                "type": "string",
+                                "description": "The handle exactly as you were given it.",
+                            }
+                        },
+                        "required": ["handle"],
+                        "additionalProperties": False,
+                    }
+                }
+            },
+        },
+        "responses": {
+            "200": {
+                "description": "The owner approved: the value, once.",
+                "content": {
+                    "application/json": {"schema": {"$ref": "#/components/schemas/Result"}}
+                },
+            },
+            "409": {
+                "description": "The owner has to approve first.",
+                "content": {
+                    "application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}
+                },
+            },
+            "403": {
+                "description": "The owner declined, or does not allow this value to be shown.",
                 "content": {
                     "application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}
                 },

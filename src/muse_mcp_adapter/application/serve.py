@@ -248,6 +248,7 @@ def build_application(
         if config.approval_mode == "signed"
         else None
     )
+    release = _release_engine(repository, database, clock)
     owner_gate: OwnerGate | None = None
     approval_web: ApprovalWeb | None = None
     if config.approval_mode == "owner":
@@ -259,7 +260,14 @@ def build_application(
                 "muse-mcp-adapter owner-passcode"
             )
         owner_gate = OwnerGate(repository, store)
-        approval_web = ApprovalWeb(store=store, clock=clock, public_url=config.public_url)
+        approval_web = ApprovalWeb(
+            store=store,
+            clock=clock,
+            public_url=config.public_url,
+            reveal_value=lambda connection_id, handle: _sealed_value(
+                release, connection_id, handle
+            ),
+        )
     artifact_root = config.artifact_root or Path(database).parent / "artifacts"
     artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     return build_http_application(
@@ -273,13 +281,18 @@ def build_application(
         owner_gate=owner_gate,
         approval_web=approval_web,
         notifier=notifier or _smtp(config, env),
-        release=_release_engine(repository, database, clock),
+        release=release,
         oauth_flow=flow,
         rate_limit=config.rate_limit,
         rate_window_seconds=config.rate_window_seconds,
         per_server_concurrency=config.per_server_concurrency,
         idempotency_window_seconds=config.idempotency_window_seconds,
     )
+
+
+def _sealed_value(release: ReleaseEngine, connection_id: str, handle: str) -> str | None:
+    found = release.find(connection_id, handle)
+    return None if found is None else found[1]
 
 
 def _release_engine(

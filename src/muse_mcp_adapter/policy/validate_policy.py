@@ -14,7 +14,7 @@ MAX_TIMEOUT_SECONDS = 300
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 MAX_PATTERN_LENGTH = 256
 MAX_DESCRIPTION_CHARS = 2000
-RESERVED_OPERATION_IDS = frozenset({"get_operation_status", "resume_operation"})
+RESERVED_OPERATION_IDS = frozenset({"get_operation_status", "resume_operation", "reveal_value"})
 FORBIDDEN_URI_SCHEMES = frozenset({"file", "data", "javascript", "vbscript", "ftp", "gopher"})
 
 
@@ -236,7 +236,7 @@ def _owner_controls_issues(value: object, key: str, classification: object) -> l
     return issues
 
 
-_RELEASE_KEYS = frozenset({"fields", "slots", "patterns", "text"})
+_RELEASE_KEYS = frozenset({"fields", "slots", "patterns", "text", "reveal"})
 _TEXT_FINDS = ("email", "phone", "regex")
 _TEXT_PATTERN_MAX = 200
 _TEXT_RUNGS = ("handle", "withhold")
@@ -290,6 +290,11 @@ def _release_issues(value: object, key: str) -> list[str]:
         if names is None or any(name not in _PATTERN_NAMES for name in names):
             issues.append(f"release.patterns for {key} must be from: {', '.join(_PATTERN_NAMES)}")
     issues.extend(_text_rule_issues(release.get("text"), key))
+    reveal = release.get("reveal")
+    if reveal is not None:
+        labels = _string_list(reveal)
+        if labels is None or not all(_LABEL.fullmatch(label) for label in labels):
+            issues.append(f"release.reveal for {key} must be a list of labels")
     return issues
 
 

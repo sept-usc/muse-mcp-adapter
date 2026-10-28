@@ -77,7 +77,8 @@ Add a `release` block to a tool's policy (see the [policy reference](usage.md#2-
 | `fields` | A list of `{path, label, rung}`. `path` is `$` followed by `.name` and `[*]` steps. `label` names what the value is (`contact.email`, two or more lowercase words joined by dots). |
 | `slots` | For arguments of this tool, the labels whose handles may be filled in there. A nested argument uses a dotted name (`meta.who`). |
 | `patterns` | What `redact` blanks out: any of `card` (checked by the card number checksum), `ssn`, `iban`. Default: all three. |
-| `text` | Rules for servers that answer in prose rather than fields. See the next section. |
+| `text` | Rules for servers that answer in prose rather than fields. See [Servers that answer in prose](#servers-that-answer-in-prose). |
+| `reveal` | Labels you may choose to show the agent, one value at a time. See [Letting the agent see one value](#letting-the-agent-see-one-value-reveal). |
 
 The same value can be shown fully by one tool and sealed by another. A lookup of one person may show a phone number in full, while a bulk export of everyone's seals it. That is how you keep a convenient answer without letting one call hand over the whole book.
 
@@ -109,6 +110,34 @@ Many servers return one block of formatted text instead of fields: a contact car
 * The rule applies to every string in the result, structured or plain text, and to every sender, recipient and body in it. The same address gets the same handle everywhere, so a sender shown in a header can be replied to by its handle in a `to` slot.
 
 A text rule finds what is shaped like an address or a number, or what your pattern matches. It cannot know that a sentence names a diagnosis. For that, keep the sensitive field somewhere a rule can reach, or withhold the whole line it sits on.
+
+## Letting the agent see one value: reveal
+
+A sealed value is useless when you actually want it read out: "what is Dana's number?" Instead of leaving the value open everywhere, you can make some labels **revealable**. The value stays a handle until the agent asks to see that one handle and you approve that one request.
+
+```json
+{
+  "primitiveKey": "tool:search_contacts",
+  "allowed": true,
+  "publicOperationId": "search_contacts",
+  "classification": "read",
+  "maxResultBytes": 262144,
+  "release": {
+    "text": [{"find": "phone", "label": "contact.phone", "rung": "handle"}],
+    "reveal": ["contact.phone"]
+  }
+}
+```
+
+With `reveal` set on any tool of a server, the connector publishes one more operation, `reveal_value`, which takes a `handle`:
+
+1. The agent calls `reveal_value` with the handle it was given. The adapter answers `409 APPROVAL_REQUIRED` with a one-time link, and tells the agent to hand it to you.
+2. You open the link **in your own browser**, not one the agent controls. The page shows the label and **the value itself**, and asks for your passcode. You choose *Show it* or *Keep it sealed*.
+3. If you approve, the agent calls again with the same handle and is shown the value, once. Asking again needs a new approval. If you decline, it stays declined.
+
+Only labels listed in `reveal` can be asked for. Any other handle is refused with `HANDLE_NOT_ALLOWED_HERE`, a made-up handle with `HANDLE_UNKNOWN`. The approval is for this handle on this connection, lasts 15 minutes, and is spent by one reveal. The record counts each reveal by label and handle, never the value. The same approval mechanism, passcode and lockout as [owner approval](owner-approval.md) apply, and reveal needs `approvalMode: owner`.
+
+Reveal does not help against a fooled agent that tricks you into approving. Read the page: it shows exactly what you are about to show.
 
 ## Check that your rules match
 

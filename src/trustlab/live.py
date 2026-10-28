@@ -76,8 +76,8 @@ def sealing(account: str) -> dict[str, dict[str, Any]]:
         "get_gmail_message_content": {"release": {"text": [emails, phones]}},
         "get_gmail_messages_content_batch": {"release": {"text": [emails, phones]}},
         "list_contacts": {"release": {"text": [emails, phones, private]}},
-        "search_contacts": {"release": {"text": [emails, private]}},
-        "get_contact": {"release": {"text": [emails, private]}},
+        "search_contacts": {"release": {"text": [emails, phones, private]}},
+        "get_contact": {"release": {"text": [emails, phones, private]}},
         "get_events": {"release": {"text": [emails]}},
         "send_gmail_message": {"release": {"slots": slots}},
     }

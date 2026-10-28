@@ -51,6 +51,7 @@ def test_the_sealed_values_examples_pass_the_publishing_checks() -> None:
         "contacts_search",
         "mail_send",
         "get_contact",
+        "search_contacts",
     ]
     for policy in policies:
         name = policy["primitiveKey"].split(":", 1)[1]

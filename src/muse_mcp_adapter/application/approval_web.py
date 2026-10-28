@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import json
 from collections.abc import Callable
+from typing import cast
 from urllib.parse import parse_qs
 
 import anyio
@@ -18,6 +19,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from ..data_plane.owner_gate import REVEAL_OPERATION_ID
 from ..domain.errors import ConflictError
 from ..persistence.owner_store import APPROVED, DENIED, PENDING, ApprovalRequest, OwnerStore
 from .web_pages import page
@@ -29,10 +31,19 @@ NOT_WAITING = "This request is no longer waiting for a decision."
 
 
 class ApprovalWeb:
-    def __init__(self, *, store: OwnerStore, clock: Callable[[], str], public_url: str) -> None:
+    def __init__(
+        self,
+        *,
+        store: OwnerStore,
+        clock: Callable[[], str],
+        public_url: str,
+        reveal_value: Callable[[str, str], str | None] | None = None,
+    ) -> None:
+        """``reveal_value(connection_id, handle)`` is the sealed value, for a request to show it."""
         self._store = store
         self._clock = clock
         self._public_url = public_url.rstrip("/")
+        self._reveal_value = reveal_value
 
     def link(self, token: str) -> str:
         return f"{self._public_url}{PATH}/{token}"
@@ -63,9 +74,23 @@ class ApprovalWeb:
                 "This approval link has expired. Ask the assistant to try the action again.",
                 410,
             )
+        if pending.public_operation_id == REVEAL_OPERATION_ID:
+            return page(
+                "Show this value to the assistant?",
+                "",
+                extra=_reveal_form(
+                    pending, self._sealed_value(pending), locked=self._store.locked(now)
+                ),
+            )
         return page(
             "Approve this action?", "", extra=_form(pending, locked=self._store.locked(now))
         )
+
+    def _sealed_value(self, item: ApprovalRequest) -> str | None:
+        handle = _argument(item, "handle")
+        if self._reveal_value is None or handle is None:
+            return None
+        return self._reveal_value(item.connection_id, handle)
 
     def _decide(self, token: str, form: dict[str, str]) -> Response:
         pending = self._store.by_token(token)
@@ -111,6 +136,44 @@ def _decided(item: ApprovalRequest) -> str:
     if item.status == DENIED:
         return "This action was declined."
     return "This action was approved and has already run."
+
+
+def _argument(item: ApprovalRequest, name: str) -> str | None:
+    raw: object = item.arguments
+    value = cast("dict[str, object]", raw).get(name) if isinstance(raw, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _reveal_form(item: ApprovalRequest, value: str | None, *, locked: bool) -> str:
+    esc = html.escape
+    label = esc(_argument(item, "reveal") or "a sealed value")
+    shown = (
+        "<pre style='white-space:pre-wrap;word-break:break-word;background:#f4f4f4;"
+        f"padding:.8rem;border-radius:6px'>{esc(value)}</pre>"
+        if value is not None
+        else "<p><b>This value is no longer held, so there is nothing to show.</b></p>"
+    )
+    notice = (
+        "<p><b>Approvals are paused after too many wrong passcodes. Try again later.</b></p>"
+        if locked
+        else ""
+    )
+    return (
+        f"<p>The assistant asks to see one value you keep sealed: <b>{label}</b>.</p>"
+        f"<h3>The value</h3>{shown}"
+        "<p>If you approve, the assistant is shown this one value, once. It may repeat it in the "
+        "chat or use it. If you decline, it stays sealed and the assistant is told not to ask "
+        "again.</p>"
+        f"<form method=post>{notice}"
+        "<p><label>Your approval passcode<br>"
+        "<input type=password name=passcode autocomplete=off required "
+        "style='width:100%;padding:.5rem'></label></p>"
+        "<p><button name=decision value=approve style='padding:.6rem 1.2rem'>Show it</button> "
+        "<button name=decision value=decline style='padding:.6rem 1.2rem'>Keep it sealed"
+        "</button></p></form>"
+        "<p style='color:#666'>Only enter your passcode here, on this page. The assistant never "
+        "needs it. Use your own browser, not one the assistant controls.</p>"
+    )
 
 
 def _form(item: ApprovalRequest, *, locked: bool) -> str:

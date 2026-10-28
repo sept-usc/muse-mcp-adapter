@@ -149,6 +149,14 @@ def create_http_app(
             )
         return JSONResponse(body)
 
+    async def reveal(request: Request) -> Response:
+        principal = principal_of(request)
+        arguments = await _arguments(request)
+        result = await anyio.to_thread.run_sync(
+            lambda: runtime.reveal(principal, arguments, request_id=_request_id(request))
+        )
+        return JSONResponse(response_to_dict(result))
+
     async def resume(request: Request) -> Response:
         principal = principal_of(request)
         payload = await _arguments(request)
@@ -223,6 +231,7 @@ def create_http_app(
     routes = [
         Route("/health", health, methods=["GET"]),
         Route("/c/{slug}/openapi.json", openapi, methods=["GET"]),
+        Route("/c/{slug}/operations/reveal_value", reveal, methods=["POST"]),
         Route("/c/{slug}/operations/{public_operation_id}", execute, methods=["POST"]),
         Route("/c/{slug}/executions/{operation_id}", operation, methods=["GET"]),
         Route("/c/{slug}/executions/{operation_id}/resume", resume, methods=["POST"]),
