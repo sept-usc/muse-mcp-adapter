@@ -314,3 +314,53 @@ def test_world_starts_quickly(tmp_path: Path, wait: int) -> None:
     with _world(tmp_path):
         pass
     assert time.monotonic() - started < 10 + wait
+
+
+def test_the_sign_in_connection_may_wait_as_long_as_the_link_is_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner signs in at the provider while the adapter's own connection waits. Consent
+    screens take longer than an ordinary request, so that wait is bounded by the link, not by
+    the 30 seconds that bound a tool call."""
+    from muse_mcp_adapter.application import oauth_web
+
+    seen: list[float] = []
+    real = oauth_web.StreamableHttpSessionFactory
+
+    def recording(**kwargs: object) -> object:
+        seen.append(float(kwargs.get("timeout_seconds", 30.0)))  # type: ignore[arg-type]
+        return real(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(oauth_web, "StreamableHttpSessionFactory", recording)
+    with _world(tmp_path) as world:
+        linked = world.link()
+        link = world.call(linked.token, linked.record.slug).json()["authorizationUrl"]
+        assert _browser_login(link).status_code == 200
+    assert seen and all(value >= 600 for value in seen), seen
+
+
+def test_an_approval_that_arrives_after_the_adapter_gave_up_gets_a_clear_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the adapter's own connection ended before the provider answered, the late answer must
+    produce an explanation, not a server error."""
+    from muse_mcp_adapter.application import oauth_web
+
+    real = oauth_web.StreamableHttpSessionFactory
+
+    def impatient(**kwargs: object) -> object:
+        return real(**{**kwargs, "timeout_seconds": 1.0})  # type: ignore[arg-type]
+
+    monkeypatch.setattr(oauth_web, "StreamableHttpSessionFactory", impatient)
+    with _world(tmp_path) as world:
+        linked = world.link()
+        link = world.call(linked.token, linked.record.slug).json()["authorizationUrl"]
+        with httpx.Client(timeout=30) as owner:
+            start = owner.get(link)
+            callback = owner.get(start.headers["location"]).headers["location"]
+            time.sleep(3)  # the owner is still reading the consent screen
+            late = owner.get(callback)
+        assert late.status_code == 400, late.text
+        assert "expired" in late.text.lower() and "new link" in late.text.lower()
+        # and the connection is simply not connected yet; a fresh link still works
+        assert world.call(linked.token, linked.record.slug).status_code == 401
