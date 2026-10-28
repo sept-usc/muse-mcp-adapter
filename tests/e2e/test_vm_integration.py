@@ -240,6 +240,16 @@ def test_a_rejected_token_can_be_corrected_by_running_the_same_command_again(
         again = capsys.readouterr().out
         assert "already connected" in again and "Connector URL" not in again
 
+        # A connection that was unlinked is revoked, not connected: adding the server again
+        # makes a new one instead of saying there is nothing to do.
+        assert cli.main(["unlink", "tracker", "--name", "muse"]) == 0
+        capsys.readouterr()
+        code = cli.main(argv)
+        captured = capsys.readouterr()
+        relinked = captured.out
+        assert code == 0, captured.err + captured.out
+        assert "already connected" not in relinked and "Connector URL" in relinked
+
 
 def test_add_server_for_a_public_server_needs_no_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

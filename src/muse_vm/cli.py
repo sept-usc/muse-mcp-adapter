@@ -507,7 +507,11 @@ def cmd_add_server(args: argparse.Namespace) -> None:
                 f"{server_id} is already registered at {known[server_id].get('endpoint')}. "
                 "Use another --name for the new address, or remove it first."
             )
-        connections = [c for c in admin.links() if c.get("serverId") == server_id]
+        connections = [
+            c
+            for c in admin.links()
+            if c.get("serverId") == server_id and not (c.get("revoked") or c.get("revokedAt"))
+        ]
         if connections:
             say(
                 f"{server_id} is already connected ({len(connections)} connection(s)): "
@@ -532,15 +536,20 @@ def cmd_add_server(args: argparse.Namespace) -> None:
         found = _discover_with_a_second_chance(admin, t, server_id, secret_name, args)
     say(f"  found {found} tools, resources and prompts")
 
-    if args.policy:
-        policies = json.loads(Path(args.policy).read_text())
+    live_version, live = admin.published(server_id)
+    if live and not args.policy:
+        # Linking again after an unlink: the policy the owner reviewed is still the live one.
+        say(f"  keeping the policy already published (version {live_version})")
     else:
-        policies = admin.draft_policy(server_id, expose_reads=not args.no_reads)
-    exposed = pick_exposure(policies, allow=args.allow)
-    say("  exposed to Muse:" if exposed else "  nothing is exposed yet (use --allow TOOL).")
-    for item in exposed:
-        say(f"    {item}")
-    admin.publish(server_id, "1.0.0", policies)
+        if args.policy:
+            policies = json.loads(Path(args.policy).read_text())
+        else:
+            policies = admin.draft_policy(server_id, expose_reads=not args.no_reads)
+        exposed = pick_exposure(policies, allow=args.allow)
+        say("  exposed to Muse:" if exposed else "  nothing is exposed yet (use --allow TOOL).")
+        for item in exposed:
+            say(f"    {item}")
+        admin.publish(server_id, _next_version(live_version) if live else "1.0.0", policies)
     if linked is None:
         linked = admin.link(server_id, label, args.credential, secret_name)
     dep.servers = sorted({*dep.servers, server_id})
