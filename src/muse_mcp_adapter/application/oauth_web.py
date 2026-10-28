@@ -231,6 +231,10 @@ class OAuthWebFlow:
             auth_factory=capturing_factory,
             endpoint_policy=self._policy,
             transport=self._transport,
+            # The owner signs in at the provider while this connection waits for them. Consent
+            # screens take far longer than the 30 seconds that bound an ordinary request, so
+            # the wait is bounded by how long the sign-in link is valid instead.
+            timeout_seconds=float(self._ttl),
         )
         async with sessions.connect(server.endpoint, credential):
             pass
@@ -301,6 +305,15 @@ class OAuthWebFlow:
             )
         self._pending.pop(state or "", None)
         assert pending.task is not None
+        if pending.code_future.done() or pending.task.done():
+            # The adapter's own connection ended before the provider answered (it timed out or
+            # failed), so there is nothing left to hand the code to.
+            return page(
+                "Sign-in expired",
+                "This sign-in took too long or was interrupted before it could be completed. "
+                "Request a new link from Muse and try again.",
+                400,
+            )
         error = params.get("error")
         code = params.get("code")
         if error or not code:

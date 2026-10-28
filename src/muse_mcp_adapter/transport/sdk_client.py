@@ -32,6 +32,8 @@ from ..data_plane.tool_client import (
 from ..domain.errors import (
     DownstreamAuthRejectedError,
     DownstreamConnectionLostError,
+    DownstreamToolError,
+    DownstreamUnavailableError,
     InvalidStateError,
     ReauthorizationRequiredError,
     UnsafeEndpointError,
@@ -633,13 +635,33 @@ def _run[T](function: Callable[[], Awaitable[T]]) -> T:
         rejected = _auth_rejection(leaf)
         if rejected is not None:
             raise DownstreamAuthRejectedError(rejected) from None
+        if isinstance(leaf, httpx.HTTPStatusError):  # any other answer, said in a sentence
+            code = leaf.response.status_code
+            if code >= 500:
+                raise DownstreamUnavailableError(
+                    f"The MCP server answered HTTP {code}: it is having a problem. Try again later."
+                ) from None
+            raise DownstreamToolError(
+                f"The MCP server answered HTTP {code} at {leaf.request.url.host}."
+                + (
+                    " Check the address: nothing answers as an MCP server there."
+                    if code == 404
+                    else ""
+                )
+            ) from None
         if isinstance(leaf, McpStreamLost):
             raise DownstreamConnectionLostError(str(leaf)) from None
         raise
 
 
 def _auth_rejection(error: BaseException) -> str | None:
-    """A readable message when the MCP server answered the credential with 401 or 403."""
+    """A readable message when the MCP server answered the credential with 400, 401 or 403."""
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 400:
+        return (
+            "The MCP server answered HTTP 400 to the very first request. When a token is used "
+            "this usually means the token is empty or is not the right kind of token (for "
+            "example, not a GitHub token). Check the token for this connection."
+        )
     if isinstance(error, httpx.HTTPStatusError) and error.response.status_code in (401, 403):
         return (
             "The MCP server rejected the adapter's credential "
@@ -662,7 +684,14 @@ def _unwrap(error: BaseException) -> BaseException:
             ):
                 return leaf
         for leaf in leaves:
-            if isinstance(leaf, httpx.HTTPStatusError) and leaf.response.status_code in (401, 403):
+            if isinstance(leaf, httpx.HTTPStatusError) and leaf.response.status_code in (
+                400,
+                401,
+                403,
+            ):
+                return leaf
+        for leaf in leaves:
+            if isinstance(leaf, httpx.HTTPStatusError):
                 return leaf
         for leaf in leaves:
             if isinstance(leaf, McpError):

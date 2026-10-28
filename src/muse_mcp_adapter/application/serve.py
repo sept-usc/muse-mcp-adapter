@@ -7,6 +7,7 @@ call, and with which downstream credential) live in the database and are managed
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections.abc import Callable, Mapping
@@ -22,13 +23,19 @@ from starlette.applications import Starlette
 from ..connections import ConnectionCredentialResolver
 from ..data_plane.approval import HmacApprovalVerifier
 from ..data_plane.mcp_client import McpReadClient
+from ..data_plane.owner_gate import OwnerGate
+from ..data_plane.release import ReleaseEngine
 from ..data_plane.tool_client import McpToolClient
 from ..domain.errors import InvalidStateError
+from ..persistence.owner_store import OwnerStore
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from ..persistence.vault_store import HandleVault, ReleaseLedger
 from ..transport.oauth import EncryptedFileOAuthStorageBackend
 from ..transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
 from ..transport.security import EndpointSecurityPolicy
+from .approval_web import ApprovalWeb
 from .bootstrap import build_http_application
+from .notify import Notifier, SmtpNotifier
 from .oauth_web import OAuthClientSeed, OAuthWebFlow, runtime_auth_factory
 
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -40,6 +47,17 @@ class OAuthClientSetting:
 
     client_id: str
     client_secret_env: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmailSetting:
+    host: str
+    port: int
+    sender: str
+    to: str
+    starttls: bool = True
+    username_env: str | None = None
+    password_env: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +79,7 @@ class ServeConfig:
     oauth_clients: Mapping[str, OAuthClientSetting] = field(
         default_factory=dict[str, OAuthClientSetting]
     )
+    email: EmailSetting | None = None  # where to tell the owner an action is waiting
 
 
 def load_serve_config(path: Path) -> ServeConfig:
@@ -93,8 +112,8 @@ def load_serve_config(path: Path) -> ServeConfig:
         )
 
     mode = config.get("approvalMode", "muse")
-    if mode not in ("muse", "signed"):
-        raise InvalidStateError("approvalMode must be 'muse' or 'signed'")
+    if mode not in ("muse", "signed", "owner"):
+        raise InvalidStateError("approvalMode must be 'muse', 'signed' or 'owner'")
     approval_env = config.get("approvalSecretEnv")
     if mode == "signed" and not isinstance(approval_env, str):
         raise InvalidStateError("approvalMode 'signed' requires approvalSecretEnv")
@@ -109,6 +128,7 @@ def load_serve_config(path: Path) -> ServeConfig:
 
     artifact_root = config.get("artifactRoot")
     secrets_dir = config.get("secretsDir")
+    email = _email(config)
     return ServeConfig(
         public_url=public_url.rstrip("/"),
         host=host,
@@ -125,6 +145,24 @@ def load_serve_config(path: Path) -> ServeConfig:
         per_server_concurrency=_int(limits, "perServerConcurrency", 8),
         idempotency_window_seconds=_int(config, "idempotencyWindowSeconds", 30),
         oauth_clients=clients,
+        email=email,
+    )
+
+
+def _email(config: Mapping[str, object]) -> EmailSetting | None:
+    notifications = _mapping(config.get("notifications", {}), "notifications")
+    raw = notifications.get("email")
+    if raw is None:
+        return None
+    item = _mapping(raw, "notifications.email")
+    return EmailSetting(
+        host=_string(item, "host"),
+        port=_int(item, "port", 587),
+        sender=_string(item, "from"),
+        to=_string(item, "to"),
+        starttls=item.get("starttls", True) is not False,
+        username_env=cast(str | None, item.get("usernameEnv")),
+        password_env=cast(str | None, item.get("passwordEnv")),
     )
 
 
@@ -189,6 +227,7 @@ def build_application(
     mcp_client: McpReadClient | McpToolClient | None = None,
     clock: Callable[[], str] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    notifier: Notifier | None = None,
 ) -> Starlette:
     clock = clock or _utc_now
     policy = endpoint_policy(config)
@@ -209,6 +248,26 @@ def build_application(
         if config.approval_mode == "signed"
         else None
     )
+    release = _release_engine(repository, database, clock)
+    owner_gate: OwnerGate | None = None
+    approval_web: ApprovalWeb | None = None
+    if config.approval_mode == "owner":
+        repository.initialize()
+        store = OwnerStore(repository)
+        if not store.passcode_is_set():
+            raise InvalidStateError(
+                "approvalMode 'owner' needs an approval passcode first. Set it with: "
+                "muse-mcp-adapter owner-passcode"
+            )
+        owner_gate = OwnerGate(repository, store)
+        approval_web = ApprovalWeb(
+            store=store,
+            clock=clock,
+            public_url=config.public_url,
+            reveal_value=lambda connection_id, handle: _sealed_value(
+                release, connection_id, handle
+            ),
+        )
     artifact_root = config.artifact_root or Path(database).parent / "artifacts"
     artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     return build_http_application(
@@ -219,11 +278,45 @@ def build_application(
         public_url=config.public_url,
         clock=clock,
         approval_verifier=verifier,
+        owner_gate=owner_gate,
+        approval_web=approval_web,
+        notifier=notifier or _smtp(config, env),
+        release=release,
         oauth_flow=flow,
         rate_limit=config.rate_limit,
         rate_window_seconds=config.rate_window_seconds,
         per_server_concurrency=config.per_server_concurrency,
         idempotency_window_seconds=config.idempotency_window_seconds,
+    )
+
+
+def _sealed_value(release: ReleaseEngine, connection_id: str, handle: str) -> str | None:
+    found = release.find(connection_id, handle)
+    return None if found is None else found[1]
+
+
+def _release_engine(
+    repository: SqliteControlPlaneRepository, database: str | Path, clock: Callable[[], str]
+) -> ReleaseEngine:
+    """The vault for sealed values; its key sits beside the database, owner-readable only."""
+    repository.initialize()
+    key_file = Path(database).parent / "vault.key"
+    master = base64.urlsafe_b64decode(_load_or_create_key(key_file))
+    return ReleaseEngine(HandleVault(repository, master), ReleaseLedger(repository), clock)
+
+
+def _smtp(config: ServeConfig, env: Mapping[str, str]) -> Notifier | None:
+    email = config.email
+    if email is None or config.approval_mode != "owner":
+        return None
+    return SmtpNotifier(
+        host=email.host,
+        port=email.port,
+        sender=email.sender,
+        to=email.to,
+        starttls=email.starttls,
+        username=env.get(email.username_env) if email.username_env else None,
+        password=env.get(email.password_env) if email.password_env else None,
     )
 
 

@@ -14,7 +14,7 @@ MAX_TIMEOUT_SECONDS = 300
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 MAX_PATTERN_LENGTH = 256
 MAX_DESCRIPTION_CHARS = 2000
-RESERVED_OPERATION_IDS = frozenset({"get_operation_status", "resume_operation"})
+RESERVED_OPERATION_IDS = frozenset({"get_operation_status", "resume_operation", "reveal_value"})
 FORBIDDEN_URI_SCHEMES = frozenset({"file", "data", "javascript", "vbscript", "ftp", "gopher"})
 
 
@@ -157,6 +157,9 @@ def validate_exposure_policy(
         if content_types is not None and not _unique_strings(content_types):
             issues.append(f"Tool policy for {key} has invalid allowedResultContentTypes")
 
+    issues.extend(_owner_controls_issues(policy.get("ownerControls"), key, classification))
+    issues.extend(_release_issues(policy.get("release"), key))
+
     if primitive.get("type") == PrimitiveType.PROMPT:
         prompt = _string_mapping(policy.get("prompt"))
         roles = _string_list(prompt.get("allowedRoles")) if prompt is not None else None
@@ -179,6 +182,159 @@ def validate_exposure_policy(
         if prompt is not None:
             issues.extend(_argument_pattern_issues(prompt.get("argumentPatterns"), key))
 
+    return issues
+
+
+_OWNER_CONTROL_KEYS = frozenset(
+    {
+        "approval",
+        "recipients",
+        "knownRecipients",
+        "untrusted",
+        "untrustedWindowSeconds",
+        "arguments",
+    }
+)
+
+
+def _owner_controls_issues(value: object, key: str, classification: object) -> list[str]:
+    if value is None:
+        return []
+    controls = _string_mapping(value)
+    if controls is None:
+        return [f"ownerControls for {key} must be an object"]
+    issues: list[str] = []
+    for name in sorted(set(controls) - _OWNER_CONTROL_KEYS):
+        issues.append(f"ownerControls for {key} has an unknown setting: {name}")
+    approval = controls.get("approval")
+    if approval is not None and approval not in ("always", "risk", "never"):
+        issues.append(f"ownerControls.approval for {key} must be always, risk or never")
+    if approval == "never" and classification == MuseClassification.SENSITIVE_WRITE:
+        issues.append(f"{key} cannot cause damage that cannot be undone and also skip approval")
+    for name in ("recipients", "knownRecipients"):
+        if name in controls and not _unique_strings(controls[name]):
+            issues.append(f"ownerControls.{name} for {key} must be unique non-empty strings")
+    if "untrusted" in controls and not isinstance(controls["untrusted"], bool):
+        issues.append(f"ownerControls.untrusted for {key} must be true or false")
+    window = controls.get("untrustedWindowSeconds")
+    if window is not None and not _bounded_int(window, 86_400):
+        issues.append(f"ownerControls.untrustedWindowSeconds for {key} must be 1 to 86400")
+    arguments = controls.get("arguments")
+    if arguments is not None:
+        limits = _string_mapping(arguments)
+        if limits is None:
+            issues.append(f"ownerControls.arguments for {key} must be an object")
+        else:
+            for path, patterns in limits.items():
+                if not _unique_strings(patterns):
+                    issues.append(f"ownerControls.arguments.{path} for {key} must be patterns")
+                    continue
+                for pattern in cast(list[str], patterns):
+                    issues.extend(
+                        _regex_issues(pattern, f"ownerControls.arguments.{path} for {key}")
+                    )
+    return issues
+
+
+_RELEASE_KEYS = frozenset({"fields", "slots", "patterns", "text", "reveal"})
+_TEXT_FINDS = ("email", "phone", "regex")
+_TEXT_PATTERN_MAX = 200
+_TEXT_RUNGS = ("handle", "withhold")
+_RELEASE_RUNGS = ("full", "handle", "withhold", "redact")
+_LABEL = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
+_FIELD_PATH = re.compile(r"^\$(?:\.[A-Za-z_][\w-]*|\[\*\])+$")
+_PATTERN_NAMES = ("card", "ssn", "iban")
+
+
+def _release_issues(value: object, key: str) -> list[str]:
+    if value is None:
+        return []
+    release = _string_mapping(value)
+    if release is None:
+        return [f"release for {key} must be an object"]
+    issues: list[str] = []
+    for name in sorted(set(release) - _RELEASE_KEYS):
+        issues.append(f"release for {key} has an unknown setting: {name}")
+    fields = release.get("fields", [])
+    if not _sequence(fields):
+        issues.append(f"release.fields for {key} must be a list")
+    else:
+        for item in cast(list[object], fields):
+            rule = _string_mapping(item)
+            if rule is None:
+                issues.append(f"release.fields for {key} has an entry that is not an object")
+                continue
+            path = rule.get("path")
+            if not isinstance(path, str) or not _FIELD_PATH.fullmatch(path):
+                issues.append(f"release.fields path {path!r} for {key} is not a supported path")
+            label = rule.get("label")
+            if not isinstance(label, str) or not _LABEL.fullmatch(label):
+                issues.append(f"release.fields label {label!r} for {key} must look like a.b")
+            if rule.get("rung") not in _RELEASE_RUNGS:
+                issues.append(
+                    f"release.fields rung for {key} must be one of {', '.join(_RELEASE_RUNGS)}"
+                )
+    slots = release.get("slots")
+    if slots is not None:
+        mapping = _string_mapping(slots)
+        if mapping is None:
+            issues.append(f"release.slots for {key} must be an object")
+        else:
+            for slot, labels in mapping.items():
+                items = _string_list(labels)
+                if items is None or not all(_LABEL.fullmatch(label) for label in items):
+                    issues.append(f"release.slots.{slot} for {key} must be a list of labels")
+    patterns = release.get("patterns")
+    if patterns is not None:
+        names = _string_list(patterns)
+        if names is None or any(name not in _PATTERN_NAMES for name in names):
+            issues.append(f"release.patterns for {key} must be from: {', '.join(_PATTERN_NAMES)}")
+    issues.extend(_text_rule_issues(release.get("text"), key))
+    reveal = release.get("reveal")
+    if reveal is not None:
+        labels = _string_list(reveal)
+        if labels is None or not all(_LABEL.fullmatch(label) for label in labels):
+            issues.append(f"release.reveal for {key} must be a list of labels")
+    return issues
+
+
+def _text_rule_issues(value: object, key: str) -> list[str]:
+    if value is None:
+        return []
+    if not _sequence(value):
+        return [f"release.text for {key} must be a list"]
+    issues: list[str] = []
+    for item in cast(list[object], value):
+        rule = _string_mapping(item)
+        if rule is None:
+            issues.append(f"release.text for {key} has an entry that is not an object")
+            continue
+        for name in sorted(set(rule) - {"find", "label", "rung", "keep", "pattern"}):
+            issues.append(f"release.text for {key} has an unknown setting: {name}")
+        if rule.get("find") not in _TEXT_FINDS:
+            issues.append(f"release.text find for {key} must be one of {', '.join(_TEXT_FINDS)}")
+        label = rule.get("label")
+        if not isinstance(label, str) or not _LABEL.fullmatch(label):
+            issues.append(f"release.text label {label!r} for {key} must look like a.b")
+        if rule.get("rung") not in _TEXT_RUNGS:
+            issues.append(f"release.text rung for {key} must be one of {', '.join(_TEXT_RUNGS)}")
+        if "keep" in rule and _string_list(rule["keep"]) is None:
+            issues.append(f"release.text keep for {key} must be a list of strings")
+        pattern = rule.get("pattern")
+        if rule.get("find") == "regex":
+            if not isinstance(pattern, str) or not pattern:
+                issues.append(f"release.text regex for {key} needs a pattern")
+            elif len(pattern) > _TEXT_PATTERN_MAX:
+                issues.append(
+                    f"release.text pattern for {key} is over {_TEXT_PATTERN_MAX} characters"
+                )
+            else:
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    issues.append(f"release.text pattern for {key} is not valid: {error}")
+        elif pattern is not None:
+            issues.append(f"release.text pattern for {key} only goes with find: regex")
     return issues
 
 

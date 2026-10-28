@@ -193,6 +193,10 @@ class ConnectionService:
         now = self._clock()
         record = self._repository.revoke_connection(connection_id, now)
         self._oauth.revoke_connection(connection_id, now)
+        # Sealed values held for this connection are forgotten with it.
+        self._repository.run(
+            lambda db: db.execute("DELETE FROM handles WHERE connection_id = ?", (connection_id,))
+        )
         self._audit(actor, "connection.unlink", record)
         return record
 

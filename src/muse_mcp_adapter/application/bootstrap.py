@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -9,7 +10,9 @@ from ..connections import ConnectionService
 from ..credentials.resolver import CredentialResolver
 from ..data_plane.approval import ApprovalVerifier
 from ..data_plane.mcp_client import McpReadClient
+from ..data_plane.owner_gate import OwnerGate
 from ..data_plane.read_service import ReadDataPlaneService
+from ..data_plane.release import ReleaseEngine
 from ..data_plane.tool_client import McpToolClient
 from ..data_plane.tool_service import ToolDataPlaneService
 from ..operations.artifacts import FileArtifactStore
@@ -21,8 +24,10 @@ from ..operations.runtime_controls import (
     RequestConcurrencyLimiter,
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from .approval_web import ApprovalWeb
 from .http_app import WebAuthorization, create_http_app
 from .muse_oauth import MuseAuthorizationServer
+from .notify import HeldNotice, Notifier
 from .oauth_web import OAuthWebFlow
 from .runtime import AdapterRuntime
 
@@ -36,6 +41,10 @@ def build_http_application(
     public_url: str,
     clock: Callable[[], str],
     approval_verifier: ApprovalVerifier | None = None,
+    owner_gate: OwnerGate | None = None,
+    approval_web: ApprovalWeb | None = None,
+    notifier: Notifier | None = None,
+    release: ReleaseEngine | None = None,
     oauth_flow: OAuthWebFlow | None = None,
     rate_limit: int = 60,
     rate_window_seconds: float = 60,
@@ -56,6 +65,10 @@ def build_http_application(
         credential_resolver,
         mcp_client,  # type: ignore[arg-type]
         approval_verifier=approval_verifier,
+        owner_gate=owner_gate,
+        approval_link=approval_web.link if approval_web is not None else None,
+        on_held=_notify(notifier),
+        release=release,
         clock=clock,
         cancellation_registry=cancellations,
     )
@@ -89,4 +102,19 @@ def build_http_application(
     ]
     if oauth_flow is not None:
         web.append(oauth_flow)
+    if approval_web is not None:
+        web.append(approval_web)
     return create_http_app(runtime=runtime, web_authorization=web)
+
+
+def _notify(notifier: Notifier | None) -> Callable[[str, Sequence[str], str, str], None] | None:
+    if notifier is None:
+        return None
+
+    def held(operation: str, reasons: Sequence[str], link: str, expires_at: str) -> None:
+        try:
+            notifier.held(HeldNotice(operation, reasons, link, expires_at))
+        except Exception:  # a notice that cannot be sent must never break the call it is about
+            logging.getLogger("muse_mcp_adapter.notify").exception("approval notice failed")
+
+    return held

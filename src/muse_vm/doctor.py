@@ -46,6 +46,21 @@ def gcloud_facts(runner: Runner) -> GcpFacts | None:
     )
 
 
+def gcp_leftovers(runner: Runner, project: str | None, name: str) -> str:
+    """What muse-vm itself left in the project for this name ("" when nothing, or not ours).
+
+    Ours means the network's description (or the VM's label) says `mma-deployment=<name>`.
+    """
+    base = ["gcloud", f"--project={project}"] if project else ["gcloud"]
+    net = runner(
+        [*base, "compute", "networks", "describe", f"mma-{name}", "--format=value(description)"],
+        check=False,
+    )
+    if net.ok and f"mma-deployment={name}" in net.stdout:
+        return f"a network (mma-{name})"
+    return ""
+
+
 def local_checks(report: Report) -> None:
     report.add(
         f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer",

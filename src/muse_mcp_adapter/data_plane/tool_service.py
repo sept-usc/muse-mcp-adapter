@@ -12,6 +12,7 @@ from jsonschema.validators import validator_for
 from ..catalog.canonical import canonical_json, digest, freeze_json, thaw_json
 from ..credentials.resolver import CredentialResolver
 from ..domain.errors import (
+    ApprovalDeniedError,
     ApprovalRequiredError,
     ConflictError,
     CredentialResolutionError,
@@ -19,6 +20,8 @@ from ..domain.errors import (
     DownstreamContentError,
     DownstreamToolError,
     DownstreamUnavailableError,
+    HandleNotAllowedError,
+    HandleUnknownError,
     IdempotencyConflictError,
     InputRequiredError,
     InvalidStateError,
@@ -50,6 +53,8 @@ from .content import (
     normalize_block,
     too_large,
 )
+from .owner_gate import REVEAL_OPERATION_ID, OwnerGate, check_arguments
+from .release import ReleaseEngine
 from .serde import response_from_dict, response_to_dict
 from .tool_client import (
     McpAuthRejected,
@@ -101,6 +106,10 @@ class ToolDataPlaneService:
         mcp_client: McpToolClient,
         *,
         approval_verifier: ApprovalVerifier | None = None,
+        owner_gate: OwnerGate | None = None,
+        approval_link: Callable[[str], str] | None = None,
+        on_held: Callable[[str, Sequence[str], str, str], None] | None = None,
+        release: ReleaseEngine | None = None,
         clock: Callable[[], str],
         operation_id_factory: Callable[[], str] | None = None,
         cancellation_registry: CancellationRegistry | None = None,
@@ -109,6 +118,10 @@ class ToolDataPlaneService:
         self._credential_resolver = credential_resolver
         self._mcp_client = mcp_client
         self._approval_verifier = approval_verifier
+        self._owner_gate = owner_gate
+        self._approval_link = approval_link
+        self._on_held = on_held
+        self._release = release
         self._clock = clock
         self._operation_id_factory = operation_id_factory or (lambda: str(uuid4()))
         self._cancellations = cancellation_registry or CancellationRegistry()
@@ -116,11 +129,14 @@ class ToolDataPlaneService:
     def execute(self, request: DataPlaneRequest) -> DataPlaneResponse:
         _validate_request(request)
         catalog_version, endpoint, operation, policy = self._resolve(request)
+        if self._release is not None:
+            request = self._release.open_request(request, operation)
         _validate_schema(
             schema=operation.definition.get("inputSchema"),
             instance=request.arguments,
             label="Tool input",
         )
+        check_arguments(operation, request.arguments)
         if operation.classification != "read" and not request.idempotency_key:
             raise RequestValidationError("Write tools require an idempotency key")
 
@@ -204,6 +220,8 @@ class ToolDataPlaneService:
         """Continue an INPUT_REQUIRED operation by re-running the call with the user's answer."""
         _validate_request(request)
         catalog_version, endpoint, operation, policy = self._resolve(request)
+        if self._release is not None:
+            request = self._release.open_request(request, operation)
         existing = self._repository.get_operation(operation_id)
         action_digest = _action_digest(
             request,
@@ -299,6 +317,109 @@ class ToolDataPlaneService:
         )
         return record
 
+    def reveal(self, request: DataPlaneRequest) -> DataPlaneResponse:
+        """Show the agent one sealed value, once the owner has approved that one value.
+
+        The owner chooses which labels may be revealed at all (``release.reveal``). Even then the
+        value is shown only after the owner approves this handle on their own page, once.
+        """
+        if self._release is None or self._owner_gate is None:
+            raise OperationNotFoundError("Revealing sealed values is not available here")
+        handle = request.arguments.get("handle")
+        if not isinstance(handle, str) or set(request.arguments) != {"handle"}:
+            raise RequestValidationError(
+                f'{REVEAL_OPERATION_ID} takes exactly one argument: {{"handle": "[label:id]"}}'
+            )
+        catalog = self._repository.get_active_catalog(request.server_id)
+        allowed = self._release.reveal_labels(catalog.primitives)
+        if not allowed:
+            raise OperationNotFoundError("The owner has not allowed any sealed value to be shown")
+        found = self._release.find(request.connection_id, handle)
+        if found is None:
+            raise HandleUnknownError(
+                f"{handle} is not a value this connection was given, or it has expired. Do not "
+                "make up or edit sealed values: read them again from the source."
+            )
+        label, value, handle_id = found
+        if label not in allowed:
+            self._release.note(
+                "refused",
+                connection_id=request.connection_id,
+                operation=REVEAL_OPERATION_ID,
+                label=label,
+                detail=f"{handle_id} reveal not allowed",
+            )
+            raise HandleNotAllowedError(
+                f"The owner has not allowed {label} to be shown to you. Tell the user you "
+                "cannot read this value."
+            )
+        now = self._clock()
+        operation_id = self._operation_id_factory()
+        decision = self._owner_gate.decide_reveal(
+            connection_id=request.connection_id,
+            server_id=request.server_id,
+            handle=handle.strip(),
+            label=label,
+            operation_id=operation_id,
+            now=now,
+        )
+        if decision.outcome == "denied":
+            self._release.note(
+                "refused",
+                connection_id=request.connection_id,
+                operation=REVEAL_OPERATION_ID,
+                label=label,
+                detail=f"{handle_id} declined by the owner",
+            )
+            raise ApprovalDeniedError(
+                "The owner looked at this request and declined it. Do not ask again or try to "
+                "get around it: tell the user you could not read the value."
+            )
+        if decision.outcome == "wait":
+            assert decision.request is not None
+            if decision.owner_token is not None and self._on_held and self._approval_link:
+                self._on_held(
+                    REVEAL_OPERATION_ID,
+                    decision.reasons,
+                    self._approval_link(decision.owner_token),
+                    decision.request.expires_at,
+                )
+            url = (
+                self._approval_link(decision.token)
+                if decision.token is not None and self._approval_link is not None
+                else None
+            )
+            raise ApprovalRequiredError(
+                _owner_message(REVEAL_OPERATION_ID, decision.reasons, url),
+                operation_id=operation_id,
+                action_digest=decision.request.content_digest,
+                approval_url=url,
+                reasons=decision.reasons,
+            )
+        self._release.note(
+            "revealed",
+            connection_id=request.connection_id,
+            operation=REVEAL_OPERATION_ID,
+            label=label,
+            detail=handle_id,
+        )
+        provenance = cast(
+            Mapping[str, object],
+            freeze_json({"serverId": request.server_id, "kind": "reveal", "label": label}),
+        )
+        return DataPlaneResponse(
+            request_id=request.request_id,
+            catalog_version=catalog.catalog_version,
+            public_operation_id=REVEAL_OPERATION_ID,
+            primitive_type="tool",
+            provenance=provenance,
+            operation_id=operation_id,
+            operation_status=COMPLETED,
+            structured_content=cast(
+                Mapping[str, object], freeze_json({"label": label, "value": value})
+            ),
+        )
+
     def _resolve(
         self, request: DataPlaneRequest
     ) -> tuple[str, str, PublishedPrimitive, _ToolPolicy]:
@@ -351,6 +472,10 @@ class ToolDataPlaneService:
     ) -> str | None:
         if operation.classification == "read":
             return None
+        if self._owner_gate is not None:
+            return self._authorize_by_owner(
+                request, operation, operation_id, now, from_status=from_status
+            )
         if self._approval_verifier is None:
             # Muse asks its user before consequential actions and only then calls the write
             # operation, so the call itself is the confirmation. The request ID ties the
@@ -383,6 +508,72 @@ class ToolDataPlaneService:
                 updated_at=now,
             )
         raise ApprovalRequiredError(reason, operation_id=operation_id, action_digest=action_digest)
+
+    def _authorize_by_owner(
+        self,
+        request: DataPlaneRequest,
+        operation: PublishedPrimitive,
+        operation_id: str,
+        now: str,
+        *,
+        from_status: str,
+    ) -> str:
+        """Run a write only when the owner's gate lets it through; otherwise hold or refuse it."""
+        assert self._owner_gate is not None
+        content = _content_digest(request, definition_digest=operation.definition_digest)
+        decision = self._owner_gate.decide(
+            primitive=operation,
+            server_id=request.server_id,
+            connection_id=request.connection_id,
+            arguments=request.arguments,
+            content_digest=content,
+            operation_id=operation_id,
+            now=now,
+        )
+        if decision.outcome == "run":
+            assert decision.approval_id is not None
+            return decision.approval_id
+        if decision.outcome == "denied":
+            self._repository.transition_operation(
+                operation_id,
+                expected_statuses=(from_status,),
+                status=FAILED,
+                updated_at=now,
+                error_code=ApprovalDeniedError.code,
+                error_message="The owner declined this action",
+                retryable=False,
+            )
+            raise ApprovalDeniedError(
+                "The owner looked at this action and declined it. Do not try it again or try to "
+                "get around it: tell the user it was declined."
+            )
+        if from_status == PENDING:
+            self._repository.transition_operation(
+                operation_id,
+                expected_statuses=(PENDING,),
+                status=APPROVAL_REQUIRED,
+                updated_at=now,
+            )
+        if decision.owner_token is not None and self._on_held and self._approval_link:
+            assert decision.request is not None
+            self._on_held(
+                operation.public_operation_id,
+                decision.reasons,
+                self._approval_link(decision.owner_token),
+                decision.request.expires_at,
+            )
+        url = (
+            self._approval_link(decision.token)
+            if decision.token is not None and self._approval_link is not None
+            else None
+        )
+        raise ApprovalRequiredError(
+            _owner_message(operation.public_operation_id, decision.reasons, url),
+            operation_id=operation_id,
+            action_digest=content,
+            approval_url=url,
+            reasons=decision.reasons,
+        )
 
     def _resume_existing(
         self,
@@ -607,6 +798,8 @@ class ToolDataPlaneService:
                     operation_id=operation_id,
                 ) from error
 
+            if self._release is not None:
+                response = self._release.seal_response(request, operation, response)
             self._complete(operation_id, response, is_read=is_read)
             return response
         except BaseException:
@@ -791,6 +984,40 @@ def _action_digest(
             "idempotencyKey": request.idempotency_key,
             "arguments": request.arguments,
         }
+    )
+
+
+def _content_digest(request: DataPlaneRequest, *, definition_digest: str) -> str:
+    """What an owner's approval is bound to: this tool, this connection, these exact arguments.
+
+    The idempotency key is left out on purpose, so an agent that repeats the call with a new key
+    after approval is still the same action, and an approval is spent once either way.
+    """
+    return digest(
+        {
+            "serverId": request.server_id,
+            "definitionDigest": definition_digest,
+            "publicOperationId": request.public_operation_id,
+            "connectionId": request.connection_id,
+            "arguments": request.arguments,
+        }
+    )
+
+
+def _owner_message(operation: str, reasons: Sequence[str], url: str | None) -> str:
+    why = " ".join(f"{reason}." for reason in reasons)
+    if url is None:
+        return (
+            f"This action ({operation}) is waiting for the owner's approval. {why} Do not repeat "
+            "it yet: tell the user it is waiting, and call it again with exactly the same "
+            "arguments once they say they approved it."
+        )
+    return (
+        f"This action ({operation}) needs the owner's approval before it can run. {why} "
+        f"Tell the user to open this one-time link, check the action and approve it with "
+        f"their approval passcode: {url} . Never enter or ask for the passcode yourself. After "
+        "they say they approved it, call this operation again with exactly the same arguments. "
+        "If they decline, do not try again."
     )
 
 

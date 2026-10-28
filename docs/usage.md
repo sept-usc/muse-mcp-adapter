@@ -45,6 +45,8 @@ Common fields:
 | `maxResultBytes` | Tools: maximum result size (required, up to 16 MiB). |
 | `readOnlyReviewed` | Set to `true` to classify a tool as `read` when the server did not mark it `readOnlyHint: true`. |
 | `allowedResultContentTypes` | Optionally narrow a tool's accepted result content types. |
+| `release` | Tools: what of a result reaches the agent (the value, a sealed handle, nothing, or text with numbers blanked out) and where a handle may be used. See [Sealed values](sealed-values.md). |
+| `ownerControls` | Tools: which writes wait for you, where they may be sent, and hard limits on arguments. See [Owner approval](owner-approval.md). |
 
 Resource and template policies add a `resource` block; prompts add a `prompt` block:
 
@@ -82,7 +84,7 @@ Rules enforced when you publish:
 - A tool without `readOnlyHint: true` cannot be classified `read` unless `readOnlyReviewed` is set.
 - The generated draft policy marks a tool as `sensitive_write` when it declares `destructiveHint: true` or its name contains a destructive word (delete, remove, drop, merge, revoke, reset, and similar). Review the draft before publishing it.
 - `file:`, `data:`, and similar schemes are never allowed for resources. `http(s)` resources must list `allowedUriHosts`.
-- Template arguments can be constrained with `argumentPatterns` (regular expressions that must match the whole value).
+- Template arguments can be constrained with `argumentPatterns` (regular expressions that must match the whole value). Tool arguments are constrained with `ownerControls.arguments`.
 - Oversized or backtracking-prone regular expressions in schemas and patterns are rejected.
 
 ## 3. Running the service
@@ -103,7 +105,7 @@ Rules enforced when you publish:
 | `publicUrl` | The HTTPS address Muse reaches the service at. It appears in the connector URL and the sign-in pages. Required unless listening on a local address. |
 | `listen` | Host and port to bind (default `127.0.0.1:8080`). |
 | `limits` | Per-connection request rate and per-server concurrency. |
-| `approvalMode` | `muse` (default): Muse confirms writes with you. `signed` is reserved: the HTTP interface cannot yet carry approval evidence, so in this mode every write is refused. Leave it at `muse`. |
+| `approvalMode` | `muse` (default): Muse confirms writes with you. `owner`: writes you have marked wait for your approval on a page only you can approve from (see [Owner approval](owner-approval.md); set the passcode first). `signed` is reserved: the HTTP interface cannot yet carry approval evidence, so in this mode every write is refused. |
 | `integrityKeyEnv` | Optional key that signs stored catalogs so tampering is detected. Use the same config for every command that publishes. |
 | `secretsDir` | Optional directory of secret files, one file per name (for example a Docker or Compose secrets mount). A secret that is not in the environment is read from `<secretsDir>/<NAME>` when it is needed, so it stays out of the process environment and can be added without a restart. `MUSE_ADAPTER_SECRETS_DIR` sets the same thing. |
 | `oauthClients` | For an OAuth provider without dynamic client registration: `{"<serverId>": {"clientId": "...", "clientSecretEnv": "..."}}`. |

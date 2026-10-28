@@ -87,6 +87,9 @@ class DataPlaneRequest:
     arguments: Mapping[str, object]
     idempotency_key: str | None = None
     approval: "ApprovalEvidence | None" = None
+    # Values the adapter filled in from sealed handles (value -> handle). A downstream result that
+    # echoes one back is sealed again before the agent sees it.
+    filled: Mapping[str, str] = field(default_factory=dict[str, str])
 
 
 @dataclass(frozen=True, slots=True)
