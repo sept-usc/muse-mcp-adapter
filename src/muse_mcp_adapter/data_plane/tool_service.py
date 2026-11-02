@@ -42,6 +42,7 @@ from ..domain.models import (
 )
 from ..operations.cancellation import CancellationRegistry
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from ..policy.argument_limits import violation
 from .approval import ApprovalVerifier
 from .content import (
     DEFAULT_TOOL_RESULT_TYPES,
@@ -84,6 +85,7 @@ class _ToolPolicy:
     timeout_seconds: int
     max_result_bytes: int
     result_content_types: frozenset[str]
+    argument_patterns: Mapping[str, str]
 
 
 class ToolDataPlaneService:
@@ -121,6 +123,7 @@ class ToolDataPlaneService:
             instance=request.arguments,
             label="Tool input",
         )
+        _enforce_limits(policy, request.arguments)
         if operation.classification != "read" and not request.idempotency_key:
             raise RequestValidationError("Write tools require an idempotency key")
 
@@ -204,6 +207,7 @@ class ToolDataPlaneService:
         """Continue an INPUT_REQUIRED operation by re-running the call with the user's answer."""
         _validate_request(request)
         catalog_version, endpoint, operation, policy = self._resolve(request)
+        _enforce_limits(policy, request.arguments)
         existing = self._repository.get_operation(operation_id)
         action_digest = _action_digest(
             request,
@@ -794,6 +798,16 @@ def _action_digest(
     )
 
 
+def _enforce_limits(policy: _ToolPolicy, arguments: Mapping[str, object]) -> None:
+    """Refuse a call whose arguments break the limits the owner set for this operation."""
+    if policy.argument_patterns:
+        problem = violation(
+            policy.argument_patterns, cast(Mapping[str, object], thaw_json(arguments))
+        )
+        if problem is not None:
+            raise RequestValidationError(problem)
+
+
 def _parse_policy(operation: PublishedPrimitive) -> _ToolPolicy:
     policy = operation.policy
     scopes = policy.get("requiredScopes", ())
@@ -819,7 +833,21 @@ def _parse_policy(operation: PublishedPrimitive) -> _ToolPolicy:
         timeout_seconds=cast(int, timeout),
         max_result_bytes=cast(int, max_bytes),
         result_content_types=allowed,
+        argument_patterns=_parse_limits(policy.get("argumentPatterns")),
     )
+
+
+def _parse_limits(raw: object) -> Mapping[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise PublishedPolicyError("Published argumentPatterns is invalid")
+    limits: dict[str, str] = {}
+    for name, pattern in cast(Mapping[object, object], raw).items():
+        if not isinstance(name, str) or not isinstance(pattern, str) or not pattern:
+            raise PublishedPolicyError("Published argumentPatterns is invalid")
+        limits[name] = pattern
+    return limits
 
 
 def _is_int(value: object) -> bool:

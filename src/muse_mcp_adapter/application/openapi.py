@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from ..catalog.canonical import thaw_json
 from ..domain.models import PublishedCatalog, PublishedPrimitive
+from ..policy.argument_limits import describe_limit
 
 GET_OPERATION_ID = "get_operation_status"
 RESUME_OPERATION_ID = "resume_operation"
@@ -150,7 +151,19 @@ def _description(primitive: PublishedPrimitive) -> str:
     }
     note = notes.get(primitive.classification, "")
     target = _source_note(primitive)
-    return "\n\n".join(part for part in (base, target, note) if part)
+    limits = _limits_note(primitive)
+    return "\n\n".join(part for part in (base, target, limits, note) if part)
+
+
+def _limits_note(primitive: PublishedPrimitive) -> str:
+    raw = primitive.policy.get("argumentPatterns")
+    if not isinstance(raw, Mapping) or not raw:
+        return ""
+    parts = [
+        f"{name} must be {describe_limit(pattern)}"
+        for name, pattern in sorted(cast(Mapping[str, str], raw).items())
+    ]
+    return "Limits set by the owner: " + "; ".join(parts) + "."
 
 
 def _source_note(primitive: PublishedPrimitive) -> str:
@@ -209,6 +222,7 @@ def _argument_schema(
     kind = primitive.primitive_type
     if kind == "tool":
         raw = thaw_json(primitive.definition.get("inputSchema", {"type": "object"}))
+        raw = _with_limits(raw, primitive.policy.get("argumentPatterns"))
         return _localize(raw, primitive.public_operation_id, components)
     if kind == "resource":
         return None
@@ -224,6 +238,29 @@ def _argument_schema(
             "additionalProperties": False,
         }
     return _prompt_schema(primitive)
+
+
+def _with_limits(schema: object, limits: object) -> object:
+    """Tell the caller what the owner limits: the argument is required and says to what."""
+    if not isinstance(schema, dict) or not isinstance(limits, Mapping):
+        return cast(object, schema)
+    result = dict(cast(dict[str, object], schema))
+    properties = dict(cast(Mapping[str, object], result.get("properties") or {}))
+    required = [str(name) for name in cast(list[object], result.get("required") or [])]
+    for name, pattern in cast(Mapping[object, object], limits).items():
+        if not isinstance(name, str) or not isinstance(pattern, str):
+            continue
+        prop = dict(cast(Mapping[str, object], properties.get(name) or {}))
+        note = f"The owner limits this to {describe_limit(pattern)}."
+        prop["description"] = f"{prop.get('description', '')} {note}".strip()
+        if prop.get("type") == "string" and "(?" not in pattern.replace("(?:", ""):
+            prop["pattern"] = f"^(?:{pattern})$"
+        properties[name] = prop
+        if name not in required:
+            required.append(name)
+    result["properties"] = properties
+    result["required"] = required
+    return result
 
 
 def _prompt_schema(primitive: PublishedPrimitive) -> dict[str, object]:

@@ -12,6 +12,7 @@ import html
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import cast
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
@@ -56,9 +57,9 @@ _KIND = {
     "prompt": "prompt",
 }
 _STANDING_LIMITS = (
-    "The adapter cannot yet limit what goes into an operation (for example only one project), "
-    "ask you before each call, or make access expire. If you asked for something like that it "
-    "is listed here as not enforced."
+    "The adapter does not yet ask you before each call or make access expire. It does limit "
+    "which values an operation may be called with, where a limit is shown under the operation. "
+    "Anything else you asked for in words is listed here as not enforced."
 )
 
 
@@ -472,7 +473,7 @@ class OwnerWeb:
     ) -> tuple[str, str, int]:
         listed = "".join(
             f"<li><code>{html.escape(str(item['id']))}</code> "
-            f"{html.escape(_LABEL.get(str(item['kind']), ('', ''))[0])}</li>"
+            f"{html.escape(_LABEL.get(str(item['kind']), ('', ''))[0])}{_limited_to(item)}</li>"
             for item in operations
         )
         if proposal.kind == KIND_CHANGE:
@@ -513,6 +514,17 @@ class OwnerWeb:
         return "Approved", body, 200
 
 
+def _limited_to(operation: Mapping[str, object]) -> str:
+    raw = operation.get("limits")
+    if not isinstance(raw, Mapping) or not raw:
+        return ""
+    shown = "; ".join(
+        f"{html.escape(str(name))} {html.escape(str(words))}"
+        for name, words in cast(Mapping[object, object], raw).items()
+    )
+    return f" <span class=muted>(only {shown})</span>"
+
+
 def _row(item: Candidate, *, checked: bool) -> str:
     label, shade = _LABEL.get(item.classification, (item.classification, ""))
     box = "checked" if checked else ""
@@ -526,6 +538,15 @@ def _row(item: Candidate, *, checked: bool) -> str:
         if item.reviewable and checked
         else ""
     )
+    limited = (
+        "<div class=muted>Limited by you to: "
+        + "; ".join(
+            f"<b>{html.escape(name)}</b> {html.escape(words)}" for name, words in item.limits
+        )
+        + "</div>"
+        if item.limits
+        else ""
+    )
     detail = (
         "<details><summary class=muted>The server's own description (not verified)</summary>"
         f"<div class=muted>{html.escape(item.description)}</div></details>"
@@ -537,7 +558,7 @@ def _row(item: Candidate, *, checked: bool) -> str:
         f"aria-label='{html.escape(item.name, quote=True)}'></td>"
         f"<td><b>{html.escape(item.name)}</b> <span class=tag>"
         f"{html.escape(_KIND.get(item.kind, item.kind))}</span>"
-        f"<div class=muted>{note}</div>{detail}</td>"
+        f"<div class=muted>{note}</div>{limited}{detail}</td>"
         f"<td><span class='tag {shade}'>{html.escape(label)}</span><br>{review}</td></tr>"
     )
 

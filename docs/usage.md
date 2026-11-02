@@ -49,6 +49,7 @@ Common fields:
 | `maxResultBytes` | Tools: maximum result size (required, up to 16 MiB). |
 | `readOnlyReviewed` | Set to `true` to classify a tool as `read` when the server did not mark it `readOnlyHint: true`. |
 | `allowedResultContentTypes` | Optionally narrow a tool's accepted result content types. |
+| `argumentPatterns` | Tools: limit what an argument may be, for example `{"project": "(?:ENG|OPS)"}`. See the rules below. |
 
 Resource and template policies add a `resource` block; prompts add a `prompt` block:
 
@@ -87,6 +88,7 @@ Rules enforced when you publish:
 - The generated draft policy marks a tool as `sensitive_write` when it declares `destructiveHint: true` or its name contains a destructive word (delete, remove, drop, merge, revoke, reset, and similar). Review the draft before publishing it.
 - `file:`, `data:`, and similar schemes are never allowed for resources. `http(s)` resources must list `allowedUriHosts`.
 - Template arguments can be constrained with `argumentPatterns` (regular expressions that must match the whole value).
+- Tool arguments can be constrained the same way, with `argumentPatterns` on the tool's policy entry, for example `"argumentPatterns": {"project": "(?:ENG|OPS)"}`. Every call must carry each named argument with a value that matches in full (every item, for a list), or it is refused before the server is contacted. The argument must exist in the tool's input schema, there are at most 10 per tool, and the owner's limits appear in the connector's description of the operation.
 - Oversized or backtracking-prone regular expressions in schemas and patterns are rejected.
 
 ## 3. Running the service

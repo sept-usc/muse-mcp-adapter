@@ -45,6 +45,39 @@ _ALSO_ALLOW = {
 _EXCLUDE = {**_NAMES, "description": "Exact names of operations the user does not want."}
 _TIMEOUT = {"type": "integer", "minimum": 1, "maximum": 300}
 _MAX_BYTES = {"type": "integer", "minimum": 1024, "maximum": 16777216}
+_LIMIT_ITEM = {
+    "type": "object",
+    "properties": {
+        "operation": {
+            "type": "string",
+            "pattern": "^(\\*|[A-Za-z0-9_.:\\-]{1,120})$",
+            "description": "The operation's name, or * for every operation that has the argument.",
+        },
+        "argument": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"},
+        "allowedValues": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {"type": ["string", "integer", "boolean"]},
+            "description": "The only values the operation may be called with.",
+        },
+        "pattern": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "A regular expression the whole value must match. "
+            "Not with allowedValues.",
+        },
+    },
+    "required": ["operation", "argument"],
+    "additionalProperties": False,
+}
+_LIMITS = {
+    "type": "array",
+    "maxItems": 20,
+    "items": _LIMIT_ITEM,
+    "description": "Limits on what an operation may be called with, only when the user asked: "
+    "for example only project ENG. Give allowedValues, or a pattern, not both.",
+}
 _NOTES = {
     "type": "string",
     "maxLength": 1000,
@@ -130,6 +163,7 @@ _CONNECT_PROPERTIES = {
     "exclude": _EXCLUDE,
     "timeoutSeconds": _TIMEOUT,
     "maxResultBytes": _MAX_BYTES,
+    "limitArguments": _LIMITS,
     "notes": _NOTES,
 }
 
@@ -204,6 +238,15 @@ _TOOLS = (
         WRITE,
         {"connectionId": _CONNECTION, "operations": {**_NAMES, "minItems": 1}},
         ("connectionId", "operations"),
+    ),
+    _tool(
+        "limit_arguments",
+        "Add limits to a connection right away: what an operation may be called with, for "
+        "example only project ENG. This can only reduce what Muse may do: a limit can be added, "
+        "not changed or removed. To change one, use propose_change.",
+        WRITE,
+        {"connectionId": _CONNECTION, "limitArguments": {**_LIMITS, "minItems": 1}},
+        ("connectionId", "limitArguments"),
     ),
     _tool(
         "remove_connection",

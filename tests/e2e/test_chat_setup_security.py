@@ -226,7 +226,7 @@ def test_what_cannot_be_enforced_is_said_on_the_page(tmp_path: Path) -> None:
         link = h.propose(readOnly=True, notes="only in project X")["reviewLink"]
         page = h.review(link)
         assert "Not enforced: only in project X" in page
-        assert "cannot yet limit" in page
+        assert "does not yet ask you before each call" in page
 
 
 # --- limits on the agent -----------------------------------------------------------------

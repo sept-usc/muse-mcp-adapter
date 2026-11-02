@@ -9,6 +9,8 @@ from typing import Protocol, cast
 
 from ..domain.errors import RequestValidationError
 from ..domain.models import DataPlaneRequest, DataPlaneResponse
+from ..policy.argument_limits import scalar_text, values_pattern
+from ..policy.validate_policy import regex_problems
 
 SETUP_SERVER_ID = "adapter-setup"
 # The setup server is built in and never contacted. The address only has to look like one, and
@@ -38,6 +40,11 @@ MAX_NOTES = 1000
 MAX_NAMES = 50
 MAX_ENDPOINT = 500
 
+MAX_LIMITS = 20
+MAX_VALUES = 20
+MAX_VALUE_CHARS = 200
+_ARGUMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_LIMIT_FIELDS = ("operation", "argument", "allowedValues", "pattern")
 _SERVER = re.compile(r"^[a-z][a-z0-9-]{2,63}$")
 _CONNECTION = re.compile(r"^conn_[0-9a-f]{12}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.:\-]{1,120}$")
@@ -52,12 +59,97 @@ _CONNECT_FIELDS = (
     "exclude",
     "timeoutSeconds",
     "maxResultBytes",
+    "limitArguments",
     "notes",
 )
 _CHANGE_FIELDS = (
     "connectionId",
     *(item for item in _CONNECT_FIELDS if item not in ("server", "endpoint")),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ArgumentLimit:
+    """A limit the user asked for on what an operation may be called with."""
+
+    operation: str  # an operation name, or * for every operation that has the argument
+    argument: str
+    values: tuple[str | int | bool, ...] = ()
+    pattern: str | None = None
+
+    def regex(self) -> str:
+        return self.pattern if self.pattern is not None else values_pattern(self.values)
+
+    def to_json(self) -> dict[str, object]:
+        body: dict[str, object] = {"operation": self.operation, "argument": self.argument}
+        if self.pattern is not None:
+            body["pattern"] = self.pattern
+        else:
+            body["allowedValues"] = list(self.values)
+        return body
+
+    def describe(self) -> str:
+        shown = (
+            self.pattern
+            if self.pattern is not None
+            else ", ".join(scalar_text(value) for value in self.values)
+        )
+        return f"{self.argument} of {self.operation}: {shown}"
+
+
+def parse_limits(value: object, field: str = "limitArguments") -> tuple[ArgumentLimit, ...]:
+    """Check limits an agent asked for; each names an argument and either values or a pattern."""
+    if value is None:
+        return ()
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise RequestValidationError(f"{field} must be a list")
+    items = cast(Sequence[object], value)
+    if len(items) > MAX_LIMITS:
+        raise RequestValidationError(f"{field} may hold at most {MAX_LIMITS} limits")
+    limits: list[ArgumentLimit] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise RequestValidationError(f"{field} holds something that is not a limit")
+        body = cast(Mapping[str, object], item)
+        unknown = sorted(str(key) for key in body if key not in _LIMIT_FIELDS)
+        if unknown:
+            raise RequestValidationError(f"A limit does not accept: {', '.join(unknown)}")
+        operation, argument = body.get("operation"), body.get("argument")
+        if not isinstance(operation, str) or not (operation == "*" or _NAME.fullmatch(operation)):
+            raise RequestValidationError("A limit needs the name of an operation, or *")
+        if not isinstance(argument, str) or not _ARGUMENT.fullmatch(argument):
+            raise RequestValidationError("A limit needs the name of an argument")
+        allowed, pattern = body.get("allowedValues"), body.get("pattern")
+        if (allowed is None) == (pattern is None):
+            raise RequestValidationError("Give a limit either allowedValues or a pattern")
+        if pattern is not None:
+            if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_VALUE_CHARS:
+                raise RequestValidationError("A pattern must be short text")
+            problems = regex_problems(pattern)
+            if problems:
+                raise RequestValidationError(problems[0])
+            limits.append(ArgumentLimit(operation, argument, pattern=pattern))
+            continue
+        values = _values(allowed)
+        limits.append(ArgumentLimit(operation, argument, values=values))
+    return tuple(limits)
+
+
+def _values(value: object) -> tuple[str | int | bool, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise RequestValidationError("allowedValues must be a list")
+    items = cast(Sequence[object], value)
+    if not 1 <= len(items) <= MAX_VALUES:
+        raise RequestValidationError(f"allowedValues holds 1 to {MAX_VALUES} values")
+    values: list[str | int | bool] = []
+    for item in items:
+        if isinstance(item, str):
+            if not item or len(item) > MAX_VALUE_CHARS:
+                raise RequestValidationError("An allowed value must be short, non-empty text")
+        elif not isinstance(item, int):
+            raise RequestValidationError("An allowed value is text, a whole number or true/false")
+        values.append(item)
+    return tuple(values)
 
 
 class SetupExecutor(Protocol):
@@ -79,6 +171,7 @@ class SetupRequest:
     exclude: tuple[str, ...] = ()
     timeout_seconds: int | None = None
     max_result_bytes: int | None = None
+    limits: tuple[ArgumentLimit, ...] = ()
     notes: str | None = None
 
     def to_json(self) -> dict[str, object]:
@@ -93,9 +186,14 @@ class SetupRequest:
             "exclude": list(self.exclude),
             "timeoutSeconds": self.timeout_seconds,
             "maxResultBytes": self.max_result_bytes,
+            "limitArguments": [limit.to_json() for limit in self.limits],
             "notes": self.notes,
         }
-        return {key: value for key, value in payload.items() if value is not None}
+        return {
+            key: value
+            for key, value in payload.items()
+            if value is not None and value != [] or key in ("alsoAllow", "exclude")
+        }
 
     @classmethod
     def parse(cls, value: Mapping[str, object], *, change: bool) -> SetupRequest:
@@ -130,6 +228,7 @@ class SetupRequest:
             max_result_bytes=_integer(
                 value.get("maxResultBytes"), "maxResultBytes", 1024, 16 * 1024 * 1024
             ),
+            limits=parse_limits(value.get("limitArguments")),
             notes=_text(value.get("notes"), "notes", MAX_NOTES, required=False),
         )
 

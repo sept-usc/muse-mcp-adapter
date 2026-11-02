@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -18,6 +18,7 @@ from muse_mcp_adapter.chat_setup.compile import (
 )
 from muse_mcp_adapter.chat_setup.models import SetupRequest
 from muse_mcp_adapter.domain.errors import RequestValidationError
+from muse_mcp_adapter.policy.argument_limits import values_pattern
 
 
 def _tool(name: str, *, read_only: bool | None = None, destructive: bool = False) -> dict[str, Any]:
@@ -345,3 +346,190 @@ def test_a_server_that_offers_too_much_cannot_be_reviewed_on_a_page() -> None:
     with pytest.raises(RequestValidationError, match="too many to review"):
         _compile(_request(readOnly=True), primitives=many)
     _compile(_request(readOnly=True), primitives=many[:2000])
+
+
+# --- limits on what an operation may be called with -----------------------------------------
+
+
+def _with_arguments(name: str, *arguments: str, read_only: bool | None = True) -> dict[str, Any]:
+    item = _tool(name, read_only=read_only)
+    item["inputSchema"] = {
+        "type": "object",
+        "properties": {a: {"type": "string"} for a in arguments},
+    }
+    return item
+
+
+def _limit(operation: object = "*", argument: str = "project", **kind: object) -> dict[str, object]:
+    return {"operation": operation, "argument": argument, **({"allowedValues": ["ENG"]} | kind)}
+
+
+@pytest.mark.parametrize(
+    "limits, message",
+    [
+        ("project", "must be a list"),
+        ([_limit()] * 21, "at most 20"),
+        (["project"], "not a limit"),
+        ([_limit(secret="x")], "does not accept: secret"),
+        ([_limit(operation="not valid")], "name of an operation"),
+        ([_limit(operation=5)], "name of an operation"),
+        ([_limit(argument="not valid")], "name of an argument"),
+        ([{"operation": "*", "argument": "project"}], "either allowedValues or a pattern"),
+        ([_limit(pattern="ENG")], "either allowedValues or a pattern"),
+        ([{"operation": "*", "argument": "p", "pattern": ""}], "short text"),
+        ([{"operation": "*", "argument": "p", "pattern": "x" * 201}], "short text"),
+        ([{"operation": "*", "argument": "p", "pattern": 5}], "short text"),
+        ([{"operation": "*", "argument": "p", "pattern": "(a+)+$"}], "backtracking"),
+        ([_limit(allowedValues="ENG")], "must be a list"),
+        ([_limit(allowedValues=[])], "1 to 20 values"),
+        ([_limit(allowedValues=[""])], "short, non-empty"),
+        ([_limit(allowedValues=["x" * 201])], "short, non-empty"),
+        ([_limit(allowedValues=[1.5])], "text, a whole number or true/false"),
+        ([_limit(allowedValues=[["ENG"]])], "text, a whole number or true/false"),
+    ],
+)
+def test_a_limit_is_checked_strictly(limits: object, message: str) -> None:
+    with pytest.raises(RequestValidationError, match=message):
+        _request(readOnly=True, limitArguments=limits)
+
+
+def test_limits_survive_being_stored_and_change_the_digest() -> None:
+    request = _request(readOnly=True, limitArguments=[_limit()])
+    assert SetupRequest.parse(request.to_json(), change=False) == request
+    pattern = _request(
+        readOnly=True, limitArguments=[{"operation": "*", "argument": "project", "pattern": "E.*"}]
+    )
+    assert SetupRequest.parse(pattern.to_json(), change=False) == pattern
+    primitives = [_with_arguments("list_issues", "project")]
+    digests = {
+        _compile(r, primitives=primitives).digest
+        for r in (_request(readOnly=True), request, pattern)
+    }
+    assert len(digests) == 3
+
+
+def test_a_limit_goes_on_every_tool_that_takes_the_argument_chosen_or_not() -> None:
+    primitives = [
+        _with_arguments("list_issues", "project"),
+        _with_arguments("create_issue", "project", read_only=None),
+        _with_arguments("search_notes", "query"),
+    ]
+    computed = _compile(_request(readOnly=True, limitArguments=[_limit()]), primitives=primitives)
+
+    assert computed.policies["tool:list_issues"]["argumentPatterns"] == {"project": "(?:ENG)"}
+    # create_issue is not chosen, but the owner may tick it on the page and then it is limited
+    assert computed.policies["tool:create_issue"]["argumentPatterns"] == {"project": "(?:ENG)"}
+    assert computed.policies["tool:create_issue"]["allowed"] is False
+    assert "argumentPatterns" not in computed.policies["tool:search_notes"]
+    assert computed.unresolved == ()
+    shown = {item.name: item.limits for item in computed.candidates}
+    assert shown["list_issues"] == (("project", "ENG"),)
+    assert shown["search_notes"] == ()
+
+
+def test_a_limit_that_matches_nothing_is_reported_and_limits_per_tool_are_capped() -> None:
+    names = [f"a{number}" for number in range(11)]
+    primitives = [_with_arguments("list_issues", "project", *names)]
+    limits = [_limit(argument=name) for name in names] + [_limit(argument="project")]
+    computed = _compile(_request(readOnly=True, limitArguments=limits), primitives=primitives)
+    assert any("too many limits on one operation" in note for note in computed.unresolved)
+    assert (
+        len(cast(Mapping[str, str], computed.policies["tool:list_issues"]["argumentPatterns"]))
+        == 10
+    )
+
+    nothing = _compile(
+        _request(
+            readOnly=True,
+            limitArguments=[
+                _limit(operation="readme"),  # a resource is not a tool
+                _limit(operation="list_issues", argument="colour"),
+                _limit(argument="colour"),
+            ],
+        ),
+        primitives=[*PRIMITIVES, _with_arguments("list_issues2", "project")],
+    )
+    text = " | ".join(nothing.unresolved)
+    assert "the server does not offer that operation" in text
+    assert "the operation has no such argument" in text
+    assert "no operation has that argument" in text
+
+
+def test_an_operation_can_be_named_by_the_id_muse_knows() -> None:
+    first = _compile(
+        _request(readOnly=True, limitArguments=[_limit(operation="list_issues")]),
+        primitives=[_with_arguments("list_issues", "project")],
+    )
+    assert "argumentPatterns" in first.policies["tool:list_issues"]
+    live = {"tool:list_issues": first.policies["tool:list_issues"]}
+    renamed = {**live["tool:list_issues"], "publicOperationId": "issues_list"}
+    second = _compile(
+        _request(readOnly=True, limitArguments=[_limit(operation="issues_list")]),
+        primitives=[_with_arguments("list_issues", "project")],
+        current={"tool:list_issues": renamed},
+    )
+    assert second.unresolved == ()
+
+
+def test_unlimited_arguments_are_listed_and_the_list_is_capped() -> None:
+    primitives = [_with_arguments("only_this", "project")] + [
+        _with_arguments(f"other_{number:02d}", "project") for number in range(12)
+    ]
+    computed = _compile(
+        _request(readOnly=True, limitArguments=[_limit(operation="only_this")]),
+        primitives=primitives,
+    )
+    assert len(computed.unenforced) == 11
+    assert computed.unenforced[0] == (
+        "other_00 takes project, which is limited on only_this but is not limited on other_00."
+    )
+    assert computed.unenforced[-1] == "...and 2 more like these."
+
+
+def test_a_limit_is_narrowing_to_add_or_shrink_and_widening_to_remove_or_grow() -> None:
+    both = values_pattern(["ENG", "OPS"])
+    eng = values_pattern(["ENG"])
+
+    def with_limit(pattern: str | None) -> dict[str, Exposure]:
+        extra = {} if pattern is None else {"argumentPatterns": {"project": pattern}}
+        return {"a": Exposure("d", {"classification": "read", **extra})}
+
+    assert classify_change(with_limit(None), with_limit(eng)) == "narrowing"  # added
+    assert classify_change(with_limit(both), with_limit(eng)) == "narrowing"  # fewer values
+    assert classify_change(with_limit(both), with_limit(both)) == "none"
+    assert classify_change(with_limit(eng), with_limit(both)) == "widening"  # more values
+    assert classify_change(with_limit(eng), with_limit(None)) == "widening"  # removed
+    assert classify_change(with_limit(eng), with_limit("[A-Z]+")) == "widening"  # not provable
+    corrupt = {"a": Exposure("d", {"classification": "read", "argumentPatterns": ["project"]})}
+    assert classify_change(corrupt, with_limit(eng)) == "widening"
+    assert classify_change(with_limit(eng), corrupt) == "widening"
+
+
+def test_limits_are_kept_when_the_server_redefines_an_operation_unless_the_argument_went() -> None:
+    old = _compile(
+        _request(readOnly=True, limitArguments=[_limit()]),
+        primitives=[_with_arguments("list_issues", "project", "query")],
+    )
+    live = {key: dict(entry) for key, entry in old.policies.items() if entry["allowed"]}
+    stale = {"tool:list_issues": "sha256:old"}
+
+    kept = _compile(
+        SetupRequest.parse({"connectionId": "conn_000000000001", "userWords": "x"}, change=True),
+        primitives=[_with_arguments("list_issues", "project", "query", "more")],
+        current=live,
+        current_digests=stale,
+    )
+    assert kept.policies["tool:list_issues"]["argumentPatterns"] == {"project": "(?:ENG)"}
+    assert kept.unenforced == ()
+
+    gone = _compile(
+        SetupRequest.parse({"connectionId": "conn_000000000001", "userWords": "x"}, change=True),
+        primitives=[_with_arguments("list_issues", "query")],
+        current=live,
+        current_digests=stale,
+    )
+    assert "argumentPatterns" not in gone.policies["tool:list_issues"]
+    assert gone.unenforced == (
+        "list_issues: the limit on project (ENG) is gone because the server's new definition "
+        "has no such argument.",
+    )

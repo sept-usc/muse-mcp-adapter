@@ -58,7 +58,8 @@ A service that needs a sign-in shows you its tools only after you have signed in
 - **The service**: its name and address, and whether it is in the adapter's own list. An address that Muse supplied and the adapter does not know carries a warning, and the adapter has not contacted it before you press the button.
 - **What would become available**: each operation, whether it only reads, changes data, or may be hard to undo, how the adapter knows, and the server's own description in a collapsed block marked as the server's.
 - **An alignment line**: how many things you asked for, how many would be available, and how many are available that you did not ask for. For a new connection that last number should be 0.
-- **What the adapter does not enforce**: anything Muse said you asked for that is not a choice of operations, such as "only project X". It is listed as not enforced because nothing can enforce it today.
+- **Limits on what an operation may be called with**, when you asked for them (*"only project ENG"*): shown under each operation they apply to, as *Limited by you to: project ENG*. They are enforced on every call; see [Limiting what goes into an operation](#limiting-what-goes-into-an-operation).
+- **What the adapter does not enforce**: anything Muse said you asked for that it cannot hold to, such as asking you before each call or making access expire. It is listed as not enforced, so you are never left thinking it is in force. A limit that covers some operations but not another one that takes the same argument is listed here too (*get_issue takes project, which is limited on list_issues but is not limited on get_issue*). A limit that matched no operation or no argument is listed under *Could not be matched*, never dropped in silence.
 
 You can untick any proposed operation, tick any other operation the server offers, and mark an operation that the server did not label read-only as read-only after you have checked it. Your choices are recorded.
 
@@ -79,14 +80,28 @@ Narrowing is allowed without you, because it can only reduce access: *"stop it c
 
 Ask for more (*"also let it comment on issues"*) and Muse sends a change proposal. You review the new list the same way; the connector's address and token stay as they are. If Muse still lists old operations afterwards, ask it to refresh the connector. If the live policy changes while you are reviewing (for example Muse switched something off), the approval is refused and nothing is applied.
 
+## Limiting what goes into an operation
+
+Say *"Connect Linear, read only, and only project ENG."* Muse sends the limit with the request, as an argument and the values it may take, for one operation or for every operation that has that argument. You see it on the review page, you can still untick any operation, and when you approve it becomes part of the policy:
+
+- **Every call is held to it.** A call whose value for that argument is not one of the allowed values is refused before the service is contacted. Leaving the argument out is refused too, so there is no way round it. A list of values is accepted only if every item is allowed, and a whole value must match, not part of it.
+- **Muse is told.** The connector's description of the operation says what the owner limited it to, and the argument is marked required, so Muse asks for it instead of guessing.
+- **Values or a pattern.** A limit is a list of values (`ENG`, `OPS`) or a short regular expression that the whole value must match. Patterns that can take very long to evaluate are refused.
+- **Limits only get tighter on their own.** *"Actually only ENG"* (fewer values than before) and *"also limit get_issue"* are applied at once by `limit_arguments`, as with switching an operation off. Allowing more values, or anything the adapter cannot prove is no wider, is a change you approve like any other.
+- **A new operation starts without limits.** If you later add an operation, it does not inherit limits from the others, and the review page says so. Ask for the limit again if you want it.
+- **If the service redefines an operation**, its limits stay while the argument still exists. If the argument is gone, the page tells you the limit went with it.
+
+It limits what Muse can send, not what the service does with it: a value like `ENG` is only as meaningful as the service's own handling of it.
+
 ## What it can and cannot enforce
 
 | Can enforce | Cannot yet |
 | --- | --- |
-| Which operations exist for Muse | Limits on what goes into an operation (only one project, only these recipients) |
-| Read, write or sensitive write, with writes marked for Muse to confirm and run once | Asking you before each call |
-| Timeouts and result sizes you ask for | Access that expires |
-| Nothing exposed unless you asked | Servers that run only on your own machine (`stdio`) |
+| Which operations exist for Muse | Asking you before each call |
+| What values an operation may be called with (only one project, only these recipients) | Access that expires |
+| Read, write or sensitive write, with writes marked for Muse to confirm and run once | Limits that depend on the contents of a request (for example how many records it touches) |
+| Timeouts and result sizes you ask for | Servers that run only on your own machine (`stdio`) |
+| Nothing exposed unless you asked | |
 
 A service that needs you to register your own OAuth app first (for example Slack) is not set up from the review page yet; use `muse-vm add-server`.
 

@@ -10,6 +10,7 @@
 | The name Muse sees | `publicOperationId` | Derived from the tool's name |
 | How long and how large | `timeoutSeconds`, `maxResultBytes` | 30 seconds, 256 KB |
 | Which resources and arguments | `resource` block (`allowedUriSchemes`, `argumentPatterns`, ...) | Strict |
+| Which values a tool may be called with | `argumentPatterns` on the tool entry: `{"project": "(?:ENG|OPS)"}` | No limit |
 
 A single entry, taken from a real Microsoft Learn policy:
 

@@ -17,14 +17,18 @@ from ..catalog.canonical import digest, thaw_json
 from ..domain.constants import primitive_key
 from ..domain.errors import InvalidStateError, RequestValidationError
 from ..domain.models import PublishedCatalog
-from .models import SetupRequest
+from ..policy.argument_limits import MAX_LIMITS_PER_TOOL, describe_limit, no_looser
+from .models import ArgumentLimit, SetupRequest
 
 VERSION = 1
 MAX_OFFERED = 2000  # a page of more than this is not a review anyone can do
 CLASS_RANK: Mapping[str, int] = {"read": 0, "write": 1, "sensitive_write": 2}
 _KIND_ORDER = {"tool": 0, "resource": 1, "resource_template": 2, "prompt": 3}
-_IGNORED_WHEN_COMPARING = frozenset({"classification", "timeoutSeconds", "maxResultBytes"})
+_IGNORED_WHEN_COMPARING = frozenset(
+    {"classification", "timeoutSeconds", "maxResultBytes", "argumentPatterns"}
+)
 _LIMITS = ("timeoutSeconds", "maxResultBytes")
+_MAX_UNLIMITED_NOTES = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +47,7 @@ class Candidate:
     suggested: bool  # looks read-only by its name, but the server did not say so
     reviewable: bool  # a change by default; the owner may mark it read-only after checking
     changed: bool  # the server changed it since it was published
+    limits: tuple[tuple[str, str], ...] = ()  # (argument, in words) the owner limits it to
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -58,6 +63,7 @@ class Candidate:
             "suggested": self.suggested,
             "reviewable": self.reviewable,
             "changed": self.changed,
+            "limits": [list(pair) for pair in self.limits],
         }
 
     @classmethod
@@ -75,6 +81,11 @@ class Candidate:
             suggested=value.get("suggested") is True,
             reviewable=value.get("reviewable") is True,
             changed=value.get("changed") is True,
+            limits=tuple(
+                (str(pair[0]), str(pair[1]))
+                for pair in (_sequence(item) for item in _sequence(value.get("limits") or []))
+                if len(pair) == 2
+            ),
         )
 
 
@@ -194,7 +205,8 @@ def compile_proposal(
     changed_keys = {
         key for key in kept if key in live_digests and live_digests[key] != digest(index[key])
     }
-    policies: dict[str, Mapping[str, object]] = {}
+    policies: dict[str, dict[str, object]] = {}
+    dropped_notes: list[str] = []
     for key, draft in drafts.items():
         if key in live and key not in changed_keys:
             entry = dict(live[key])
@@ -202,6 +214,10 @@ def compile_proposal(
             entry = dict(draft)
             if key in live:  # the server changed it: draft afresh, keep the name Muse knows
                 entry["publicOperationId"] = live[key].get("publicOperationId")
+                kept_limits, dropped = _surviving_limits(live[key], index[key])
+                if kept_limits:
+                    entry["argumentPatterns"] = kept_limits
+                dropped_notes.extend(dropped)
         entry["allowed"] = key in chosen
         if key in chosen and index[key].get("type") == "tool":
             if request.timeout_seconds is not None:
@@ -209,6 +225,7 @@ def compile_proposal(
             if request.max_result_bytes is not None:
                 entry["maxResultBytes"] = request.max_result_bytes
         policies[key] = entry
+    limit_notes = apply_limits(policies, index, request.limits)
 
     candidates = tuple(
         _candidate(
@@ -221,7 +238,11 @@ def compile_proposal(
         )
         for key in sorted(index, key=lambda item: _order(index[item]))
     )
-    unenforced = (f"Not enforced: {request.notes}",) if request.notes else ()
+    unenforced = (
+        *((f"Not enforced: {request.notes}",) if request.notes else ()),
+        *dropped_notes,
+        *unlimited_notes(policies, index, chosen),
+    )
     payload = {
         "v": VERSION,
         "snapshot": snapshot_digest,
@@ -232,9 +253,9 @@ def compile_proposal(
     return Computed(
         candidates=candidates,
         policies=policies,
-        unresolved=tuple(missing_allow + missing_exclude),
+        unresolved=tuple(missing_allow + missing_exclude + limit_notes),
         gone=tuple(sorted(key for key in live if key not in index)),
-        unenforced=unenforced,
+        unenforced=tuple(unenforced),
         base_version=base_version,
         digest=digest(payload),
     )
@@ -331,7 +352,132 @@ def _no_looser(old: Mapping[str, object], new: Mapping[str, object]) -> bool:
                 return False
         elif before is not None or (after is not None and not isinstance(after, int)):
             return False
-    return _without(old) == _without(new)
+    return _limits_no_looser(old, new) and _without(old) == _without(new)
+
+
+def _limits_no_looser(old: Mapping[str, object], new: Mapping[str, object]) -> bool:
+    """Every limit there was is still there, unchanged; new ones only tighten."""
+    before, after = old.get("argumentPatterns"), new.get("argumentPatterns")
+    if before is None:
+        return True
+    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+        return False
+    kept = cast(Mapping[object, object], after)
+    return all(
+        isinstance(pattern, str)
+        and isinstance(kept.get(name), str)
+        and no_looser(pattern, cast(str, kept[name]))
+        for name, pattern in cast(Mapping[object, object], before).items()
+    )
+
+
+def apply_limits(
+    entries: dict[str, dict[str, object]],
+    index: Mapping[str, Mapping[str, object]],
+    limits: Sequence[ArgumentLimit],
+) -> list[str]:
+    """Put the limits on the tools they name. Says what could not be applied, and why."""
+    notes: list[str] = []
+    for limit in limits:
+        pattern = limit.regex()
+        applied = False
+        named = False
+        for key, primitive in index.items():
+            if primitive.get("type") != "tool" or key not in entries:
+                continue
+            name = str(primitive.get("name"))
+            known_as = (name, key, str(entries[key].get("publicOperationId")))
+            if limit.operation != "*" and limit.operation not in known_as:
+                continue
+            named = True
+            if limit.argument not in _declared_arguments(primitive):
+                if limit.operation != "*":
+                    notes.append(f"{limit.describe()} (the operation has no such argument)")
+                continue
+            current = entries[key].get("argumentPatterns")
+            patterns = (
+                dict(cast(Mapping[str, str], current)) if isinstance(current, Mapping) else {}
+            )
+            patterns[limit.argument] = pattern
+            if len(patterns) > MAX_LIMITS_PER_TOOL:
+                notes.append(f"{limit.describe()} (too many limits on one operation)")
+                continue
+            entries[key]["argumentPatterns"] = patterns
+            applied = True
+        if not named:
+            notes.append(f"{limit.describe()} (the server does not offer that operation)")
+        elif not applied and limit.operation == "*":
+            notes.append(f"{limit.describe()} (no operation has that argument)")
+    return notes
+
+
+def _surviving_limits(
+    live: Mapping[str, object], primitive: Mapping[str, object]
+) -> tuple[dict[str, str], list[str]]:
+    """The limits of an operation the server has since redefined: kept while its argument exists."""
+    raw = live.get("argumentPatterns")
+    if not isinstance(raw, Mapping):
+        return {}, []
+    declared = _declared_arguments(primitive)
+    kept: dict[str, str] = {}
+    dropped: list[str] = []
+    name = str(primitive.get("name"))
+    for argument, pattern in sorted(
+        cast(Mapping[object, object], raw).items(), key=lambda item: str(item[0])
+    ):
+        if str(argument) in declared:
+            kept[str(argument)] = str(pattern)
+        else:
+            dropped.append(
+                f"{name}: the limit on {argument} ({describe_limit(str(pattern))}) is gone "
+                "because the server's new definition has no such argument."
+            )
+    return kept, dropped
+
+
+def unlimited_notes(
+    policies: Mapping[str, Mapping[str, object]],
+    index: Mapping[str, Mapping[str, object]],
+    chosen: Collection[str],
+) -> list[str]:
+    """Where an argument is limited on some chosen operations but not on another that takes it."""
+    limited: dict[str, set[str]] = {}
+    tools = sorted(
+        (key for key in chosen if key in index and index[key].get("type") == "tool"),
+        key=lambda key: str(index[key].get("name")),
+    )
+    for key in tools:
+        raw = policies[key].get("argumentPatterns")
+        for argument in cast(Mapping[str, object], raw) if isinstance(raw, Mapping) else ():
+            limited.setdefault(str(argument), set()).add(str(index[key].get("name")))
+    notes: list[str] = []
+    for key in tools:
+        raw = policies[key].get("argumentPatterns")
+        own: set[str] = set(cast(Mapping[str, object], raw)) if isinstance(raw, Mapping) else set()
+        for argument in sorted((_declared_arguments(index[key]) & limited.keys()) - own):
+            where = ", ".join(sorted(limited[argument])[:3])
+            notes.append(
+                f"{index[key].get('name')} takes {argument}, which is limited on {where} but "
+                f"is not limited on {index[key].get('name')}."
+            )
+    if len(notes) > _MAX_UNLIMITED_NOTES:
+        extra = len(notes) - _MAX_UNLIMITED_NOTES
+        notes = [*notes[:_MAX_UNLIMITED_NOTES], f"...and {extra} more like these."]
+    return notes
+
+
+def _declared_arguments(primitive: Mapping[str, object]) -> set[str]:
+    schema = primitive.get("inputSchema")
+    properties = (
+        cast(Mapping[str, object], schema).get("properties")
+        if isinstance(schema, Mapping)
+        else None
+    )
+    return (
+        {str(name) for name in cast(Mapping[object, object], properties)}
+        if isinstance(properties, Mapping)
+        else set()
+    )
 
 
 def _without(policy: Mapping[str, object]) -> dict[str, object]:
@@ -397,6 +543,19 @@ def _candidate(
         ),
         reviewable=is_tool and classification == "write" and not hinted,
         changed=changed,
+        limits=_limits_of(policy),
+    )
+
+
+def _limits_of(policy: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
+    raw = policy.get("argumentPatterns")
+    if not isinstance(raw, Mapping):
+        return ()
+    return tuple(
+        (str(name), describe_limit(str(pattern)))
+        for name, pattern in sorted(
+            cast(Mapping[object, object], raw).items(), key=lambda x: str(x[0])
+        )
     )
 
 

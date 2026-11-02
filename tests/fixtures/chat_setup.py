@@ -63,6 +63,36 @@ def tracker_manifest(poison: str | None = None) -> dict[str, object]:
     }
 
 
+def projects_manifest() -> dict[str, object]:
+    """A tracker whose operations take a project, so a user can say "only project ENG"."""
+
+    def tool(
+        name: str, properties: Mapping[str, object], *, read_only: bool | None = None
+    ) -> dict[str, object]:
+        item: dict[str, object] = {
+            "type": "tool",
+            "name": name,
+            "description": f"{name} in a tracker.",
+            "inputSchema": {"type": "object", "properties": dict(properties)},
+        }
+        if read_only is not None:
+            item["annotations"] = {"readOnlyHint": read_only}
+        return item
+
+    text: dict[str, object] = {"type": "string"}
+    return {
+        "protocolVersion": "2025-11-25",
+        "serverInfo": {"name": "Tracker"},
+        "capabilities": {},
+        "primitives": [
+            tool("list_issues", {"project": text, "query": text}, read_only=True),
+            tool("get_issue", {"project": text, "id": text}, read_only=True),
+            tool("create_issue", {"project": text, "title": text}),
+            tool("search_notes", {"query": text}, read_only=True),
+        ],
+    }
+
+
 class FakeTools:
     """The MCP server behind a new connector: records what it is asked and who asked."""
 

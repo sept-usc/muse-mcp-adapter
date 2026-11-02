@@ -51,12 +51,14 @@ from ..domain.models import (
     ServerRegistration,
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from ..policy.argument_limits import describe_limit, no_looser
 from ..transport.security import EndpointSecurityPolicy
 from . import catalog as setup_catalog
 from . import directory, owner
 from .compile import (
     Computed,
     Final,
+    apply_limits,
     classify_change,
     compile_proposal,
     exposures_of,
@@ -80,6 +82,7 @@ from .models import (
     SETUP_SERVER_ID,
     WAITING,
     SetupRequest,
+    parse_limits,
 )
 from .store import Proposal, SetupStore
 
@@ -165,6 +168,7 @@ class SetupService:
             "list_connections": self._list_connections,
             "explain_connection": self._explain_connection,
             "turn_off_operations": self._turn_off_operations,
+            "limit_arguments": self._limit_arguments,
             "remove_connection": self._remove_connection,
         }
 
@@ -289,10 +293,11 @@ class SetupService:
             or request.also_allow
             or request.timeout_seconds
             or request.max_result_bytes
+            or request.limits
         ):
             raise RequestValidationError(
                 "There is nothing to add or change. To switch operations off use "
-                "turn_off_operations."
+                "turn_off_operations, and to add limits on what they accept use limit_arguments."
             )
         return self._open(
             connection_id,
@@ -501,6 +506,60 @@ class SetupService:
             "operations": self._operations_of(record.server_id),
             "nextStep": "Tell the user. If Muse still lists the operations, they are gone from "
             "the adapter; ask the user to refresh the connector if needed.",
+        }
+
+    def _limit_arguments(self, _: str, arguments: Mapping[str, object]) -> dict[str, object]:
+        record = self._connection_to_narrow(str(arguments["connectionId"]))
+        limits = parse_limits(arguments["limitArguments"])
+        old = self._repository.get_active_catalog(record.server_id)
+        index = {
+            item.primitive_key: cast(Mapping[str, object], thaw_json(item.definition))
+            for item in old.primitives
+        }
+        before = {
+            item.primitive_key: cast(dict[str, object], thaw_json(item.policy))
+            for item in old.primitives
+        }
+        after = {key: dict(entry) for key, entry in before.items()}
+        problems = apply_limits(after, index, limits)
+        if problems:
+            exposed = ", ".join(sorted(item.public_operation_id for item in old.primitives))
+            raise RequestValidationError(
+                "These limits cannot be applied: "
+                + "; ".join(problems)
+                + ". This connection exposes: "
+                + (exposed or "nothing")
+                + "."
+            )
+        looser = _loosened(before, after)
+        if looser:
+            raise ConflictError(
+                looser + " To change a limit, use propose_change so the user can approve it."
+            )
+        if after == before:
+            return {
+                "message": "Those limits are already in place.",
+                "connectionId": record.connection_id,
+                "operations": self._operations_of(record.server_id),
+            }
+        version = self._narrow(old, lambda _item: True, edited=after, prefix="lim")
+        self._audit(
+            ACTOR_AGENT,
+            "setup.catalog.limited",
+            record.server_id,
+            {
+                "connectionId": record.connection_id,
+                "limits": [limit.to_json() for limit in limits],
+                "version": version,
+            },
+        )
+        return {
+            "message": "The limits are in place. Muse can now call those operations only with "
+            "the values allowed.",
+            "connectionId": record.connection_id,
+            "operations": self._operations_of(record.server_id),
+            "nextStep": "Tell the user. If Muse still shows the old inputs, ask the user to "
+            "refresh the connector.",
         }
 
     def _remove_connection(self, _: str, arguments: Mapping[str, object]) -> dict[str, object]:
@@ -978,13 +1037,27 @@ class SetupService:
     # Helpers
     # ==================================================================================
 
-    def _narrow(self, old: PublishedCatalog, keep: Callable[[PublishedPrimitive], bool]) -> str:
-        """Publish the live catalog without some operations, reusing its own definitions."""
+    def _narrow(
+        self,
+        old: PublishedCatalog,
+        keep: Callable[[PublishedPrimitive], bool],
+        edited: Mapping[str, Mapping[str, object]] | None = None,
+        *,
+        prefix: str = "off",
+    ) -> str:
+        """Publish the live catalog without some operations, or with tighter policies for some,
+        reusing its own definitions. Refuses anything that would give Muse more."""
         kept = [item for item in old.primitives if keep(item)]
-        policies = [cast(dict[str, object], thaw_json(item.policy)) for item in kept]
+        changed = edited or {}
+        policies = [
+            dict(changed[item.primitive_key])
+            if item.primitive_key in changed
+            else cast(dict[str, object], thaw_json(item.policy))
+            for item in kept
+        ]
         primitives = [cast(dict[str, object], thaw_json(item.definition)) for item in kept]
         stamp = self._clock().replace(":", "").replace("-", "")[:15]
-        version = f"off-{stamp}-{secrets.token_hex(3)}"
+        version = f"{prefix}-{stamp}-{secrets.token_hex(3)}"
         new = compile_catalog(
             catalog_version=version,
             server=cast(Mapping[str, object], thaw_json(old.server)),
@@ -1027,7 +1100,7 @@ class SetupService:
         except EntityNotFoundError:
             return []
         return [
-            {"id": item.public_operation_id, "kind": item.classification}
+            {"id": item.public_operation_id, "kind": item.classification, **_limits_in_words(item)}
             for item in catalog.primitives
         ]
 
@@ -1109,6 +1182,42 @@ class SetupService:
 
 def _host(endpoint: str) -> str:
     return urlsplit(endpoint).hostname or endpoint
+
+
+def _limits_in_words(item: PublishedPrimitive) -> dict[str, object]:
+    raw = item.policy.get("argumentPatterns")
+    if not isinstance(raw, Mapping) or not raw:
+        return {}
+    return {
+        "limits": {
+            str(name): describe_limit(str(pattern))
+            for name, pattern in sorted(
+                cast(Mapping[object, object], raw).items(), key=lambda pair: str(pair[0])
+            )
+        }
+    }
+
+
+def _loosened(
+    before: Mapping[str, Mapping[str, object]], after: Mapping[str, Mapping[str, object]]
+) -> str | None:
+    """The first existing limit that a new one would replace with something wider."""
+    for key, entry in before.items():
+        old = entry.get("argumentPatterns")
+        if not isinstance(old, Mapping):
+            continue
+        new = after[key].get("argumentPatterns")
+        kept: Mapping[object, object] = (
+            cast(Mapping[object, object], new) if isinstance(new, Mapping) else {}
+        )
+        for argument, pattern in cast(Mapping[object, object], old).items():
+            replacement = kept.get(argument)
+            if not isinstance(replacement, str) or not no_looser(str(pattern), replacement):
+                return (
+                    f"{entry.get('publicOperationId')} already limits {argument} to "
+                    f"{describe_limit(str(pattern))}, so this would not narrow it."
+                )
+    return None
 
 
 def _hash(value: str) -> str:

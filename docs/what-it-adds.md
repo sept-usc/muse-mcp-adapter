@@ -21,7 +21,7 @@ Every row is covered by the project's automated tests; the [validation guide](va
 
 These limits are real, and the page should change when they do.
 
-- **Policy works per operation.** It cannot yet decide by the value of an argument (for example "only project X"), by who is asking, or by how many records a call touches. Resources and templates have argument-level limits; tools do not.
+- **Policy works per operation, and per argument value.** It can hold an operation to listed values or a pattern (for example "only project X"), but it cannot yet decide by who is asking, or by how many records a call touches.
 - **Drift reports what changed, not whether it is safe.** It does not judge backward compatibility, estimate impact, or replay tests against a changed server.
 - **Settling an unknown write is manual.** You check the other system, then run `reconcile` with the adapter. There is no automatic read-after-write check and no way to settle it from chat.
 - **Read-only labels are trusted by default.** `add-server` exposes the tools a server itself marks read-only, and prints what it exposed. A server that mislabels a write would be exposed. `--no-reads` reviews every tool first.
