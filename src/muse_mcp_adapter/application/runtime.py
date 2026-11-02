@@ -35,6 +35,7 @@ from ..operations.runtime_controls import (
     RequestConcurrencyLimiter,
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from ..policy.expiry import ends_at, has_ended
 from .openapi import compile_openapi
 
 MAX_EVENTS_SHOWN = 400
@@ -159,6 +160,7 @@ class AdapterRuntime:
         response: DataPlaneResponse | None = None
         error: BaseException | None = None
         try:
+            self._ensure_access_continues(primitive.policy, public_operation_id)
             with self._concurrency.slot(principal.server_id):
                 if principal.server_id == SETUP_SERVER_ID:
                     # The built-in setup server is never reached over a network: its calls go to
@@ -204,6 +206,7 @@ class AdapterRuntime:
         inputs: Mapping[str, object],
     ) -> DataPlaneResponse:
         operation = self._owned_operation(principal, operation_id)
+        self._ensure_resumable(principal, operation.public_operation_id)
         request = DataPlaneRequest(
             request_id=operation.request_id,
             server_id=principal.server_id,
@@ -239,7 +242,7 @@ class AdapterRuntime:
         if not self._repository.get_server(connection.server_id).enabled:
             raise EntityNotFoundError("Connector was not found")
         catalog = self._repository.get_active_catalog(connection.server_id)
-        return compile_openapi(catalog, public_url=self._public_url, slug=slug)
+        return compile_openapi(catalog, public_url=self._public_url, slug=slug, now=self._clock())
 
     def artifact(self, principal: Principal, artifact_id: str) -> tuple[bytes, str]:
         if self._artifacts is None:
@@ -250,6 +253,21 @@ class AdapterRuntime:
             self._artifacts.read(artifact_id, operation_id=record.operation_id),
             record.media_type,
         )
+
+    def _ensure_access_continues(self, policy: Mapping[str, object], operation_id: str) -> None:
+        """Refuse a call once the time the owner gave for this operation has passed."""
+        if has_ended(policy, self._clock()):
+            raise AuthorizationError(
+                f"The access the owner gave to {operation_id} ended at "
+                f"{ends_at(policy) or 'an unreadable time'}. Ask the owner to renew it."
+            )
+
+    def _ensure_resumable(self, principal: Principal, operation_id: str) -> None:
+        catalog = self._repository.get_active_catalog(principal.server_id)
+        for item in catalog.primitives:
+            if item.public_operation_id == operation_id:
+                self._ensure_access_continues(item.policy, operation_id)
+                return
 
     def _owned_operation(self, principal: Principal, operation_id: str) -> OperationRecord:
         operation = self._repository.get_operation(operation_id)

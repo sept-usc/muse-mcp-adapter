@@ -58,9 +58,10 @@ _KIND = {
     "prompt": "prompt",
 }
 _STANDING_LIMITS = (
-    "The adapter does not yet ask you before each call or make access expire. It does limit "
-    "which values an operation may be called with, where a limit is shown under the operation. "
-    "Anything else you asked for in words is listed here as not enforced."
+    "The adapter does not yet ask you before each call. It does limit which values an operation "
+    "may be called with, where a limit is shown under the operation, and it ends access at the "
+    "time shown above, if you asked for that. Anything else you asked for in words is listed "
+    "here as not enforced."
 )
 
 
@@ -476,6 +477,7 @@ class OwnerWeb:
                 f"<div class='box {style}'>Asked for: {len(requested)}. Would be available: "
                 f"{len(chosen)}. Available but not asked for: {len(extra)}.</div>"
             )
+        access = _access_box(computed)
         rows = "".join(_row(item, checked=True) for item in selected) or (
             "<tr><td colspan=3 class=muted>Nothing would become available.</td></tr>"
         )
@@ -503,7 +505,7 @@ class OwnerWeb:
         base = f"{PATH}/{html.escape(token)}"
         body = (
             f"{self._bar()}<main><h1>Review: {html.escape(info.name)}</h1>{problem}"
-            f"{self._summary(proposal, info)}{alignment}"
+            f"{self._summary(proposal, info)}{alignment}{access}"
             "<form method=post action='" + base + "/decide'>"
             "<input type=hidden name=csrf value='{{CSRF}}'>"
             f"<input type=hidden name=digest value='{html.escape(computed.digest)}'>"
@@ -561,12 +563,44 @@ class OwnerWeb:
                 "<input type=hidden name=csrf value='{{CSRF}}'>"
                 "<button>I have saved the token. Clear it from here.</button></form>"
             )
+        ends = sorted(str(item["accessEndsAt"]) for item in operations if item.get("accessEndsAt"))
+        until = (
+            f"<div class='box warn'>Access ends at {html.escape(ends[0])}. After that Muse can no "
+            "longer use it.</div>"
+            if ends
+            else ""
+        )
         body = (
             f"{self._bar()}<main><h1>Approved: {html.escape(info.name)}</h1>"
             "<div class='box ok'>It is in place. Muse can use only what is listed below.</div>"
-            f"<h2>Available to Muse</h2><ul>{listed or '<li>nothing</li>'}</ul>{access}</main>"
+            f"{until}<h2>Available to Muse</h2><ul>{listed or '<li>nothing</li>'}</ul>{access}"
+            "</main>"
         )
         return "Approved", body, 200
+
+
+def _access_box(computed: Computed) -> str:
+    """Whether the access is temporary, and when it ends."""
+    hours = computed.expires_in_hours
+    if hours:
+        return (
+            f"<div class='box warn'>Access is temporary: it ends {hours} hour"
+            f"{'' if hours == 1 else 's'} after you approve. After that Muse can no longer "
+            "use it.</div>"
+        )
+    if computed.inherited_expiry and computed.inherited_ended:
+        return (
+            f"<div class='box warn'>Access to this connection ended at "
+            f"{html.escape(computed.inherited_expiry)}. Whatever you approve now, without a new "
+            "time, has ended already. To use it again, ask Muse for a time, for example five more "
+            "hours.</div>"
+        )
+    if computed.inherited_expiry:
+        return (
+            f"<div class=box>Access ends at {html.escape(computed.inherited_expiry)}, as it did "
+            "before. Anything you add ends then too.</div>"
+        )
+    return ""
 
 
 def _app_fields() -> str:

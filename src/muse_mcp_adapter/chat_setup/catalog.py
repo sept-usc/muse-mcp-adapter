@@ -45,6 +45,7 @@ _ALSO_ALLOW = {
 _EXCLUDE = {**_NAMES, "description": "Exact names of operations the user does not want."}
 _TIMEOUT = {"type": "integer", "minimum": 1, "maximum": 300}
 _MAX_BYTES = {"type": "integer", "minimum": 1024, "maximum": 16777216}
+_HOURS = {"type": "integer", "minimum": 1, "maximum": 720}
 _LIMIT_ITEM = {
     "type": "object",
     "properties": {
@@ -163,6 +164,12 @@ _CONNECT_PROPERTIES = {
     "exclude": _EXCLUDE,
     "timeoutSeconds": _TIMEOUT,
     "maxResultBytes": _MAX_BYTES,
+    "expiresInHours": {
+        **_HOURS,
+        "description": "Only when the user asked for temporary access, for example for two "
+        "hours: how many hours the access lasts, counted from when the user approves. Leave it "
+        "out for access with no end.",
+    },
     "limitArguments": _LIMITS,
     "notes": _NOTES,
 }
@@ -247,6 +254,15 @@ _TOOLS = (
         WRITE,
         {"connectionId": _CONNECTION, "limitArguments": {**_LIMITS, "minItems": 1}},
         ("connectionId", "limitArguments"),
+    ),
+    _tool(
+        "expire_access",
+        "Make a connection's access end after the given number of hours from now, right away. "
+        "This can only shorten access: a connection that already ends sooner keeps that end. "
+        "To extend access, use propose_change with expiresInHours.",
+        WRITE,
+        {"connectionId": _CONNECTION, "hours": _HOURS},
+        ("connectionId", "hours"),
     ),
     _tool(
         "remove_connection",

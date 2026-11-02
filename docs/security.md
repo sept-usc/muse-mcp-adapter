@@ -34,7 +34,7 @@ Muse ──(token or OAuth)──▶ Adapter ──(policy-checked, your credent
 - If tokens are missing or cannot be refreshed, requests fail fast with a clear reconnect message (and a fresh link) instead of waiting for a browser. A write is never marked uncertain because of this.
 
 **Policy on every call**
-- Only the operations you approved exist. A tool can also be limited to listed values or a pattern for any of its arguments (for example one project): a call that leaves the argument out or sends another value is refused before the server is contacted, and a published policy that names an argument the tool does not have is refused.
+- Only the operations you approved exist. A tool can also be limited to listed values or a pattern for any of its arguments (for example one project): a call that leaves the argument out or sends another value is refused before the server is contacted, and a published policy that names an argument the tool does not have is refused. An operation can also be given an end time (`expiresAt`): from then on every call is refused, a resumed call included, and a time the adapter cannot read counts as already ended.
 
 **Write safety**
 - Muse confirms consequential actions with its user before calling them. A signed-approval mode (`approvalMode: signed`) exists in the code but is not usable end to end yet, because the HTTP interface cannot carry the approval evidence; leave it off.

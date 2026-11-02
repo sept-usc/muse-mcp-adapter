@@ -273,6 +273,7 @@ def test_the_setup_catalog_is_republished_when_the_code_changes(tmp_path: Path) 
             "explain_connection",
             "turn_off_operations",
             "limit_arguments",
+            "expire_access",
             "remove_connection",
         }
         by_name = {p.public_operation_id: p.classification for p in before.primitives}
@@ -282,5 +283,6 @@ def test_the_setup_catalog_is_republished_when_the_code_changes(tmp_path: Path) 
         assert (
             by_name["turn_off_operations"] == "write"
             and by_name["limit_arguments"] == "write"
+            and by_name["expire_access"] == "write"
             and by_name["remove_connection"] == "sensitive_write"
         )

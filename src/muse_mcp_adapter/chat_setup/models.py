@@ -40,6 +40,7 @@ MAX_NOTES = 1000
 MAX_NAMES = 50
 MAX_ENDPOINT = 500
 
+MAX_ACCESS_HOURS = 720  # thirty days: longer than that is not "temporary"
 MAX_LIMITS = 20
 MAX_VALUES = 20
 MAX_VALUE_CHARS = 200
@@ -59,6 +60,7 @@ _CONNECT_FIELDS = (
     "exclude",
     "timeoutSeconds",
     "maxResultBytes",
+    "expiresInHours",
     "limitArguments",
     "notes",
 )
@@ -171,6 +173,7 @@ class SetupRequest:
     exclude: tuple[str, ...] = ()
     timeout_seconds: int | None = None
     max_result_bytes: int | None = None
+    expires_in_hours: int | None = None  # access ends this long after the owner approves
     limits: tuple[ArgumentLimit, ...] = ()
     notes: str | None = None
 
@@ -186,6 +189,7 @@ class SetupRequest:
             "exclude": list(self.exclude),
             "timeoutSeconds": self.timeout_seconds,
             "maxResultBytes": self.max_result_bytes,
+            "expiresInHours": self.expires_in_hours,
             "limitArguments": [limit.to_json() for limit in self.limits],
             "notes": self.notes,
         }
@@ -227,6 +231,9 @@ class SetupRequest:
             timeout_seconds=_integer(value.get("timeoutSeconds"), "timeoutSeconds", 1, 300),
             max_result_bytes=_integer(
                 value.get("maxResultBytes"), "maxResultBytes", 1024, 16 * 1024 * 1024
+            ),
+            expires_in_hours=_integer(
+                value.get("expiresInHours"), "expiresInHours", 1, MAX_ACCESS_HOURS
             ),
             limits=parse_limits(value.get("limitArguments")),
             notes=_text(value.get("notes"), "notes", MAX_NOTES, required=False),

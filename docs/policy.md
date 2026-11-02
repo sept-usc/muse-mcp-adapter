@@ -11,6 +11,7 @@
 | How long and how large | `timeoutSeconds`, `maxResultBytes` | 30 seconds, 256 KB |
 | Which resources and arguments | `resource` block (`allowedUriSchemes`, `argumentPatterns`, ...) | Strict |
 | Which values a tool may be called with | `argumentPatterns` on the tool entry: `{"project": "(?:ENG|OPS)"}` | No limit |
+| Until when it is exposed | `expiresAt`: a UTC time such as `2026-12-01T09:00:00Z`; after it every call is refused and the operation leaves the connector description | Never ends |
 
 A single entry, taken from a real Microsoft Learn policy:
 

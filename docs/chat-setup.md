@@ -60,6 +60,7 @@ A service that needs a sign-in shows you its tools only after you have signed in
 - **The service**: its name and address, and whether it is in the adapter's own list. An address that Muse supplied and the adapter does not know carries a warning, and the adapter has not contacted it before you press the button.
 - **What would become available**: each operation, whether it only reads, changes data, or may be hard to undo, how the adapter knows, and the server's own description in a collapsed block marked as the server's.
 - **An alignment line**: how many things you asked for, how many would be available, and how many are available that you did not ask for. For a new connection that last number should be 0.
+- **Whether the access is temporary**, and when it will end.
 - **Limits on what an operation may be called with**, when you asked for them (*"only project ENG"*): shown under each operation they apply to, as *Limited by you to: project ENG*. They are enforced on every call; see [Limiting what goes into an operation](#limiting-what-goes-into-an-operation).
 - **What the adapter does not enforce**: anything Muse said you asked for that it cannot hold to, such as asking you before each call or making access expire. It is listed as not enforced, so you are never left thinking it is in force. A limit that covers some operations but not another one that takes the same argument is listed here too (*get_issue takes project, which is limited on list_issues but is not limited on get_issue*). A limit that matched no operation or no argument is listed under *Could not be matched*, never dropped in silence.
 
@@ -95,14 +96,28 @@ Say *"Connect Linear, read only, and only project ENG."* Muse sends the limit wi
 
 It limits what Muse can send, not what the service does with it: a value like `ENG` is only as meaningful as the service's own handling of it.
 
+## Access that ends
+
+Say *"Connect Linear for the next two hours."* Muse sends the time with the request, and the review page says *Access is temporary: it ends 2 hours after you approve*. The two hours start when you press **Approve**, not when Muse asked, and you are shown the exact end on the approved page.
+
+- **It ends by itself.** From that moment every call is refused with a message that says the access ended and when, the operations disappear from what Muse reads when it refreshes the connector, and `list_connections` marks them as ended so Muse can tell you. Nothing needs to run for this to happen: each call checks the time.
+- **Anything already in progress** that asks Muse a question is not resumed after the end either.
+- **Adding to the connection does not extend it.** If you later approve another operation for a connection that ends at 13:00, the new operation ends at 13:00 too.
+- **Extending is your decision.** *"Give it five more hours"* is a change you review and approve; the new end replaces the old one for every operation of that connection, counted from that approval.
+- **Ending sooner needs nobody.** *"Stop it in an hour"* is applied at once (`expire_access`), like switching an operation off; it can only bring the end closer.
+- **At most 30 days.** For anything longer, do not ask for an end.
+
+The clock is the adapter's own, so it holds as long as the machine's time is right.
+
 ## What it can and cannot enforce
 
 | Can enforce | Cannot yet |
 | --- | --- |
 | Which operations exist for Muse | Asking you before each call |
-| What values an operation may be called with (only one project, only these recipients) | Access that expires |
-| Read, write or sensitive write, with writes marked for Muse to confirm and run once | Limits that depend on the contents of a request (for example how many records it touches) |
-| Timeouts and result sizes you ask for | Servers that run only on your own machine (`stdio`) |
+| What values an operation may be called with (only one project, only these recipients) | Limits that depend on the contents of a request (for example how many records it touches) |
+| Access that ends at a time you approve | Servers that run only on your own machine (`stdio`) |
+| Read, write or sensitive write, with writes marked for Muse to confirm and run once | |
+| Timeouts and result sizes you ask for | |
 | Nothing exposed unless you asked | |
 
 ## Which services Muse can look up by name

@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 from ..domain.constants import MuseClassification, PrimitiveType, primitive_key
 from .argument_limits import MAX_LIMITS_PER_TOOL
+from .expiry import parse as parse_instant
 
 _OPERATION_ID = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 _URI_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
@@ -115,6 +116,9 @@ def validate_exposure_policy(
                 f"Tool {key} lacks readOnlyHint=true; classify it as write or set "
                 "readOnlyReviewed after review"
             )
+
+    if policy.get("expiresAt") is not None and parse_instant(policy.get("expiresAt")) is None:
+        issues.append(f"expiresAt for {key} must be an ISO date-time in UTC ending in Z")
 
     if primitive.get("type") == PrimitiveType.TOOL and policy.get("argumentPatterns") is not None:
         issues.extend(_tool_limit_issues(primitive, policy.get("argumentPatterns"), key))

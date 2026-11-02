@@ -50,6 +50,7 @@ Common fields:
 | `readOnlyReviewed` | Set to `true` to classify a tool as `read` when the server did not mark it `readOnlyHint: true`. |
 | `allowedResultContentTypes` | Optionally narrow a tool's accepted result content types. |
 | `argumentPatterns` | Tools: limit what an argument may be, for example `{"project": "(?:ENG|OPS)"}`. See the rules below. |
+| `expiresAt` | Any entry: a UTC time ending in `Z` after which the operation is refused and left out of the connector description. An unreadable value counts as already ended. |
 
 Resource and template policies add a `resource` block; prompts add a `prompt` block:
 

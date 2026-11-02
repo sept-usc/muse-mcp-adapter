@@ -17,6 +17,7 @@ from ..catalog.canonical import digest, thaw_json
 from ..domain.constants import primitive_key
 from ..domain.errors import InvalidStateError, RequestValidationError
 from ..domain.models import PublishedCatalog
+from ..policy import expiry
 from ..policy.argument_limits import MAX_LIMITS_PER_TOOL, describe_limit, no_looser
 from .models import ArgumentLimit, SetupRequest
 
@@ -25,7 +26,7 @@ MAX_OFFERED = 2000  # a page of more than this is not a review anyone can do
 CLASS_RANK: Mapping[str, int] = {"read": 0, "write": 1, "sensitive_write": 2}
 _KIND_ORDER = {"tool": 0, "resource": 1, "resource_template": 2, "prompt": 3}
 _IGNORED_WHEN_COMPARING = frozenset(
-    {"classification", "timeoutSeconds", "maxResultBytes", "argumentPatterns"}
+    {"classification", "timeoutSeconds", "maxResultBytes", "argumentPatterns", "expiresAt"}
 )
 _LIMITS = ("timeoutSeconds", "maxResultBytes")
 _MAX_UNLIMITED_NOTES = 10
@@ -100,6 +101,9 @@ class Computed:
     unenforced: tuple[str, ...]  # limits asked for in words that nothing can enforce
     base_version: str | None  # the live catalog this was compiled against
     digest: str
+    expires_in_hours: int | None = None  # access ends this long after approval
+    inherited_expiry: str | None = None  # the end a connection already has, when none is asked
+    inherited_ended: bool = False  # that end has already passed (set when the owner is shown it)
 
     @property
     def selected(self) -> tuple[str, ...]:
@@ -118,6 +122,9 @@ class Computed:
             "unenforced": list(self.unenforced),
             "baseVersion": self.base_version,
             "digest": self.digest,
+            "expiresInHours": self.expires_in_hours,
+            "inheritedExpiry": self.inherited_expiry,
+            "inheritedEnded": self.inherited_ended,
         }
 
     @classmethod
@@ -127,6 +134,7 @@ class Computed:
         )
         raw_policies = _mapping(value.get("policies"))
         base = value.get("baseVersion")
+        hours, inherited = value.get("expiresInHours"), value.get("inheritedExpiry")
         return cls(
             candidates=candidates,
             policies={key: _mapping(entry) for key, entry in raw_policies.items()},
@@ -135,6 +143,11 @@ class Computed:
             unenforced=tuple(str(item) for item in _sequence(value.get("unenforced"))),
             base_version=base if isinstance(base, str) else None,
             digest=_str(value, "digest"),
+            expires_in_hours=hours
+            if isinstance(hours, int) and not isinstance(hours, bool)
+            else None,
+            inherited_expiry=inherited if isinstance(inherited, str) else None,
+            inherited_ended=value.get("inheritedEnded") is True,
         )
 
 
@@ -258,14 +271,34 @@ def compile_proposal(
         unenforced=tuple(unenforced),
         base_version=base_version,
         digest=digest(payload),
+        expires_in_hours=request.expires_in_hours,
+        inherited_expiry=None if request.expires_in_hours is not None else _earliest_end(live),
     )
 
 
-def finalize(computed: Computed, chosen: Collection[str], reviewed_read: Collection[str]) -> Final:
+def _earliest_end(live: Mapping[str, Mapping[str, object]]) -> str | None:
+    """The soonest end among what is live now, so that adding to a connection does not extend it."""
+    ends = [
+        (instant, text)
+        for entry in live.values()
+        if isinstance(text := entry.get("expiresAt"), str)
+        and (instant := expiry.parse(text)) is not None
+    ]
+    return min(ends)[1] if ends else None
+
+
+def finalize(
+    computed: Computed,
+    chosen: Collection[str],
+    reviewed_read: Collection[str],
+    expires_at: str | None = None,
+) -> Final:
     """Apply the owner's choices to a compiled proposal.
 
     The owner may remove anything, add anything the server offers, and mark a change-by-default
     tool read-only after checking it. Nothing outside what the server offers can be chosen.
+    ``expires_at`` is when access ends if the request asked for a time limit; without it, an
+    operation with no end keeps the end that the connection already has.
     """
     known = {item.key: item for item in computed.candidates}
     chosen_set = set(chosen)
@@ -279,6 +312,11 @@ def finalize(computed: Computed, chosen: Collection[str], reviewed_read: Collect
     for key in sorted(known):
         entry = dict(computed.policies[key])
         entry["allowed"] = key in chosen_set
+        if key in chosen_set:
+            if expires_at is not None:
+                entry["expiresAt"] = expires_at
+            elif computed.inherited_expiry and "expiresAt" not in entry:
+                entry["expiresAt"] = computed.inherited_expiry
         if key in marked:
             entry["classification"] = "read"
             entry["readOnlyReviewed"] = True
@@ -292,7 +330,14 @@ def finalize(computed: Computed, chosen: Collection[str], reviewed_read: Collect
         removed_by_owner=tuple(sorted(proposed - chosen_set)),
         marked_read=tuple(marked),
         exposed_not_requested=tuple(sorted(chosen_set - requested)),
-        digest=digest({"proposal": computed.digest, "chosen": sorted(chosen_set), "read": marked}),
+        digest=digest(
+            {
+                "proposal": computed.digest,
+                "chosen": sorted(chosen_set),
+                "read": marked,
+                "expiresAt": expires_at or computed.inherited_expiry,
+            }
+        ),
     )
 
 
@@ -352,7 +397,11 @@ def _no_looser(old: Mapping[str, object], new: Mapping[str, object]) -> bool:
                 return False
         elif before is not None or (after is not None and not isinstance(after, int)):
             return False
-    return _limits_no_looser(old, new) and _without(old) == _without(new)
+    return (
+        expiry.no_later(old.get("expiresAt"), new.get("expiresAt"))
+        and _limits_no_looser(old, new)
+        and _without(old) == _without(new)
+    )
 
 
 def _limits_no_looser(old: Mapping[str, object], new: Mapping[str, object]) -> bool:

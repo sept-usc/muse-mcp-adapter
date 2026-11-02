@@ -14,7 +14,7 @@ import json
 import re
 import secrets
 from collections.abc import Callable, Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
@@ -51,6 +51,7 @@ from ..domain.models import (
     ServerRegistration,
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from ..policy import expiry
 from ..policy.argument_limits import describe_limit, no_looser
 from ..transport.security import EndpointSecurityPolicy
 from . import catalog as setup_catalog
@@ -171,6 +172,7 @@ class SetupService:
             "explain_connection": self._explain_connection,
             "turn_off_operations": self._turn_off_operations,
             "limit_arguments": self._limit_arguments,
+            "expire_access": self._expire_access,
             "remove_connection": self._remove_connection,
         }
 
@@ -295,6 +297,7 @@ class SetupService:
             or request.also_allow
             or request.timeout_seconds
             or request.max_result_bytes
+            or request.expires_in_hours
             or request.limits
         ):
             raise RequestValidationError(
@@ -564,6 +567,44 @@ class SetupService:
             "refresh the connector.",
         }
 
+    def _expire_access(self, _: str, arguments: Mapping[str, object]) -> dict[str, object]:
+        record = self._connection_to_narrow(str(arguments["connectionId"]))
+        hours = cast(int, arguments["hours"])
+        old = self._repository.get_active_catalog(record.server_id)
+        end = self._after(hours * 3600)
+        edited: dict[str, dict[str, object]] = {}
+        for item in old.primitives:
+            policy = cast(dict[str, object], thaw_json(item.policy))
+            # shorten it, or give it an end; never move an earlier end to a later time
+            if expiry.no_later(policy.get("expiresAt"), end) and policy.get("expiresAt") != end:
+                policy["expiresAt"] = end
+                edited[item.primitive_key] = policy
+        if not edited:
+            return {
+                "message": "Access already ends sooner than that.",
+                "connectionId": record.connection_id,
+                "operations": self._operations_of(record.server_id),
+            }
+        version = self._narrow(old, lambda _item: True, edited=edited, prefix="exp")
+        self._audit(
+            ACTOR_AGENT,
+            "setup.catalog.expiry",
+            record.server_id,
+            {
+                "connectionId": record.connection_id,
+                "expiresAt": end,
+                "hours": hours,
+                "version": version,
+            },
+        )
+        return {
+            "message": f"Access to {record.label} now ends at {end}.",
+            "connectionId": record.connection_id,
+            "operations": self._operations_of(record.server_id),
+            "nextStep": "Tell the user when it ends. After that Muse can no longer use it; to "
+            "extend it, use propose_change with expiresInHours.",
+        }
+
     def _remove_connection(self, _: str, arguments: Mapping[str, object]) -> dict[str, object]:
         record = self._connection_to_narrow(str(arguments["connectionId"]))
         self._connections.unlink(record.connection_id, actor=ACTOR_AGENT)
@@ -733,6 +774,10 @@ class SetupService:
             snapshot_digest=snapshot.snapshot_digest,
             base_version=base,
         )
+        if computed.inherited_expiry is not None and expiry.has_ended(
+            {"expiresAt": computed.inherited_expiry}, self._clock()
+        ):
+            computed = replace(computed, inherited_ended=True)  # only changes what is shown
         updated = self._store.transition(
             proposal.proposal_id,
             expected=(CONNECTING,),
@@ -772,7 +817,9 @@ class SetupService:
         if not approve:
             return self._decline(proposal)
         computed = Computed.from_json(cast(Mapping[str, object], proposal.computed))
-        final = finalize(computed, chosen, reviewed_read)
+        hours = computed.expires_in_hours
+        expires_at = self._after(hours * 3600) if hours else None  # counted from now, the approval
+        final = finalize(computed, chosen, reviewed_read, expires_at)
         decision: dict[str, object] = {
             "decision": "approved",
             "method": "owner-code",
@@ -784,6 +831,7 @@ class SetupService:
             "addedByOwner": list(final.added_by_owner),
             "removedByOwner": list(final.removed_by_owner),
             "exposedNotRequested": list(final.exposed_not_requested),
+            "expiresAt": expires_at or computed.inherited_expiry,
         }
         approved = self._store.transition(
             proposal.proposal_id,
@@ -1132,8 +1180,14 @@ class SetupService:
             catalog = self._repository.get_active_catalog(server_id)
         except EntityNotFoundError:
             return []
+        now = self._clock()
         return [
-            {"id": item.public_operation_id, "kind": item.classification, **_limits_in_words(item)}
+            {
+                "id": item.public_operation_id,
+                "kind": item.classification,
+                **_limits_in_words(item),
+                **_expiry_in_words(item, now),
+            }
             for item in catalog.primitives
         ]
 
@@ -1219,6 +1273,13 @@ class SetupService:
 
 def _host(endpoint: str) -> str:
     return urlsplit(endpoint).hostname or endpoint
+
+
+def _expiry_in_words(item: PublishedPrimitive, now: str) -> dict[str, object]:
+    ends = expiry.ends_at(item.policy)
+    if ends is None:
+        return {}
+    return {"accessEndsAt": ends, "accessEnded": expiry.has_ended(item.policy, now)}
 
 
 def _limits_in_words(item: PublishedPrimitive) -> dict[str, object]:
