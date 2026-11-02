@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from ..application.oauth_web import CALLBACK_PATH
 from ..application.web_pages import document, redirect
 from ..domain.errors import (
     AuthorizationError,
@@ -83,6 +84,7 @@ class OwnerWeb:
             Route(PATH + "/{token}/unlock", self._unlock, methods=["POST"]),
             Route(PATH + "/{token}/start", self._start, methods=["POST"]),
             Route(PATH + "/{token}/discover", self._discover, methods=["POST"]),
+            Route(PATH + "/{token}/cancel", self._cancel, methods=["POST"]),
             Route(PATH + "/{token}/decide", self._decide, methods=["POST"]),
             Route(PATH + "/{token}/collected", self._collected, methods=["POST"]),
         ]
@@ -164,6 +166,8 @@ class OwnerWeb:
                     plan=_first(context.form, "plan") or None,
                     secret=_first(context.form, "secret") or None,
                     return_path=return_path,
+                    client_id=_first(context.form, "client_id") or None,
+                    client_secret=_first(context.form, "client_secret") or None,
                 )
             )
             if target is not None:
@@ -181,6 +185,16 @@ class OwnerWeb:
             return context
         try:
             await self._run(lambda: self._service.discover(context.proposal))
+        except Exception as error:  # a page must say what stopped, never fail with a trace
+            return await self._failed(context, error)
+        return redirect(f"{PATH}/{context.token}")
+
+    async def _cancel(self, request: Request) -> Response:
+        context = await self._context(request)
+        if isinstance(context, Response):
+            return context
+        try:
+            await self._run(lambda: self._service.cancel(context.proposal))
         except Exception as error:  # a page must say what stopped, never fail with a trace
             return await self._failed(context, error)
         return redirect(f"{PATH}/{context.token}")
@@ -343,6 +357,10 @@ class OwnerWeb:
                 "keeps the result; Muse never sees it.</p>"
             )
             button = "Sign in and continue"
+        elif info.plan == "oauth_app":
+            title = "Connect a service"
+            form = self._own_app_form(info)
+            button = "Save and sign in"
         elif info.plan == "env_token":
             title = "Connect a service"
             help_text = html.escape(info.token_help or "")
@@ -363,18 +381,55 @@ class OwnerWeb:
                 "<p>How does it sign in?</p>"
                 "<p><label><input type=radio name=plan value=none checked> No sign-in</label><br>"
                 "<label><input type=radio name=plan value=oauth> Sign in on its own page</label>"
+                "<br><label><input type=radio name=plan value=oauth_app> Sign in on its own page, "
+                "with an app I registered with the service</label>"
                 "<br><label><input type=radio name=plan value=env_token> A token I paste "
                 "here</label></p><p><label>Token, if you chose that<br>"
                 "<input type=password name=secret autocomplete=off></label></p>"
+                f"<p class=muted>If you chose an app, give its details. {self._app_steps(None)}</p>"
+                f"{_app_fields()}"
             )
             button = "Continue"
         body = (
             f"{self._bar()}<main><h1>{title}</h1>{problem}{self._summary(proposal, info)}"
             f"<form method=post action='{action}'>"
             "<input type=hidden name=csrf value='{{CSRF}}'>"
-            f"{form}<button class=go>{button}</button></form></main>"
+            f"{form}<button class=go>{button}</button></form>"
+            f"{self._cancel_form(token)}</main>"
         )
         return title, body, 200
+
+    @staticmethod
+    def _cancel_form(token: str) -> str:
+        return (
+            f"<form method=post action='{PATH}/{html.escape(token)}/cancel'>"
+            "<input type=hidden name=csrf value='{{CSRF}}'>"
+            "<p class=muted>Not what you wanted? <button>Cancel this request</button></p></form>"
+        )
+
+    def _app_steps(self, docs: str | None) -> str:
+        """What the owner does at the service to get a client ID and secret."""
+        callback = f"{self._public_url}{CALLBACK_PATH}"
+        where = (
+            f" See <a href='{html.escape(docs, quote=True)}' rel='noopener noreferrer'>"
+            "the service's own instructions</a>."
+            if docs and docs.startswith("https://")
+            else ""
+        )
+        return (
+            "Register an app in the service's developer settings. When it asks for a redirect "
+            f"URL, give exactly <code>{html.escape(callback)}</code>. Then copy the app's client "
+            f"ID and client secret here.{where}"
+        )
+
+    def _own_app_form(self, info: ProposalInfo) -> str:
+        return (
+            f"<p><b>{html.escape(info.name)}</b> only signs in through an app that you register "
+            f"with them once, because it does not let other programs register themselves.</p>"
+            f"<p>{self._app_steps(info.docs)}</p>{_app_fields()}"
+            "<p class=muted>They are stored encrypted on your machine and never shown to Muse. "
+            "You then sign in on the service's own page.</p>"
+        )
 
     def _resume_page(
         self, proposal: Proposal, info: ProposalInfo, token: str, error: str | None
@@ -384,7 +439,7 @@ class OwnerWeb:
         again = (
             f"<form method=post action='{base}/start'><input type=hidden name=csrf "
             "value='{{CSRF}}'><button>Sign in again</button></form>"
-            if info.plan == "oauth"
+            if info.plan in ("oauth", "oauth_app")
             else ""
         )
         body = (
@@ -392,7 +447,7 @@ class OwnerWeb:
             "<p>The connection is set up. Next the adapter looks at what the service offers.</p>"
             f"<form method=post action='{base}/discover'><input type=hidden name=csrf "
             "value='{{CSRF}}'><button class=go>Look at what it offers</button></form>"
-            f"{again}</main>"
+            f"{again}{self._cancel_form(token)}</main>"
         )
         return "Almost there", body, 200
 
@@ -512,6 +567,15 @@ class OwnerWeb:
             f"<h2>Available to Muse</h2><ul>{listed or '<li>nothing</li>'}</ul>{access}</main>"
         )
         return "Approved", body, 200
+
+
+def _app_fields() -> str:
+    return (
+        "<p><label>Client ID<br>"
+        "<input name=client_id autocomplete=off spellcheck=false></label></p>"
+        "<p><label>Client secret (leave empty if the service gave none)<br>"
+        "<input type=password name=client_secret autocomplete=off></label></p>"
+    )
 
 
 def _limited_to(operation: Mapping[str, object]) -> str:

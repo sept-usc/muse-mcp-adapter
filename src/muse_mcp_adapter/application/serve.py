@@ -166,6 +166,20 @@ def open_secret_box(database: str | Path) -> SecretBox:
     return SecretBox(_load_or_create_key(Path(database).with_suffix(".key")))
 
 
+def _owner_app_lookup(
+    store: SetupStore | None,
+) -> Callable[[str], OAuthClientSeed | None] | None:
+    """The OAuth app an owner typed on a review page, for the connection that is signing in."""
+    if store is None:
+        return None
+
+    def lookup(connection_id: str) -> OAuthClientSeed | None:
+        found = store.oauth_client(connection_id)
+        return OAuthClientSeed(client_id=found[0], client_secret=found[1]) if found else None
+
+    return lookup
+
+
 def build_oauth_flow(
     repository: SqliteControlPlaneRepository,
     config: ServeConfig,
@@ -174,6 +188,7 @@ def build_oauth_flow(
     database: str | Path,
     clock: Callable[[], str] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    client_lookup: Callable[[str], OAuthClientSeed | None] | None = None,
 ) -> OAuthWebFlow:
     seeds = {
         server_id: OAuthClientSeed(
@@ -191,6 +206,7 @@ def build_oauth_flow(
         endpoint_policy=endpoint_policy(config),
         clock=clock or _utc_now,
         clients=seeds,
+        client_lookup=client_lookup,
         transport=transport,
     )
 
@@ -208,8 +224,18 @@ def build_application(
 ) -> Starlette:
     clock = clock or _utc_now
     policy = endpoint_policy(config)
+    store: SetupStore | None = None
+    if config.chat_setup:
+        repository.initialize()
+        store = SetupStore(repository, open_secret_box(database))
     flow = build_oauth_flow(
-        repository, config, env, database=database, clock=clock, transport=transport
+        repository,
+        config,
+        env,
+        database=database,
+        clock=clock,
+        transport=transport,
+        client_lookup=_owner_app_lookup(store),
     )
     client = mcp_client or McpSdkClient(
         StreamableHttpSessionFactory(
@@ -230,9 +256,7 @@ def build_application(
     secrets_view: Mapping[str, str] = env
     setup: SetupService | None = None
     owner_pages: list[OwnerWeb] = []
-    if config.chat_setup:
-        repository.initialize()
-        store = SetupStore(repository, open_secret_box(database))
+    if store is not None:
         secrets_view = ChainedSecrets(env, store.get_secret)
         control_plane = ControlPlaneService(repository, endpoint_policy=policy)
         ensure_setup_server(repository, control_plane, clock())

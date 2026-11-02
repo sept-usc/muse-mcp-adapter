@@ -18,7 +18,7 @@ from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, AnyUrl
 
 ALL_SCOPES = ["issues:read", "issues:write"]
 
@@ -31,6 +31,7 @@ class FakeAuthorizationServer:
         self.access: dict[str, AccessToken] = {}
         self.refresh: dict[str, RefreshToken] = {}
         self.authorizations: list[AuthorizationParams] = []
+        self.authorized_clients: list[str] = []  # which app each sign-in was for
         self.token_requests = 0
         self.grant_only: list[str] | None = None  # simulate a user who approves fewer scopes
 
@@ -43,6 +44,18 @@ class FakeAuthorizationServer:
     def revoke_everything(self) -> None:
         self.access.clear()
         self.refresh.clear()
+
+    def register_app(self, client_id: str, client_secret: str | None, redirect_uri: str) -> None:
+        """An app its owner registered by hand, for a provider with no dynamic registration."""
+        self.clients[client_id] = OAuthClientInformationFull(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uris=[AnyUrl(redirect_uri)],
+            token_endpoint_auth_method="client_secret_post" if client_secret else "none",
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            scope=" ".join(ALL_SCOPES),
+        )
 
     # --- provider interface ------------------------------------------------------------
 
@@ -57,6 +70,7 @@ class FakeAuthorizationServer:
         self, client: OAuthClientInformationFull, params: AuthorizationParams
     ) -> str:
         self.authorizations.append(params)
+        self.authorized_clients.append(str(client.client_id))
         scopes = self.grant_only or params.scopes or ["issues:read"]
         code = secrets.token_urlsafe(16)
         self.codes[code] = AuthorizationCode(
@@ -127,8 +141,14 @@ class FakeAuthorizationServer:
         )
 
 
-def protected_server(provider: FakeAuthorizationServer, port: int) -> FastMCP:
-    """An MCP server that only answers callers holding a token from ``provider``."""
+def protected_server(
+    provider: FakeAuthorizationServer, port: int, *, registration: bool = True
+) -> FastMCP:
+    """An MCP server that only answers callers holding a token from ``provider``.
+
+    With ``registration`` off, programs cannot register themselves: only apps added with
+    ``provider.register_app`` can sign in, as with Slack, Asana or HubSpot.
+    """
     base = f"http://127.0.0.1:{port}"
     server = FastMCP(
         "Protected",
@@ -139,7 +159,7 @@ def protected_server(provider: FakeAuthorizationServer, port: int) -> FastMCP:
             required_scopes=["issues:read"],
             validate_token_resource=False,
             client_registration_options=ClientRegistrationOptions(
-                enabled=True, valid_scopes=ALL_SCOPES, default_scopes=["issues:read"]
+                enabled=registration, valid_scopes=ALL_SCOPES, default_scopes=["issues:read"]
             ),
         ),
         transport_security=TransportSecuritySettings(

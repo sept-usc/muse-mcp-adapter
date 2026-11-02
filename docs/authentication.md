@@ -115,6 +115,7 @@ You choose this per connection when you run `link --credential ...`:
 | 12 | **Review link** (256-bit) | Muse hands it to the owner | Made when Muse opens a proposal | The adapter keeps a hash; it is visible to Muse and opens the page only | Until the proposal ends, 24 hours at most | Opens the page, nothing more: deciding needs the owner code. A new link replaces it |
 | 13 | **Owner session cookie** | Owner's browser → review pages | Set after the owner code is accepted | The browser (HttpOnly, SameSite=Lax); the adapter keeps a hash | 30 minutes | Needs the owner code to get; ends when the code is rotated |
 | 14 | **Token typed on a review page** | Adapter → an MCP server that needs a token | Typed by the owner on the review page | Encrypted with the key in `adapter.key`, in the database | Until the connection is removed or the proposal is declined or expires | Needs the database and the key file, like the OAuth tokens (#7) |
+| 15 | **Client ID and secret of an app the owner registered** | Adapter → the provider, to sign in as that app (Slack, Asana, HubSpot and others that do not let programs register themselves) | Created by the owner in the provider's developer settings, typed on the review page | Encrypted with the key in `adapter.key`, in the database until the connection is removed or the request is cancelled, declined or expires; the sign-in then keeps it in `adapter.oauth` beside the tokens (#7) | Until you delete the app at the provider | Needs both files. Delete or rotate the app's secret at the provider |
 
 ## 1. Muse → adapter
 

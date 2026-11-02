@@ -103,7 +103,22 @@ It limits what Muse can send, not what the service does with it: a value like `E
 | Timeouts and result sizes you ask for | Servers that run only on your own machine (`stdio`) |
 | Nothing exposed unless you asked | |
 
-A service that needs you to register your own OAuth app first (for example Slack) is not set up from the review page yet; use `muse-vm add-server`.
+## Which services Muse can look up by name
+
+The adapter carries a list of about 34 services run by their vendors (Linear, GitHub, Atlassian, Sentry, Notion, Slack, Stripe, Supabase and others) with each one's official address and how it signs in. For those Muse needs no address, and the review page does not warn you about the address. For anything else Muse gives an address, the page warns you that it is not in the list, and nothing contacts it until you press the button. Servers that run only on your own machine (`stdio`) cannot be used.
+
+How you sign in depends on the service, and Muse is told which before it asks:
+
+| The service | What you do on the review page |
+| --- | --- |
+| Needs no sign-in (documentation and search servers) | Nothing: press **Look at what it offers** |
+| Lets programs register themselves (most do: Linear, Sentry, Notion, Supabase, ...) | Sign in once on the service's own page |
+| Wants a token (GitHub) | Paste the token on the page. It is stored encrypted and never shown to Muse |
+| Only signs in through an app you register first (Slack, Asana, HubSpot) | Register an app in the service's developer settings with the redirect address the page shows, paste its **client ID** and **client secret** on the page, then sign in on the service's own page |
+
+The client secret is stored encrypted on your machine, used only to sign in as your app, and forgotten when you cancel the request or remove the connection. If you typed the wrong details, press **Cancel this request** on the page and ask Muse to start again. A request can also be cancelled while you are still looking at the first page, which tells Muse not to ask again.
+
+The list is generated from the [MCP Compat](https://github.com/sept-usc/mcp-compat) catalog with `scripts/generate_directory.py`; a handful of entries are written by hand and take precedence. A service that signs in only with a client ID metadata document is not in the list yet.
 
 ## The record
 

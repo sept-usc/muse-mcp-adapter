@@ -14,6 +14,7 @@ from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from .models import OPEN_STATES
 from .secrets import SecretBox
 
+_APP_PREFIX = "OAUTH_APP:"
 _JSON_FIELDS = {
     "computed": "computed_json",
     "decision": "decision_json",
@@ -350,6 +351,30 @@ class SetupStore:
         self._repository.run(
             lambda db: db.execute("DELETE FROM owner_secrets WHERE name = ?", (name,))
         )
+
+    # --- the OAuth app the owner registered with a service ------------------------------
+
+    def put_oauth_client(
+        self, connection_id: str, client_id: str, client_secret: str | None, now: str
+    ) -> None:
+        body = json.dumps({"clientId": client_id, "clientSecret": client_secret})
+        self.put_secret(_APP_PREFIX + connection_id, body, now)
+
+    def oauth_client(self, connection_id: str) -> tuple[str, str | None] | None:
+        text = self.get_secret(_APP_PREFIX + connection_id)
+        if text is None:
+            return None
+        try:
+            data = cast(Mapping[str, object], json.loads(text))
+        except ValueError:
+            return None
+        client_id, secret = data.get("clientId"), data.get("clientSecret")
+        if not isinstance(client_id, str) or not client_id:
+            return None
+        return client_id, secret if isinstance(secret, str) and secret else None
+
+    def delete_oauth_client(self, connection_id: str) -> None:
+        self.delete_secret(_APP_PREFIX + connection_id)
 
     # --- provenance --------------------------------------------------------------------
 

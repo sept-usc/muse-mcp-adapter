@@ -137,10 +137,10 @@ def test_the_list_of_services_is_searched_by_name_and_topic() -> None:
 def test_the_list_of_services_matches_the_ones_muse_vm_offers() -> None:
     from muse_vm import presets
 
-    for entry in directory.ENTRIES:
+    for entry in directory.PRESETS:  # the hand-written ones; the rest are generated
         preset = presets.PRESETS[entry.id]
         assert (entry.endpoint, entry.credential) == (preset.endpoint, preset.credential)
-    assert {e.id for e in directory.ENTRIES} == set(presets.PRESETS)
+    assert {e.id for e in directory.PRESETS} == set(presets.PRESETS)
 
 
 def test_names_that_read_like_lookups_are_recognised() -> None:

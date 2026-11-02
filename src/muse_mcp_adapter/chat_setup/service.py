@@ -87,8 +87,9 @@ from .models import (
 from .store import Proposal, SetupStore
 
 DiscoveryFactory = Callable[[ResolvedCredential | None], DiscoveryClient]
-_PLANS = ("none", "env_token", "oauth")
+_PLANS = ("none", "env_token", "oauth", "oauth_app")
 _MAX_SECRET = 4096
+_CLIENT_ID = re.compile(r"[\x21-\x7e]{1,500}")  # printable, no spaces
 _SHOWN = {APPLIED: "ready"}
 
 
@@ -114,9 +115,10 @@ class ProposalInfo:
     endpoint: str
     host: str
     listed: bool  # the address came from the adapter's own list of services
-    plan: str  # none | env_token | oauth | choose (the owner picks, for an unlisted address)
+    plan: str  # none | env_token | oauth | oauth_app | choose (the owner picks, if unlisted)
     secret_label: str | None
     token_help: str | None
+    docs: str | None = None  # the vendor's own page, for a listed service
 
 
 @dataclass(frozen=True, slots=True)
@@ -660,6 +662,7 @@ class SetupService:
                 entry.credential,
                 entry.secret_label,
                 entry.token_help,
+                entry.docs,
             )
         endpoint = str(request.endpoint)
         return ProposalInfo(_host(endpoint), endpoint, _host(endpoint), False, "choose", None, None)
@@ -671,6 +674,8 @@ class SetupService:
         plan: str | None,
         secret: str | None,
         return_path: str,
+        client_id: str | None = None,
+        client_secret: str | None = None,
     ) -> str | None:
         """Begin the connection. Returns where to send the browser to sign in, or None."""
         if proposal.state not in (WAITING, CONNECTING):
@@ -679,7 +684,7 @@ class SetupService:
         if proposal.state == WAITING:
             signing_in = proposal.kind == KIND_CONNECT
             if proposal.kind == KIND_CONNECT:
-                proposal = self._create_draft(proposal, plan, secret)
+                proposal = self._create_draft(proposal, plan, secret, client_id, client_secret)
             else:
                 proposal = self._store.transition(
                     proposal.proposal_id, expected=(WAITING,), state=CONNECTING, now=self._clock()
@@ -692,6 +697,12 @@ class SetupService:
         if self._login_links is None:
             raise InvalidStateError("Signing in to a service is not available on this deployment")
         return self._login_links.login_link(record.connection_id, continue_to=return_path)
+
+    def cancel(self, proposal: Proposal) -> Proposal:
+        """The owner changes their mind before there is anything to review."""
+        if proposal.state not in (WAITING, CONNECTING):
+            raise ConflictError("This proposal is not waiting to be connected")
+        return self._decline(proposal)
 
     def discover(self, proposal: Proposal) -> Proposal:
         """Look at what the server offers now, with the connection's own credential, and compile."""
@@ -829,17 +840,30 @@ class SetupService:
 
     # --- owner steps, in detail -----------------------------------------------------------
 
-    def _create_draft(self, proposal: Proposal, plan: str | None, secret: str | None) -> Proposal:
+    def _create_draft(
+        self,
+        proposal: Proposal,
+        plan: str | None,
+        secret: str | None,
+        client_id: str | None,
+        client_secret: str | None,
+    ) -> Proposal:
         request = SetupRequest.parse(proposal.request, change=False)
         info = self.describe(proposal)
         chosen = info.plan if info.plan != "choose" else (plan or "none")
         if chosen not in _PLANS:
-            raise RequestValidationError("Choose how to sign in: no sign-in, a token, or OAuth")
+            raise RequestValidationError(
+                "Choose how to sign in: no sign-in, a token, or OAuth (with an app if needed)"
+            )
         server_id = str(proposal.target_server_id)
         secret_name: str | None = None
+        app: tuple[str, str | None] | None = None
+        if chosen == "oauth_app":  # check what was typed before anything is created
+            app = (_clean_client_id(client_id), _clean_optional_secret(client_secret))
         if chosen == "env_token":
             secret_name = self._secret_name(proposal.proposal_id)
             self._store.put_secret(secret_name, _clean_secret(secret), self._clock())
+        kind = "oauth" if chosen == "oauth_app" else chosen  # the app only changes how it signs in
         try:
             existing = self._existing_server(server_id)
             if existing is None:
@@ -847,7 +871,7 @@ class SetupService:
                     server_id=server_id,
                     display_name=info.name,
                     endpoint=info.endpoint,
-                    auth_profile=chosen,
+                    auth_profile=kind,
                     actor=ACTOR_OWNER,
                 )
             else:
@@ -860,7 +884,7 @@ class SetupService:
             linked = self._connections.link(
                 server_id=server_id,
                 label=info.name,
-                credential_kind=chosen,
+                credential_kind=kind,
                 credential_ref=secret_name or "",
                 actor=ACTOR_OWNER,
             )
@@ -868,6 +892,14 @@ class SetupService:
             if secret_name is not None:
                 self._store.delete_secret(secret_name)
             raise
+        if app is not None:
+            try:
+                self._store.put_oauth_client(
+                    linked.record.connection_id, app[0], app[1], self._clock()
+                )
+            except Exception:
+                self._undo_draft(server_id, linked.record.connection_id)
+                raise
         sealed = canonical_json(
             {
                 "token": linked.token,
@@ -892,6 +924,7 @@ class SetupService:
                 "proposalId": proposal.proposal_id,
                 "connectionId": linked.record.connection_id,
                 "signIn": chosen,
+                "ownApp": app is not None,
                 "listed": info.listed,
                 "requestDigest": digest(request.to_json()),
             },
@@ -1151,17 +1184,21 @@ class SetupService:
             "CHAT_SETUP_"
         ):
             self._store.delete_secret(record.credential_ref)
+        self._store.delete_oauth_client(record.connection_id)
 
     def _cleanup_draft(self, proposal: Proposal) -> None:
         """Undo what starting a connection created, when it is declined, expires or fails."""
         if proposal.kind != KIND_CONNECT:
             return
         self._store.delete_secret(self._secret_name(proposal.proposal_id))
-        if proposal.target_connection_id is None:
+        self._undo_draft(proposal.target_server_id, proposal.target_connection_id)
+
+    def _undo_draft(self, server_id: str | None, connection_id: str | None) -> None:
+        if connection_id is None:
             return
         with contextlib.suppress(ControlPlaneError):
-            self._connections.unlink(proposal.target_connection_id, actor=ACTOR_SYSTEM)
-        server_id = proposal.target_server_id
+            self._connections.unlink(connection_id, actor=ACTOR_SYSTEM)
+        self._store.delete_oauth_client(connection_id)
         if server_id and not self._active_connections(server_id):
             with contextlib.suppress(ControlPlaneError):
                 self._control.set_server_enabled(server_id, enabled=False, actor=ACTOR_SYSTEM)
@@ -1230,6 +1267,25 @@ def _parse(value: str) -> datetime:
 
 def _format(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
+
+
+def _clean_client_id(value: str | None) -> str:
+    cleaned = (value or "").strip()
+    if not _CLIENT_ID.fullmatch(cleaned):
+        raise RequestValidationError(
+            "Enter the app's client ID exactly as the service shows it (no spaces)"
+        )
+    return cleaned
+
+
+def _clean_optional_secret(value: str | None) -> str | None:
+    """The app's client secret. Some apps have none (a public client), so it may be empty."""
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > _MAX_SECRET or any(ord(character) < 32 for character in cleaned):
+        raise RequestValidationError("That does not look like a client secret")
+    return cleaned
 
 
 def _clean_secret(value: str | None) -> str:
