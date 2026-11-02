@@ -6,6 +6,7 @@ import contextlib
 import re
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 from muse_mcp_adapter.application.control_plane_service import ControlPlaneService
 from muse_mcp_adapter.connections import ConnectionService
@@ -286,3 +287,29 @@ def test_the_setup_catalog_is_republished_when_the_code_changes(tmp_path: Path) 
             and by_name["expire_access"] == "write"
             and by_name["remove_connection"] == "sensitive_write"
         )
+
+
+def test_what_muse_must_send_to_the_setup_connector_is_plain_json_schema(tmp_path: Path) -> None:
+    """Nothing in the request bodies that a stricter OpenAPI reader could trip over: no empty
+    required lists and no type unions (the shared response schemas are used by every connector)."""
+    with chat_harness(tmp_path) as h:
+        spec: Any = h.agent.get(f"/c/{h.setup_slug}/openapi.json").json()
+        operations = {path: item for path, item in spec["paths"].items() if "/operations/" in path}
+        assert len(operations) == 11
+
+        def walk(node: object, where: str) -> None:
+            if isinstance(node, dict):
+                fields = cast(dict[str, Any], node)
+                assert fields.get("required") != [], f"empty required list at {where}"
+                assert not isinstance(fields.get("type"), list), f"type union at {where}"
+                for key, value in fields.items():
+                    walk(value, f"{where}/{key}")
+            elif isinstance(node, list):
+                for number, value in enumerate(cast(list[Any], node)):
+                    walk(value, f"{where}[{number}]")
+
+        for path, item in operations.items():
+            body = item["post"].get("requestBody")
+            if body is not None:
+                assert body["content"]["application/json"]["schema"]["type"] == "object"
+                walk(body, path)

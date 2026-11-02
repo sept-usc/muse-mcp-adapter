@@ -59,8 +59,9 @@ _LIMIT_ITEM = {
             "type": "array",
             "minItems": 1,
             "maxItems": 20,
-            "items": {"type": ["string", "integer", "boolean"]},
-            "description": "The only values the operation may be called with.",
+            "items": {"type": "string", "minLength": 1, "maxLength": 200},
+            "description": "The only values the operation may be called with, each written as "
+            "text: 3 for the number three, true for yes.",
         },
         "pattern": {
             "type": "string",
@@ -124,16 +125,18 @@ def _tool(
     properties: Mapping[str, object] | None = None,
     required: tuple[str, ...] = (),
 ) -> tuple[dict[str, object], dict[str, object]]:
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": dict(properties or {}),
+        "additionalProperties": False,
+    }
+    if required:  # an empty list is valid JSON Schema, but some readers refuse it
+        schema["required"] = list(required)
     primitive: dict[str, object] = {
         "type": "tool",
         "name": name,
         "description": description,
-        "inputSchema": {
-            "type": "object",
-            "properties": dict(properties or {}),
-            "required": list(required),
-            "additionalProperties": False,
-        },
+        "inputSchema": schema,
     }
     policy: dict[str, object] = {
         "primitiveKey": f"tool:{name}",

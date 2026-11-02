@@ -289,3 +289,28 @@ def test_a_redefined_operation_keeps_its_limit_while_the_argument_exists(tmp_pat
         assert "The server changed this since it was approved." in page
         assert page.count("Limited by you to: <b>project</b> ENG") >= 1  # list_issues keeps it
         assert "the limit on project (ENG) is gone because the server&#x27;s new definition" in page
+
+
+def test_numbers_and_yes_or_no_are_limited_by_writing_them_as_text(tmp_path: Path) -> None:
+    with chat_harness(tmp_path, manifest=projects_manifest()) as h:
+        # the schema Muse reads asks for text only, which any client can send
+        primitives = h.repository.get_active_catalog("adapter-setup").primitives
+        definition: Any = next(
+            p for p in primitives if p.public_operation_id == "propose_connection"
+        ).definition
+        values = definition["inputSchema"]["properties"]["limitArguments"]["items"]["properties"]
+        assert values["allowedValues"]["items"]["type"] == "string"
+
+        number = {"operation": "*", "argument": "project", "allowedValues": [7]}
+        refused = h.ask(
+            "propose_connection",
+            {"server": "learn", "userWords": "x", "readOnly": True, "limitArguments": [number]},
+        )
+        assert refused.status_code == 400
+
+        as_text = {**number, "allowedValues": ["7"]}
+        link = h.propose(readOnly=True, limitArguments=[as_text])["reviewLink"]
+        assert h.approve(link, h.review(link)).status_code == 302
+        address, token = connector_from(h.get(link).text)
+        assert _call(h, address, token, "list_issues", project="7").status_code == 200
+        assert _call(h, address, token, "list_issues", project="8").status_code == 400
