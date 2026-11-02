@@ -243,12 +243,22 @@ def test_upgrading_moves_built_images_but_leaves_ones_the_owner_chose() -> None:
 def test_the_source_revision_names_the_commit_and_notices_edits(tmp_path: Path) -> None:
     import subprocess
 
+    # No GIT_* variable from whoever runs the tests, and no write to any git config: the
+    # identity goes on the command line. Otherwise a run inside the commit hook works on the
+    # real repository (see test_git_isolation.py).
+    clean = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+
+    identity = ["-c", "user.email=t@example.com", "-c", "user.name=t"]
+
     def git(*args: str) -> None:
-        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), *identity, *args],
+            check=True,
+            capture_output=True,
+            env=clean,
+        )
 
     git("init", "-q")
-    git("config", "user.email", "t@example.com")
-    git("config", "user.name", "t")
     (tmp_path / "Dockerfile").write_text("FROM scratch\n")
     git("add", "-A")
     git("commit", "-qm", "x")
