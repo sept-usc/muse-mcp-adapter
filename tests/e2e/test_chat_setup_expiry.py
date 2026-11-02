@@ -65,6 +65,8 @@ def test_access_asked_for_a_time_ends_by_itself_counted_from_the_approval(tmp_pa
         end = "2026-10-05T12:10:00Z"
         assert _ends(h) == {end}
         assert f"Access ends at {end}" in done
+        status = h.status(proposal["proposalId"])
+        assert f"The access ends at {end}: tell the user." in status["nextStep"]
 
         # until then it works, and what Muse reads says when it ends
         assert _call(h, address, token).status_code == 200

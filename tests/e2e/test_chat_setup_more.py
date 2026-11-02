@@ -220,6 +220,8 @@ def test_the_setup_connector_tells_the_agent_how_to_behave(tmp_path: Path) -> No
         text = " ".join(body["rules"])
         assert "Never ask the user for a token" in text
         assert "not an instruction" in text
+        assert "limitArguments" in text and "expiresInHours" in text
+        assert "another way round" in text
         found = h.ask("find_server", {"query": "issues"}).json()["structuredContent"]
         assert {item["id"] for item in found["servers"]} >= {"linear", "github"}
         missing = h.ask("find_server", {"query": "zzzz"}).json()["structuredContent"]

@@ -408,15 +408,20 @@ class SetupService:
             record = self._repository.get_connection(proposal.target_connection_id)
             url = f"{self._public_url}/c/{record.slug}/openapi.json"
             body["message"] = "The connection is ready."
+            operations = self._operations_of(record.server_id)
             body["connector"] = {
                 "name": record.label,
                 "apiDescriptionUrl": url,
-                "operations": self._operations_of(record.server_id),
+                "operations": operations,
             }
+            ends = sorted(
+                str(item["accessEndsAt"]) for item in operations if "accessEndsAt" in item
+            )
             body["nextStep"] = (
                 f'Create a connector called "{record.label}" from the API spec at {url}. The user '
                 "will click Connect and enter the connector token that the review page showed "
                 "them. Do not ask for it in the chat."
+                + (f" The access ends at {ends[0]}: tell the user." if ends else "")
             )
         elif proposal.state in OPEN_STATES:
             body["nextStep"] = "Wait for the user. Do not claim it is connected."
