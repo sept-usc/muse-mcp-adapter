@@ -5,7 +5,7 @@
 # - The image runs as an unprivileged user and works with a read-only root filesystem: the only
 #   writable places are /data (the volume that holds the adapter's state) and /tmp.
 # - Nothing is downloaded when it starts.
-ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
 
 FROM ${PYTHON_IMAGE} AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
