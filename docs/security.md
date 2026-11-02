@@ -48,6 +48,14 @@ Muse ──(token or OAuth)──▶ Adapter ──(policy-checked, your credent
 - Operations, idempotency keys, tokens, and artifacts are scoped to a connection. A connection can read only its own operations, and a token for one connector is rejected at every other.
 - A credential cannot be shared between connections.
 
+**Setup by chat** (off by default; [how it works](chat-setup.md))
+- The setup connector can only look up, open a proposal, explain, and make access smaller. It has no operation that publishes, activates, links, stores a secret or widens access, and no field that accepts a secret.
+- A proposal changes nothing. It takes effect only when the owner approves it on a review page, with the owner code typed in a browser session. The setup connector's token opens nothing there.
+- The approval is bound to a digest of what the page showed and covers only what the server offered. A change that makes access smaller applies at once; anything else is a proposal.
+- An address the adapter does not list is not contacted before the owner presses the button. Text written by an unapproved server never reaches Muse; it appears only on the review page, escaped and marked as the server's.
+- The owner code is stored as a salted scrypt hash; five wrong codes lock a link for 15 minutes; forms carry a cross-site token; pages refuse framing. Tokens typed on a page are stored encrypted, with the key that already protects provider tokens.
+- Every step is on a hash chain in the administrative audit, and each catalog version records the proposal and words it came from.
+
 **Availability**
 - Per-connection rate limits, per-server concurrency limits, request size limits, bounded progress events, and bounded artifacts.
 - A server can be disabled instantly with `server-disable`, and a connection revoked with `unlink`.

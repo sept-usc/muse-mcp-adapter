@@ -10,6 +10,7 @@ from typing import cast
 from uuid import uuid4
 
 from ..catalog.canonical import canonical_json
+from ..chat_setup.models import SETUP_SERVER_ID, SetupExecutor
 from ..connections import ConnectionService
 from ..data_plane.read_service import ReadDataPlaneService
 from ..data_plane.tool_service import ToolDataPlaneService
@@ -74,6 +75,7 @@ class AdapterRuntime:
         artifact_store: FileArtifactStore | None = None,
         idempotency_window_seconds: int = 30,
         reauthorization_link: Callable[[str], str] | None = None,
+        setup: SetupExecutor | None = None,
     ) -> None:
         self._repository = repository
         self._connections = connections
@@ -89,6 +91,7 @@ class AdapterRuntime:
         self._artifacts = artifact_store
         self._window = idempotency_window_seconds
         self._reauthorization_link = reauthorization_link
+        self._setup = setup
 
     @property
     def public_url(self) -> str:
@@ -157,11 +160,16 @@ class AdapterRuntime:
         error: BaseException | None = None
         try:
             with self._concurrency.slot(principal.server_id):
-                response = (
-                    self._tools.execute(request)
-                    if primitive.primitive_type == "tool"
-                    else self._reads.execute(request)
-                )
+                if principal.server_id == SETUP_SERVER_ID:
+                    # The built-in setup server is never reached over a network: its calls go to
+                    # the setup service, which can only look up, propose and narrow.
+                    if self._setup is None:
+                        raise AuthorizationError("Chat setup is turned off on this deployment")
+                    response = self._setup.execute(request)
+                elif primitive.primitive_type == "tool":
+                    response = self._tools.execute(request)
+                else:
+                    response = self._reads.execute(request)
                 self._metrics.increment("requests.completed")
                 return response
         except ReauthorizationRequiredError as raised:

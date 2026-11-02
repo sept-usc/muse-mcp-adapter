@@ -8,7 +8,7 @@ owner edits and publishes the result.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import cast
 from urllib.parse import urlsplit
 
@@ -53,9 +53,22 @@ def draft_policies(
     ``readOnlyHint``, resources, templates and prompts) are drafted as allowed. Writes never
     are: the owner must switch them on deliberately.
     """
-    used: set[str] = set(RESERVED_OPERATION_IDS)
+    return draft_policies_for(snapshot.primitives, expose_reads=expose_reads)
+
+
+def draft_policies_for(
+    primitives: Sequence[Mapping[str, object]],
+    *,
+    expose_reads: bool = False,
+    reserved_ids: Collection[str] = (),
+) -> list[dict[str, object]]:
+    """The same drafts for a bare list of primitives.
+
+    ``reserved_ids`` are operation names that are already taken, so a new draft never reuses one.
+    """
+    used: set[str] = set(RESERVED_OPERATION_IDS) | set(reserved_ids)
     policies: list[dict[str, object]] = []
-    for primitive in snapshot.primitives:
+    for primitive in primitives:
         kind = str(primitive.get("type"))
         name = str(primitive.get("name"))
         classification = _classification(primitive)
@@ -111,6 +124,39 @@ def _destructive(primitive: Mapping[str, object]) -> bool:
         return True
     words = {word.lower() for word in _NAME_WORDS.findall(str(primitive.get("name", "")))}
     return bool(words & _DESTRUCTIVE_WORDS)
+
+
+_READ_WORDS = frozenset(
+    {
+        "get",
+        "list",
+        "search",
+        "read",
+        "fetch",
+        "find",
+        "describe",
+        "show",
+        "query",
+        "lookup",
+        "view",
+        "browse",
+        "retrieve",
+        "resolve",
+        "ask",
+        "observe",
+        "extract",
+        "whoami",
+    }
+)
+
+
+def name_suggests_read(name: str) -> bool:
+    """A tool whose name reads like a lookup (get, list, search) and not like a change.
+
+    Only a hint for the owner. Nothing is exposed or classified as a read because of it.
+    """
+    words = [word.lower() for word in _NAME_WORDS.findall(name)]
+    return bool(words) and words[0] in _READ_WORDS and not set(words) & _DESTRUCTIVE_WORDS
 
 
 def _scopes(primitive: Mapping[str, object]) -> list[str]:

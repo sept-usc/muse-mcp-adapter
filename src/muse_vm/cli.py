@@ -120,6 +120,45 @@ def _show_linked(linked: Linked, *, copy: bool) -> None:
         say("  (that sentence is on your clipboard; it holds no secret)")
 
 
+def _show_chat_setup(result: dict[str, Any]) -> None:
+    say()
+    say("Chat setup is on.")
+    if result.get("token"):
+        say()
+        say("Add this one connector to Muse, by hand, once. In a new Muse chat, send:")
+        say(f"  {str(result['museInstructions']).split(' If Muse')[0].strip()}")
+        say("Then click Connect and paste this token into Muse's own secure field:")
+        say(f"  {result['token']}")
+        say("(the token is shown once; the adapter keeps only a hash of it)")
+    else:
+        say(f"  The setup connector already exists: {result.get('connectorUrl')}")
+        say(f"  {result.get('connectorNote', '')}")
+    say()
+    if result.get("ownerCode"):
+        say("Your owner code (shown once; keep it in your password manager):")
+        say(f"  {result['ownerCode']}")
+        say("You type it only on your adapter's own review pages, never into Muse.")
+    else:
+        say(str(result.get("ownerCodeNote", "")))
+    say()
+    say(
+        "From then on, ask Muse to connect a server and say what it may use. Muse gives you a link;"
+    )
+    say("you open it on your own device, sign in or paste a token there, review the list, approve.")
+
+
+def cmd_chat_setup(args: argparse.Namespace) -> None:
+    """Turn on setting up servers by chatting with Muse, with your approval on a page."""
+    _, provider = _context(args)
+    t = provider.target()
+    if bundle.set_chat_setup(t, True):
+        say("Turning chat setup on and restarting the adapter…")
+        provider.restart_adapter(t)
+    words = ["--rotate-owner-code"] if args.rotate_owner_code else []
+    result = Admin(t, actor=args.actor).json("chat-setup-enable", *words)
+    _show_chat_setup(result)
+
+
 # ---- up ---------------------------------------------------------------------------------------
 def cmd_up(args: argparse.Namespace) -> None:
     name = check_name(args.name)
@@ -902,6 +941,16 @@ def build_parser() -> argparse.ArgumentParser:
     common(commands.add_parser("status", help="health, containers and servers")).set_defaults(
         func=cmd_status
     )
+    sp = common(
+        commands.add_parser(
+            "chat-setup",
+            help="turn on adding servers by chatting with Muse (you approve on a page)",
+        )
+    )
+    sp.add_argument(
+        "--rotate-owner-code", action="store_true", help="make a new owner code (the old one stops)"
+    )
+    sp.set_defaults(func=cmd_chat_setup)
     sp = common(commands.add_parser("logs", help="container logs"))
     sp.add_argument("service", nargs="?", default="adapter")
     sp.add_argument("--tail", default=100)

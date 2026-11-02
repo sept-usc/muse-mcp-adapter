@@ -40,6 +40,7 @@ Everything the adapter needs lives in `/opt/muse-adapter`; a few host settings a
 | `up --local` | Install on the machine you are running muse-vm on (Debian or Ubuntu, as root or with passwordless `sudo`): the same checks, install and removal as `--ssh`, without the SSH hop |
 | `up --ssh USER@HOST` | Install on a machine you have. Option: `--ssh-opt` for extra ssh options (a key, a port) |
 | `up` common options | `--name` (default `muse`), `--egress-allow CIDR`, `--tz`, `--keep-on-failure`, `--allow-dirty`, `--no-browser` (print Tailscale links instead of opening them), `-v` (print every command), `--yes` |
+| `chat-setup` | Turn on [setting up servers by chatting with Muse](chat-setup.md): sets `chatSetup` in the adapter's configuration, restarts the adapter, and prints the one connector to add to Muse and your owner code, each once. `--rotate-owner-code` makes a new code |
 | `add-server NAME` | Register, discover, draft a policy, publish and link a server; prints the connector address, token and connection code. A well-known name (`muse-vm presets`) needs nothing else; for your own server give `--endpoint URL`. `--credential none\|env_token\|oauth`, `--secret-name`, `--allow TOOL`, `--policy FILE`, `--no-reads` |
 | `expose SERVER --allow TOOL --deny TOOL` | Publish a new version that changes which tools Muse can use; existing settings are kept |
 | `servers`, `rotate-token SERVER`, `unlink SERVER` | See connections, replace a token, stop Muse using a server |

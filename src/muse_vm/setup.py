@@ -375,5 +375,8 @@ def run(
     io.say(
         "  and paste the token. More servers: muse-vm add-server <name>. Everything: muse-vm --help"
     )
+    io.say(
+        "  Or add servers by chatting with Muse, with your approval on a page: muse-vm chat-setup"
+    )
     if failed:
         raise SystemExit(1)
