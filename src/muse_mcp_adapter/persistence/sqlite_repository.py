@@ -886,16 +886,19 @@ class SqliteControlPlaneRepository:
                 ),
             )
 
-    def verify_admin_audit_chain(self) -> AuditChainReport:
+    def verify_admin_audit_chain(self, pinned_head: str | None = None) -> AuditChainReport:
         """Check every chained row against the one before it and against its own content.
 
         Rows written before the chain existed carry no hash and are counted, not checked. A row
-        without a hash after the chain has started is itself a break.
+        without a hash after the chain has started is itself a break. Given a head hash noted
+        down earlier, the report also says how many rows came after it, or ``None`` if no row
+        has that hash, which is what a chain cut short or rebuilt looks like.
         """
         rows = self._connection.execute("SELECT * FROM admin_audit ORDER BY event_id").fetchall()
         expected = ""
         chained = 0
         unchained = 0
+        pinned_at: int | None = None
 
         def broken(event_id: int, problem: str) -> AuditChainReport:
             return AuditChainReport(False, chained, unchained, expected or None, event_id, problem)
@@ -922,7 +925,10 @@ class SqliteControlPlaneRepository:
                 return broken(event_id, "This row was changed after it was written")
             expected = entry_hash
             chained += 1
-        return AuditChainReport(True, chained, unchained, expected or None, None, None)
+            if pinned_head is not None and entry_hash == pinned_head:
+                pinned_at = chained
+        after = chained - pinned_at if pinned_at is not None else None
+        return AuditChainReport(True, chained, unchained, expected or None, None, None, after)
 
     def list_admin_audit(self, server_id: str | None = None) -> tuple[Mapping[str, object], ...]:
         query = "SELECT * FROM admin_audit"

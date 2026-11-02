@@ -112,3 +112,30 @@ def test_unknown_things_are_reported_not_crashed_on(
         assert main([*base, "explain-change", "--proposal-id", "prop_nope"]) == 1
         assert main([*base, "proposal-link", "--proposal-id", "prop_nope"]) == 1
         assert capsys.readouterr().err.count("error") >= 3
+
+
+def test_a_noted_head_catches_rows_cut_off_the_end(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with chat_harness(tmp_path) as h:
+        link = h.propose(readOnly=True)["reviewLink"]
+        page = h.review(link)
+        noted = run_cli(h.database, h.config_path, "audit-verify")["head"]
+        h.approve(link, page)  # more events after the head was noted down
+
+        verified = run_cli(h.database, h.config_path, "audit-verify", "--head", noted)
+        assert verified["pinnedHead"]["found"] is True and verified["pinnedHead"]["rowsSince"] > 0
+        assert "pinnedHead" not in run_cli(h.database, h.config_path, "audit-verify")
+        capsys.readouterr()
+
+        raw = sqlite3.connect(h.database)
+        event = raw.execute("SELECT event_id FROM admin_audit WHERE entry_hash = ?", (noted,))
+        first = event.fetchone()[0]
+        raw.execute("DELETE FROM admin_audit WHERE event_id >= ?", (first,))
+        raw.commit()
+        raw.close()
+        arguments = ["--database", str(h.database), "--config", str(h.config_path), "audit-verify"]
+        assert main(arguments) == 0  # on its own the shorter chain looks fine
+        capsys.readouterr()
+        assert main([*arguments, "--head", noted]) == 1
+        assert "not in the audit chain" in capsys.readouterr().err

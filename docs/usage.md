@@ -29,7 +29,7 @@ Global options go before the command: `--database <path>` (default `adapter.db`)
 | `chat-setup-enable [--rotate-owner-code]` | Turn on [setup by chat](chat-setup.md): publish the built-in setup connector, create its connection and the owner code (each shown once). Safe to repeat. |
 | `proposals [--all]` / `proposal-link --proposal-id ID` | List what Muse has asked for / print a fresh review link for a waiting proposal (the old one stops). |
 | `explain-call --request-id ID` / `explain-change --proposal-id ID` | Trace a call back to the catalog, proposal, words and approval behind it / show one proposal's record. |
-| `audit-verify` | Check the hash chain over the administrative audit; fails where it is broken. |
+| `audit-verify [--head HASH]` | Check the hash chain over the administrative audit; fails where it is broken. With a head hash you noted earlier, also fails if the chain no longer contains it (rows were cut off the end). |
 | `serve` | Run the Muse-facing HTTP service. |
 
 For local testing against a plain-HTTP or loopback server, add `--allow-http` and/or `--allow-private-network` before the command. They are off by default and meant for development only.

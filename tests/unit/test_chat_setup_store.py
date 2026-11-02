@@ -271,3 +271,40 @@ def test_a_missing_discovery_snapshot_is_not_found(tmp_path: Path) -> None:
         with pytest.raises(EntityNotFoundError):
             repository.get_discovery(42)
         assert repository.runtime_audit_for_request("nope") == ()
+
+
+def test_a_noted_head_shows_what_came_after_it_and_notices_a_cut_tail(tmp_path: Path) -> None:
+    repository = SqliteControlPlaneRepository(tmp_path / "adapter.db")
+    with repository:
+        repository.initialize()
+
+        def write(number: int) -> None:
+            repository.record_admin_audit(
+                occurred_at=f"2026-10-05T10:00:0{number}Z",
+                actor="t",
+                action=f"a{number}",
+                server_id=None,
+                data={"n": number},
+            )
+
+        for number in range(3):
+            write(number)
+        noted = repository.verify_admin_audit_chain().head
+        assert noted
+        for number in range(3, 5):
+            write(number)
+
+        later = repository.verify_admin_audit_chain(noted)
+        assert later.ok and later.rows_after_pin == 2
+        assert repository.verify_admin_audit_chain(later.head).rows_after_pin == 0
+        assert repository.verify_admin_audit_chain().rows_after_pin is None  # nothing was noted
+        assert repository.verify_admin_audit_chain("sha256:" + "0" * 64).rows_after_pin is None
+
+        # rows that existed when the head was noted are cut off: the chain still verifies,
+        # but the noted head is no longer in it
+        raw = sqlite3.connect(tmp_path / "adapter.db")
+        raw.execute("DELETE FROM admin_audit WHERE event_id >= 3")
+        raw.commit()
+        raw.close()
+        cut = repository.verify_admin_audit_chain(noted)
+        assert cut.ok and cut.rows_after_pin is None

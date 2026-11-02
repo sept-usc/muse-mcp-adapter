@@ -504,6 +504,8 @@ def _plan_from(args: argparse.Namespace) -> tuple[config.Plan, Path | None]:
         plan.local = bool(args.local)
     if args.yes:
         plan.yes = True
+    if args.chat_setup:
+        plan.chat_setup = True
     if args.server:
         plan.servers = [config.ServerPlan(server=item) for item in args.server]
     return plan, path
@@ -899,6 +901,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--yes", "-y", action="store_true", help="accept that this creates billable resources"
+    )
+    sp.add_argument(
+        "--chat-setup",
+        action="store_true",
+        help="also turn on adding servers by chatting with Muse (you approve on a page)",
     )
     sp.add_argument("--save", action="store_true", help=f"write the choices to ./{config.FILENAME}")
     sp.add_argument("--non-interactive", action="store_true", help="never ask; fail instead")

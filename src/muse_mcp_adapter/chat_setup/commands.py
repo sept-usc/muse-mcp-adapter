@@ -44,7 +44,13 @@ def add_parsers(commands: _Subparsers[argparse.ArgumentParser]) -> None:
     listing.add_argument("--all", action="store_true", help="Include finished proposals")
     link = commands.add_parser("proposal-link", help="A fresh review link for a waiting proposal")
     link.add_argument("--proposal-id", required=True)
-    commands.add_parser("audit-verify", help="Check the hash chain over the administrative audit")
+    verify = commands.add_parser(
+        "audit-verify", help="Check the hash chain over the administrative audit"
+    )
+    verify.add_argument(
+        "--head",
+        help="A head hash noted down earlier: fails if the chain no longer contains it",
+    )
     call = commands.add_parser("explain-call", help="Trace one call back to the request behind it")
     call.add_argument("--request-id", required=True)
     change = commands.add_parser("explain-change", help="Show the record of one proposal")
@@ -72,7 +78,7 @@ def run(
             "note": "The earlier link no longer works. Open this one on your own device.",
         }
     if args.command == "audit-verify":
-        report = repository.verify_admin_audit_chain()
+        report = repository.verify_admin_audit_chain(args.head)
         result: dict[str, object] = {
             "ok": report.ok,
             "chainedRows": report.chained,
@@ -84,6 +90,13 @@ def run(
             raise InvalidStateError(
                 f"The audit chain is broken at event {report.bad_event_id}: {report.problem}"
             )
+        if args.head is not None:
+            if report.rows_after_pin is None:
+                raise InvalidStateError(
+                    "The head you noted is not in the audit chain: rows were removed from the "
+                    "end or the chain was rebuilt."
+                )
+            result["pinnedHead"] = {"found": True, "rowsSince": report.rows_after_pin}
         return result
     if args.command == "explain-call":
         return _explain_call(args.request_id, repository, store)

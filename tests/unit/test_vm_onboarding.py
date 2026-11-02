@@ -581,7 +581,8 @@ def test_typed_ahead_keys_are_discarded_before_a_question(
 
 def test_the_choices_can_be_saved_for_next_time(tmp_path: Path) -> None:
     target = tmp_path / config.FILENAME
-    term = _Terminal("1", "y", "y", "learn", "y")  # where, settings, cost, servers, save
+    # where, settings, cost, servers, chat setup, save
+    term = _Terminal("1", "y", "y", "learn", "n", "y")
     _run(config.Plan(), term, _Commands(), save_to=target)
     saved = config.load(target)
     assert saved.cloud == "gcp" and saved.project == "my-proj"
@@ -675,3 +676,100 @@ def test_a_blip_after_the_address_first_answers_does_not_abort_the_self_check(
     assert selfcheck._headers("https://x/health") == {"cache-control": "no-store"}  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(selfcheck, "_request", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     assert selfcheck._headers("https://x/health") == {}  # pyright: ignore[reportPrivateUsage]
+
+
+# ---- setting servers up later by chatting with Muse ---------------------------------------------
+class _FailsChatSetup(_Commands):
+    def __call__(self, argv: list[str]) -> int:
+        super().__call__(argv)
+        return 1 if argv[0] == "chat-setup" else 0
+
+
+def test_chat_setup_is_a_setting_that_round_trips_and_must_be_true_or_false() -> None:
+    plan = config.parse('cloud = "gcp"\nchat_setup = true')
+    assert plan.chat_setup is True
+    assert "chat_setup = true" in config.dump(plan)
+    assert config.parse(config.dump(plan)).chat_setup is True
+    assert "chat_setup" not in config.dump(config.parse('cloud = "gcp"'))  # off is the default
+    with pytest.raises(config.ConfigError, match="chat_setup"):
+        config.parse('chat_setup = "yes"')
+
+
+def test_the_command_line_can_turn_chat_setup_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    plain = cli.build_parser().parse_args(["setup", "--cloud", "gcp"])
+    assert cli._plan_from(plain)[0].chat_setup is False  # type: ignore[reportPrivateUsage]
+    asked = cli.build_parser().parse_args(["setup", "--cloud", "gcp", "--chat-setup"])
+    assert cli._plan_from(asked)[0].chat_setup is True  # type: ignore[reportPrivateUsage]
+
+
+def test_a_plan_that_chats_turns_it_on_after_the_install_and_skips_the_server_menu() -> None:
+    plan = config.Plan(cloud="gcp", yes=True, project="p", zone="us-central1-a", chat_setup=True)
+    term, commands = _Terminal(), _Commands()
+    _run(plan, term, commands)
+    assert commands.calls[1:] == [["chat-setup", "--name", "muse"]]
+    assert "Turning on setup by chat" in term.text
+    assert "Which MCP servers" not in term.text  # they will be asked for in chat
+    assert "Or add servers by chatting" not in term.text  # no need to be told how
+
+
+def test_servers_named_in_the_plan_are_connected_before_chat_setup_is_turned_on() -> None:
+    plan = config.Plan(
+        cloud="gcp", yes=True, chat_setup=True, servers=[config.ServerPlan(server="learn")]
+    )
+    commands = _Commands()
+    _run(plan, _Terminal(), commands)
+    assert [c[0] for c in commands.calls] == ["up", "add-server", "chat-setup"]
+
+
+def test_a_person_is_offered_chat_setup_after_the_servers_and_may_say_no() -> None:
+    plan = config.Plan(cloud="gcp", yes=True, project="p", zone="us-central1-a")
+    term, commands = _Terminal("learn", "n"), _Commands()  # servers, chat setup
+    _run(plan, term, commands)
+    assert [c[0] for c in commands.calls] == ["up", "add-server"]
+    assert any("by chatting with Muse" in question for question in term.asked)
+    assert "muse-vm chat-setup" in term.text  # and is told how to do it later
+    assert plan.chat_setup is False
+
+
+def test_saying_yes_turns_chat_setup_on_and_the_choice_is_saved(tmp_path: Path) -> None:
+    target = tmp_path / config.FILENAME
+    plan = config.Plan(cloud="gcp", yes=True, project="p", zone="us-central1-a")
+    term, commands = _Terminal("learn", "y", "y"), _Commands()  # servers, chat setup, save
+    _run(plan, term, commands, save_to=target)
+    assert [c[0] for c in commands.calls] == ["up", "add-server", "chat-setup"]
+    assert config.load(target).chat_setup is True
+
+
+def test_a_script_is_never_asked_and_nothing_is_turned_on_unasked() -> None:
+    plan = config.Plan(cloud="gcp", yes=True, servers=[config.ServerPlan(server="learn")])
+    term, commands = _Terminal(interactive=False), _Commands()
+    _run(plan, term, commands)
+    assert [c[0] for c in commands.calls] == ["up", "add-server"]
+    assert not term.asked
+
+
+def test_a_rejected_server_is_not_followed_by_the_offer() -> None:
+    plan = config.Plan(
+        cloud="gcp",
+        yes=True,
+        project="p",
+        zone="us-central1-a",
+        servers=[config.ServerPlan(server="github")],
+    )
+    term, commands = _Terminal("y"), _RejectsGithub()
+    with pytest.raises(SystemExit):
+        _run(plan, term, commands)
+    assert not any("by chatting with Muse" in question for question in term.asked)
+
+
+def test_chat_setup_that_does_not_turn_on_is_reported_and_ends_with_an_error() -> None:
+    plan = config.Plan(cloud="gcp", yes=True, chat_setup=True)
+    term, commands = _Terminal(interactive=False), _FailsChatSetup()
+    with pytest.raises(SystemExit) as stopped:
+        _run(plan, term, commands, name="prod")
+    assert stopped.value.code == 1
+    assert "muse-vm chat-setup --name prod" in term.text
+    assert "not everything is set up" in term.text

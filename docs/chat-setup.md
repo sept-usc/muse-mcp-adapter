@@ -32,6 +32,8 @@ sequenceDiagram
 muse-vm chat-setup
 ```
 
+Or turn it on while installing: `muse-vm setup --chat-setup` (or `chat_setup = true` in `muse-vm.toml`) installs the adapter, then does the same, and skips the question about which servers to connect, since you will ask Muse for them. Without the flag, `muse-vm setup` offers it at the end, and the answer is saved with your other choices.
+
 This switches on the review pages, restarts the adapter, and prints two things, each **once**:
 
 1. A sentence to give Muse, and a token. In a new Muse chat send the sentence, click **Connect**, and paste the token into Muse's own secure field. This is the only connector you add by hand.
@@ -133,7 +135,7 @@ docker compose exec adapter muse-mcp-adapter --database /data/adapter.db --confi
 docker compose exec adapter muse-mcp-adapter --database /data/adapter.db --config /config/serve.json explain-change --proposal-id PROPOSAL_ID
 ```
 
-`proposals` lists what is waiting. `audit-verify` checks the chain and fails loudly where it is broken; note the head hash it prints somewhere else, because that is what shows rows were not cut off the end. `explain-call` follows a call to its catalog version, the proposal behind it, your words and your approval. `explain-change` prints one proposal's record. If a link is lost or locked, `proposal-link --proposal-id ID` prints a fresh one and ends the old one.
+`proposals` lists what is waiting. `audit-verify` checks the chain and fails loudly where it is broken. Note the head hash it prints somewhere else; later, `audit-verify --head HASH` also fails if that hash is no longer in the chain, which is what shows rows that existed then were cut off the end, and tells you how many rows came after it. `explain-call` follows a call to its catalog version, the proposal behind it, your words and your approval. `explain-change` prints one proposal's record. If a link is lost or locked, `proposal-link --proposal-id ID` prints a fresh one and ends the old one.
 
 ## Limits and honest notes
 

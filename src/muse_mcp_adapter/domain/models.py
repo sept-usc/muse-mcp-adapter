@@ -253,3 +253,4 @@ class AuditChainReport:
     head: str | None  # the hash of the last good row; pin it somewhere else to detect truncation
     bad_event_id: int | None
     problem: str | None
+    rows_after_pin: int | None = None  # rows written since a pinned head; None if it is not there

@@ -7,6 +7,7 @@ that names it. Unknown keys are rejected, so a typo never silently changes nothi
     cloud = "gcp"              # or: ssh = "deploy@203.0.113.7", or: local = true
     project = "my-project"
     yes = true                 # accept that this creates billable resources
+    chat_setup = true          # then ask Muse to connect servers; you approve on a page
     [[servers]]
     preset = "github"
     allow = ["issue_write"]    # tools beyond the read-only ones
@@ -37,6 +38,7 @@ _TOP = {
     "tz": str,
     "tailscale_authkey_file": str,
     "yes": bool,
+    "chat_setup": bool,
     "servers": list,
 }
 _SERVER = {
@@ -82,6 +84,7 @@ class Plan:
     tz: str | None = None
     tailscale_authkey_file: str | None = None
     yes: bool = False
+    chat_setup: bool = False  # also turn on adding servers by chatting with Muse
     servers: list[ServerPlan] = field(default_factory=list[ServerPlan])
 
 
