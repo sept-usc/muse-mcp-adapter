@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import secrets
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import cast
 
 from ..application.control_plane_service import ControlPlaneService
 from ..application.serve import ServeConfig, open_secret_box
 from ..connections import ConnectionService
-from ..domain.errors import EntityNotFoundError, InvalidStateError
+from ..domain.errors import ConflictError, EntityNotFoundError, InvalidStateError
 from ..domain.models import ConnectionRecord
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from ..transport.security import EndpointSecurityPolicy
@@ -23,6 +25,7 @@ COMMANDS = (
     "chat-setup-enable",
     "proposals",
     "proposal-link",
+    "proposal-decline",
     "audit-verify",
     "explain-call",
     "explain-change",
@@ -44,6 +47,12 @@ def add_parsers(commands: _Subparsers[argparse.ArgumentParser]) -> None:
     listing.add_argument("--all", action="store_true", help="Include finished proposals")
     link = commands.add_parser("proposal-link", help="A fresh review link for a waiting proposal")
     link.add_argument("--proposal-id", required=True)
+    decline = commands.add_parser(
+        "proposal-decline",
+        help="Close proposals nobody has acted on yet, from this machine (no owner code needed)",
+    )
+    decline.add_argument("--proposal-id", help="One waiting proposal")
+    decline.add_argument("--all", action="store_true", help="Every waiting proposal")
     verify = commands.add_parser(
         "audit-verify", help="Check the hash chain over the administrative audit"
     )
@@ -77,6 +86,8 @@ def run(
             "reviewLink": f"{config.public_url}/review/{token}",
             "note": "The earlier link no longer works. Open this one on your own device.",
         }
+    if args.command == "proposal-decline":
+        return _decline(args, repository, store)
     if args.command == "audit-verify":
         report = repository.verify_admin_audit_chain(args.head)
         result: dict[str, object] = {
@@ -170,6 +181,65 @@ def _enable(
     return result
 
 
+def _decline(
+    args: argparse.Namespace, repository: SqliteControlPlaneRepository, store: SetupStore
+) -> dict[str, object]:
+    """Close proposals that nobody has acted on, so a flood of requests cannot keep the owner from
+    new ones. Only proposals still waiting are closed: nothing has been created for them yet."""
+    if args.all == (args.proposal_id is not None):
+        raise InvalidStateError("Give --proposal-id or --all, not both and not neither")
+    waiting = [
+        item
+        for item in store.list_proposals(states=("waiting_for_owner",))
+        if args.all or item.proposal_id == args.proposal_id
+    ]
+    if not waiting and not args.all:
+        raise EntityNotFoundError("No waiting proposal has that id (one already in review stays)")
+    now = _now()
+    declined: list[str] = []
+    for proposal in waiting:
+        try:
+            store.transition(
+                proposal.proposal_id,
+                expected=("waiting_for_owner",),
+                state="declined",
+                now=now,
+                reveal=None,
+            )
+        except ConflictError:
+            continue
+        repository.record_admin_audit(
+            occurred_at=now,
+            actor=args.actor,
+            action="setup.proposal.declined",
+            server_id=proposal.target_server_id,
+            data={
+                "proposalId": proposal.proposal_id,
+                "proposalDigest": None,
+                "via": "command line",
+            },
+        )
+        declined.append(proposal.proposal_id)
+    return {
+        "declined": declined,
+        "note": "Proposals already being reviewed are left to the owner on the review page.",
+    }
+
+
+def _narrowing_entry(
+    repository: SqliteControlPlaneRepository, server_id: str, version: str
+) -> dict[str, object] | None:
+    matches: list[dict[str, object]] = []
+    for entry in repository.list_admin_audit(server_id):
+        data = entry["data"]
+        if isinstance(data, Mapping) and cast(Mapping[str, object], data).get("version") == version:
+            matches.append(dict(entry))
+    for entry in matches:  # the agent's own entry, not the activation that followed it
+        if str(entry["action"]).startswith("setup.catalog."):
+            return entry
+    return matches[0] if matches else None
+
+
 def _explain_call(
     request_id: str, repository: SqliteControlPlaneRepository, store: SetupStore
 ) -> dict[str, object]:
@@ -193,6 +263,13 @@ def _explain_call(
     result["origin"] = origin
     if origin and origin.get("proposalId"):
         result["proposal"] = _record(store.get_proposal(str(origin["proposalId"])))
+    elif origin and origin.get("origin") == "narrowing":
+        result["proposal"] = None
+        result["change"] = _narrowing_entry(repository, server_id, version)
+        result["note"] = (
+            "The agent narrowed this connection through the setup connector. Narrowing can only "
+            "reduce access, so no approval was asked; the audit entry under change records it."
+        )
     else:
         result["proposal"] = None
         result["note"] = "This catalog was published at the command line: no chat request exists."

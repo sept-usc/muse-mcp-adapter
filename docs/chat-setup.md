@@ -152,7 +152,7 @@ docker compose exec adapter muse-mcp-adapter --database /data/adapter.db --confi
 docker compose exec adapter muse-mcp-adapter --database /data/adapter.db --config /config/serve.json explain-change --proposal-id PROPOSAL_ID
 ```
 
-`proposals` lists what is waiting. `audit-verify` checks the chain and fails loudly where it is broken. Note the head hash it prints somewhere else; later, `audit-verify --head HASH` also fails if that hash is no longer in the chain, which is what shows rows that existed then were cut off the end, and tells you how many rows came after it. `explain-call` follows a call to its catalog version, the proposal behind it, your words and your approval. `explain-change` prints one proposal's record. If a link is lost or locked, `proposal-link --proposal-id ID` prints a fresh one and ends the old one.
+`proposals` lists what is waiting. There is a limit on how many a connection may have waiting at once (a steered Muse cannot bury you in requests, but it can fill the limit), and a proposal not acted on ends after a day; `proposal-decline --all` closes the waiting ones at once, without a browser. `audit-verify` checks the chain and fails loudly where it is broken. Note the head hash it prints somewhere else; later, `audit-verify --head HASH` also fails if that hash is no longer in the chain, which is what shows rows that existed then were cut off the end, and tells you how many rows came after it. `explain-call` follows a call to its catalog version, the proposal behind it, your words and your approval. `explain-change` prints one proposal's record. If a link is lost or locked, `proposal-link --proposal-id ID` prints a fresh one and ends the old one.
 
 ## Limits and honest notes
 

@@ -28,6 +28,7 @@ Global options go before the command: `--database <path>` (default `adapter.db`)
 | `restore --from BACKUP [--force]` | Put a backup back. Stop the service first. Every hash is checked before anything is replaced, and existing data is moved to `pre-restore-<time>` instead of being deleted. Without `--force` it refuses to touch existing data. |
 | `chat-setup-enable [--rotate-owner-code]` | Turn on [setup by chat](chat-setup.md): publish the built-in setup connector, create its connection and the owner code (each shown once). Safe to repeat. |
 | `proposals [--all]` / `proposal-link --proposal-id ID` | List what Muse has asked for / print a fresh review link for a waiting proposal (the old one stops). |
+| `proposal-decline --proposal-id ID` / `--all` | Close proposals nobody has acted on yet, from this machine: no browser and no owner code. Use it when Muse has filled the limit of waiting proposals. Proposals already being reviewed are left to the owner. |
 | `explain-call --request-id ID` / `explain-change --proposal-id ID` | Trace a call back to the catalog, proposal, words and approval behind it / show one proposal's record. |
 | `audit-verify [--head HASH]` | Check the hash chain over the administrative audit; fails where it is broken. With a head hash you noted earlier, also fails if the chain no longer contains it (rows were cut off the end). |
 | `serve` | Run the Muse-facing HTTP service. |

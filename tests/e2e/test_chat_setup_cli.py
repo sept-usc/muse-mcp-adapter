@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from muse_mcp_adapter.cli import main
-from tests.fixtures.chat_setup import chat_harness, connector_from, run_cli
+from tests.fixtures.chat_setup import (
+    chat_harness,
+    connector_from,
+    projects_manifest,
+    run_cli,
+)
 
 
 def test_enabling_is_safe_to_repeat_and_shows_secrets_only_once(tmp_path: Path) -> None:
@@ -82,6 +89,80 @@ def test_a_catalog_published_at_the_command_line_has_no_chat_request(tmp_path: P
         request_id = h.repository.list_runtime_audit()[-1]["request_id"]
         trace = run_cli(h.database, h.config_path, "explain-call", "--request-id", str(request_id))
         assert trace["proposal"] is None and "no chat request" in trace["note"]
+
+
+def test_a_call_after_an_agent_narrowing_is_traced_to_that_narrowing(tmp_path: Path) -> None:
+    with chat_harness(tmp_path, manifest=projects_manifest()) as h:
+        link = h.propose(readOnly=True)["reviewLink"]
+        h.approve(link, h.review(link))
+        address, token = connector_from(h.get(link).text)
+        connection = h.repository.list_connections("learn")[0].connection_id
+        narrowed = h.ask(
+            "turn_off_operations", {"connectionId": connection, "operations": ["get_issue"]}
+        )
+        assert narrowed.status_code == 200
+
+        base = re.sub(r"^https?://[^/]+", "", address).removesuffix("/openapi.json")
+        called = h.agent.post(
+            f"{base}/operations/list_issues",
+            json={"query": "x"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert called.status_code == 200
+        request_id = str(h.repository.list_runtime_audit()[-1]["request_id"])
+
+        trace = run_cli(h.database, h.config_path, "explain-call", "--request-id", request_id)
+        assert trace["proposal"] is None
+        assert "narrowed this connection" in trace["note"]
+        assert "command line" not in trace["note"]
+        assert trace["change"]["action"] == "setup.catalog.narrowed"
+        assert trace["change"]["actor"] == "chat-setup:agent"
+        assert trace["change"]["data"]["removed"] == ["get_issue"]
+
+
+def test_waiting_proposals_can_be_closed_from_the_command_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with chat_harness(tmp_path) as h:
+        first = h.propose(readOnly=True, userWords="first")["proposalId"]
+        second = h.propose(readOnly=True, userWords="second")["proposalId"]
+        third = h.propose(readOnly=True, userWords="third")["proposalId"]
+
+        closed = run_cli(h.database, h.config_path, "proposal-decline", "--proposal-id", first)
+        assert closed["declined"] == [first]
+        states = {
+            item["proposalId"]: item["state"]
+            for item in run_cli(h.database, h.config_path, "proposals", "--all")
+        }
+        assert states == {
+            first: "declined",
+            second: "waiting_for_owner",
+            third: "waiting_for_owner",
+        }
+
+        rest = run_cli(h.database, h.config_path, "proposal-decline", "--all")
+        assert sorted(rest["declined"]) == sorted([second, third])
+        assert run_cli(h.database, h.config_path, "proposals") == []
+
+        # the agent is told, so it cannot claim success
+        status = h.ask("get_proposal_status", {"proposalId": first})
+        assert "declined" in json.dumps(status.json())
+
+        entries = [
+            entry
+            for entry in h.repository.list_admin_audit()
+            if entry["action"] == "setup.proposal.declined"
+        ]
+        assert len(entries) == 3
+        assert {cast(dict[str, object], e["data"])["via"] for e in entries} == {"command line"}
+        assert h.repository.verify_admin_audit_chain().ok
+
+        base = ["--database", str(h.database), "--config", str(h.config_path)]
+        capsys.readouterr()
+        assert main([*base, "proposal-decline"]) == 1  # neither an id nor --all
+        assert main([*base, "proposal-decline", "--all", "--proposal-id", first]) == 1  # both
+        assert main([*base, "proposal-decline", "--proposal-id", "prop_nope"]) == 1  # unknown
+        assert capsys.readouterr().err.count("error") >= 3
 
 
 def test_audit_verify_passes_and_fails_loudly(
