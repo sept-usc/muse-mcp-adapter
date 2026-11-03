@@ -72,6 +72,7 @@ from .models import (
     ACTOR_AGENT,
     ACTOR_OWNER,
     ACTOR_SYSTEM,
+    ACTOR_VISITOR,
     APPLIED,
     APPROVED,
     CONNECTING,
@@ -689,11 +690,18 @@ class SetupService:
         if not owner.matches(code, stored[1], stored[0]):
             self._store.add_attempt(scope, self._clock())
             self._audit(
-                ACTOR_OWNER,
+                ACTOR_VISITOR,
                 "setup.unlock.failed",
                 proposal.target_server_id,
                 {"proposalId": proposal.proposal_id},
             )
+            if self.locked(proposal):
+                self._audit(
+                    ACTOR_VISITOR,
+                    "setup.unlock.locked",
+                    proposal.target_server_id,
+                    {"proposalId": proposal.proposal_id, "attempts": self._settings.attempt_limit},
+                )
             return None
         self._store.clear_attempts(scope)
         secret = secrets.token_urlsafe(24)

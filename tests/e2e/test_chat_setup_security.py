@@ -75,6 +75,15 @@ def test_a_wrong_owner_code_is_refused_and_five_wrong_codes_lock_the_link(tmp_pa
         assert locked.status_code == 429 and "locked" in locked.text.lower()
         assert h.get(link).status_code == 429
 
+        # the record says who made the attempts: someone who had not proved to be the owner
+        entries = h.repository.list_admin_audit()
+        failed = [entry for entry in entries if entry["action"] == "setup.unlock.failed"]
+        assert len(failed) == 5
+        assert {entry["actor"] for entry in failed} == {"chat-setup:unverified"}
+        assert [e["actor"] for e in entries if e["action"] == "setup.unlock.locked"] == [
+            "chat-setup:unverified"
+        ]
+
         h.clock.advance(901)
         assert h.unlock(link).status_code == 302
 

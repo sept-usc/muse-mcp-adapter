@@ -21,6 +21,9 @@ SETUP_LABEL = "Adapter setup"
 
 ACTOR_AGENT = "chat-setup:agent"
 ACTOR_OWNER = "chat-setup:owner"
+ACTOR_VISITOR = (
+    "chat-setup:unverified"  # someone at a review page who has not proved to be the owner
+)
 ACTOR_SYSTEM = "chat-setup"
 
 KIND_CONNECT = "connect"
