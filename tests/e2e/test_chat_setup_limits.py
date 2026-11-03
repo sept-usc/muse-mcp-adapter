@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from tests.fixtures.chat_setup import (
     ChatHarness,
@@ -137,6 +137,48 @@ def test_a_limit_on_a_place_is_not_got_round_with_path_tricks_or_made_up_argumen
         assert "proj is not an argument of this operation" in alias.json()["message"]
 
         assert [args for _, args, _ in h.tools.calls] == [{"project": "eng/alpha"}]
+
+
+def _manifest_with_a_prompt_and_a_template() -> dict[str, object]:
+    manifest = projects_manifest()
+    prompt: dict[str, object] = {
+        "type": "prompt",
+        "name": "triage",
+        "arguments": [{"name": "project", "required": True}, {"name": "note"}],
+    }
+    template: dict[str, object] = {
+        "type": "resource_template",
+        "name": "project_board",
+        "uriTemplate": "tracker://{project}/board{/view*}",
+    }
+    primitives = [*cast(list[object], manifest["primitives"]), prompt, template]
+    return {**manifest, "primitives": primitives}
+
+
+def test_prompts_and_templates_are_said_not_to_be_held_to_a_limit(tmp_path: Path) -> None:
+    with chat_harness(tmp_path, manifest=_manifest_with_a_prompt_and_a_template()) as h:
+        # asked for in the request: the owner is told on the page
+        link = h.propose(readOnly=True, limitArguments=[ENG])["reviewLink"]
+        page = h.review(link)
+        assert "triage is a prompt that takes project" in page
+        assert "project_board is an address template that takes project" in page
+        assert "A limit reaches tools only, so it is not held to it" in page
+        assert h.approve(link, page).status_code == 302
+
+    (tmp_path / "b").mkdir()
+    with chat_harness(tmp_path / "b", manifest=_manifest_with_a_prompt_and_a_template()) as h:
+        # added later by the agent: the answer to the agent says so, and what to do
+        link = h.propose(readOnly=True)["reviewLink"]
+        assert h.approve(link, h.review(link)).status_code == 302
+        connection = _connection(h)
+        answer = h.ask("limit_arguments", {"connectionId": connection, "limitArguments": [ENG]})
+        body = answer.json()["structuredContent"]
+        assert any("triage is a prompt" in note for note in body["notLimited"])
+        assert any("project_board" in note for note in body["notLimited"])
+        assert "turn_off_operations" in body["nextStep"]
+
+        # switching them off is what makes the limit cover everything that stays
+        h.ask("turn_off_operations", {"connectionId": connection, "operations": ["triage"]})
 
 
 def test_a_limit_names_the_operation_or_every_operation_that_takes_the_argument(

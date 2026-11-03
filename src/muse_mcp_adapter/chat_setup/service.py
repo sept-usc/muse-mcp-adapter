@@ -66,6 +66,7 @@ from .compile import (
     exposures_of,
     finalize,
     live_policies,
+    not_held_to_limits,
 )
 from .models import (
     ACTOR_AGENT,
@@ -575,7 +576,8 @@ class SetupService:
                 "version": version,
             },
         )
-        return {
+        skipped = not_held_to_limits(after, index, set(after))
+        body: dict[str, object] = {
             "message": "The limits are in place. Muse can now call those operations only with "
             "the values allowed.",
             "connectionId": record.connection_id,
@@ -583,6 +585,13 @@ class SetupService:
             "nextStep": "Tell the user. If Muse still shows the old inputs, ask the user to "
             "refresh the connector.",
         }
+        if skipped:
+            body["notLimited"] = skipped
+            body["nextStep"] = (
+                "Tell the user which operations are not held to the limit and offer to switch "
+                "them off with turn_off_operations. " + str(body["nextStep"])
+            )
+        return body
 
     def _expire_access(self, _: str, arguments: Mapping[str, object]) -> dict[str, object]:
         record = self._connection_to_narrow(str(arguments["connectionId"]))

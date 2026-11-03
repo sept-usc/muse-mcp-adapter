@@ -8,6 +8,7 @@ it, and what the owner finally approves can only be chosen from what the server 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -255,6 +256,7 @@ def compile_proposal(
         *((f"Not enforced: {request.notes}",) if request.notes else ()),
         *dropped_notes,
         *unlimited_notes(policies, index, chosen),
+        *not_held_to_limits(policies, index, chosen),
     )
     payload = {
         "v": VERSION,
@@ -508,6 +510,71 @@ def unlimited_notes(
             notes.append(
                 f"{index[key].get('name')} takes {argument}, which is limited on {where} but "
                 f"is not limited on {index[key].get('name')}."
+            )
+    if len(notes) > _MAX_UNLIMITED_NOTES:
+        extra = len(notes) - _MAX_UNLIMITED_NOTES
+        notes = [*notes[:_MAX_UNLIMITED_NOTES], f"...and {extra} more like these."]
+    return notes
+
+
+_TEMPLATE_VARIABLE = re.compile(r"\{([^{}]*)\}")
+
+
+def _arguments_taken(primitive: Mapping[str, object]) -> set[str]:
+    """The argument names an operation takes: tool inputs, prompt arguments, template variables."""
+    kind = primitive.get("type")
+    if kind == "prompt":
+        items = primitive.get("arguments")
+        if isinstance(items, Sequence) and not isinstance(items, str | bytes):
+            return {
+                str(cast(Mapping[str, object], item).get("name"))
+                for item in cast(Sequence[object], items)
+                if isinstance(item, Mapping)
+            }
+        return set()
+    if kind == "resource_template":
+        template = primitive.get("uriTemplate")
+        names: set[str] = set()
+        for body in _TEMPLATE_VARIABLE.findall(template if isinstance(template, str) else ""):
+            for part in body.split(","):
+                name = re.sub(r"(\*|:\d+)$", "", re.sub(r"^[+#./;?&]", "", part.strip()))
+                if name:
+                    names.add(name)
+        return names
+    return _declared_arguments(primitive)
+
+
+def not_held_to_limits(
+    policies: Mapping[str, Mapping[str, object]],
+    index: Mapping[str, Mapping[str, object]],
+    chosen: Collection[str],
+) -> list[str]:
+    """Prompts and address templates that take an argument the owner limited on a tool.
+
+    A limit reaches tools only, so these are not held to it. Saying so lets the owner, or the
+    agent, switch them off instead of believing the limit covers every operation.
+    """
+    limited: set[str] = set()
+    for key in chosen:
+        if key in index and index[key].get("type") == "tool":
+            raw = policies[key].get("argumentPatterns")
+            if isinstance(raw, Mapping):
+                limited.update(str(argument) for argument in cast(Mapping[object, object], raw))
+    notes: list[str] = []
+    named = sorted(
+        (key for key in chosen if key in index), key=lambda key: str(index[key].get("name"))
+    )
+    for key in named:
+        primitive = index[key]
+        if primitive.get("type") not in ("prompt", "resource_template"):
+            continue
+        shared = sorted(_arguments_taken(primitive) & limited)
+        if shared:
+            kind = "a prompt" if primitive.get("type") == "prompt" else "an address template"
+            notes.append(
+                f"{primitive.get('name')} is {kind} that takes {', '.join(shared)}. A limit "
+                "reaches tools only, so it is not held to it: switch it off if it must not reach "
+                "other values."
             )
     if len(notes) > _MAX_UNLIMITED_NOTES:
         extra = len(notes) - _MAX_UNLIMITED_NOTES
