@@ -15,6 +15,7 @@ from typing import cast
 
 from ..application.policy_template import draft_policies_for, name_suggests_read
 from ..catalog.canonical import digest, thaw_json
+from ..data_plane.read_service import supports_template
 from ..domain.constants import primitive_key
 from ..domain.errors import InvalidStateError, RequestValidationError
 from ..domain.models import PublishedCatalog
@@ -206,7 +207,12 @@ def compile_proposal(
 
     requested: list[str] = []
     if request.read_only:
-        requested.extend(key for key, entry in drafts.items() if entry["classification"] == "read")
+        # a template the adapter cannot fill in fails on every call: not offered unasked
+        requested.extend(
+            key
+            for key, entry in drafts.items()
+            if entry["classification"] == "read" and not _unusable(index[key])
+        )
     named, missing_allow = _resolve(request.also_allow, index)
     requested.extend(named)
     removed, missing_exclude = _resolve(request.exclude, index)
@@ -675,7 +681,19 @@ def _limits_of(policy: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
     )
 
 
+def _unusable(primitive: Mapping[str, object]) -> bool:
+    """An address template the adapter cannot fill in (it fails on every call)."""
+    template = primitive.get("uriTemplate")
+    return primitive.get("type") == "resource_template" and not (
+        isinstance(template, str) and supports_template(template)
+    )
+
+
 def _evidence(primitive: Mapping[str, object], classification: str) -> str:
+    if _unusable(primitive):
+        return (
+            "The adapter cannot fill in this address template yet, so it would fail on every call."
+        )
     if primitive.get("type") != "tool":
         return "It can only be read."
     annotations = _annotations(primitive)

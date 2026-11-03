@@ -57,6 +57,7 @@ _KIND = {
     "resource_template": "resource",
     "prompt": "prompt",
 }
+_BARE_READ_ONLY = 5  # past this many, a bare read-only request is worth a second look
 _STANDING_LIMITS = (
     "The adapter does not yet ask you before each call. It does limit which values an operation "
     "may be called with, where a limit is shown under the operation, and it ends access at the "
@@ -473,9 +474,24 @@ class OwnerWeb:
             alignment = f"<div class='box ok'>{line}</div>"
         else:
             style = "ok" if not extra else "warn"
+            bare = (
+                bool(proposal.request.get("readOnly"))
+                and not proposal.request.get("alsoAllow")
+                and not proposal.request.get("limitArguments")
+                and len(chosen) > _BARE_READ_ONLY
+            )
+            note = (
+                "<p>Muse asked for read only, not for particular operations, so every read "
+                "operation the service offers counts as asked for. If you meant less (one "
+                "repository, only issues), untick what you do not want, or ask Muse to narrow "
+                "it afterwards.</p>"
+                if bare
+                else ""
+            )
             alignment = (
-                f"<div class='box {style}'>Asked for: {len(requested)}. Would be available: "
-                f"{len(chosen)}. Available but not asked for: {len(extra)}.</div>"
+                f"<div class='box {'warn' if bare else style}'>Asked for: {len(requested)}. "
+                f"Would be available: {len(chosen)}. Available but not asked for: "
+                f"{len(extra)}.{note}</div>"
             )
         access = _access_box(computed)
         rows = "".join(_row(item, checked=True) for item in selected) or (
@@ -677,6 +693,24 @@ def _first(form: Mapping[str, list[str]], name: str) -> str:
     return values[0] if values else ""
 
 
-def _plain(error: Exception) -> str:
-    text = " ".join(str(error).split())
-    return text[:300] or type(error).__name__
+def _leaf(error: BaseException) -> BaseException:
+    """The exception at the bottom of a (possibly nested) exception group."""
+    current = error
+    for _ in range(8):
+        members = getattr(current, "exceptions", None)
+        if not isinstance(members, tuple) or not members:
+            break
+        current = cast(BaseException, members[0])
+    return current
+
+
+def _plain(error: BaseException) -> str:
+    leaf = _leaf(error)
+    if leaf is not error and not isinstance(leaf, ControlPlaneError):
+        # a transport failure under a task group: say what it means, not how it was raised
+        return (
+            f"The address did not answer as an MCP server ({type(leaf).__name__}). "
+            "Check the address, then try again."
+        )
+    text = " ".join(str(leaf).split())
+    return text[:300] or type(leaf).__name__

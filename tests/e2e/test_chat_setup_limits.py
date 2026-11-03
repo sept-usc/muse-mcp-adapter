@@ -149,7 +149,7 @@ def _manifest_with_a_prompt_and_a_template() -> dict[str, object]:
     template: dict[str, object] = {
         "type": "resource_template",
         "name": "project_board",
-        "uriTemplate": "tracker://{project}/board{/view*}",
+        "uriTemplate": "tracker://{project}/board",
     }
     primitives = [*cast(list[object], manifest["primitives"]), prompt, template]
     return {**manifest, "primitives": primitives}
