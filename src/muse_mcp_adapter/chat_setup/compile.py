@@ -331,13 +331,15 @@ def finalize(
         policies.append(entry)
     proposed = set(computed.selected)
     requested = set(computed.requested)
+    # for a change, what was already live and stays is not something this approval exposes
+    staying = (proposed - requested) if computed.base_version is not None else set[str]()
     return Final(
         policies=tuple(policies),
         selected=tuple(sorted(chosen_set)),
         added_by_owner=tuple(sorted(chosen_set - proposed)),
         removed_by_owner=tuple(sorted(proposed - chosen_set)),
         marked_read=tuple(marked),
-        exposed_not_requested=tuple(sorted(chosen_set - requested)),
+        exposed_not_requested=tuple(sorted(chosen_set - requested - staying)),
         digest=digest(
             {
                 "proposal": computed.digest,

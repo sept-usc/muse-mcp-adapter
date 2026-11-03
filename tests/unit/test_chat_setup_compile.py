@@ -248,6 +248,30 @@ def test_a_change_keeps_what_is_live_and_adds_only_what_is_asked() -> None:
     assert computed.base_version == "1.0.0"
 
 
+def test_what_was_already_live_is_not_counted_as_exposed_unasked_by_a_change() -> None:
+    first = _compile(_request(readOnly=True))
+    live = {key: dict(entry) for key, entry in first.policies.items() if entry["allowed"]}
+    renewal = SetupRequest.parse(
+        {"connectionId": "conn_0123456789ab", "userWords": "two more hours", "expiresInHours": 2},
+        change=True,
+    )
+    computed = compile_proposal(
+        primitives=PRIMITIVES,
+        request=renewal,
+        current=live,
+        current_digests=None,
+        snapshot_digest="sha256:snap3",
+        base_version="1.0.0",
+    )
+    final = finalize(computed, computed.selected, [])
+
+    assert computed.requested == ()
+    assert final.exposed_not_requested == ()  # nothing new: it was all live already
+
+    wider = finalize(computed, [*computed.selected, "tool:search_notes"], [])
+    assert wider.exposed_not_requested == ("tool:search_notes",)  # what the owner added is named
+
+
 def test_a_definition_the_server_changed_is_drafted_afresh_under_the_same_name() -> None:
     from muse_mcp_adapter.catalog.canonical import digest
 
