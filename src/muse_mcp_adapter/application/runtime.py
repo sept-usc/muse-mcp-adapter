@@ -42,6 +42,15 @@ MAX_EVENTS_SHOWN = 400
 _IDEMPOTENCY_KEY = re.compile(r"^[\x21-\x7e]{1,200}$")
 
 
+_AUDITED_NAME_CHARS = 120
+
+
+def _printable(name: str) -> str:
+    """A name a caller chose, made safe to keep: bounded, with anything unprintable replaced."""
+    kept = "".join(character if character.isprintable() else "?" for character in name)
+    return kept[:_AUDITED_NAME_CHARS]
+
+
 @dataclass(frozen=True, slots=True)
 class Principal:
     """The authenticated caller: one connection, and through it one owner and one server."""
@@ -140,6 +149,22 @@ class AdapterRuntime:
             None,
         )
         if primitive is None:
+            # The caller proved who it is, so a call for something that is not offered is an
+            # attempt worth keeping: probing for a write operation must leave a trace.
+            self._repository.record_runtime_audit(
+                occurred_at=self._clock(),
+                request_id=request_id or str(uuid4()),
+                server_id=principal.server_id,
+                public_operation_id=_printable(public_operation_id),
+                local_identity_id=principal.identity_id,
+                connection_id=principal.connection_id,
+                catalog_version=catalog.catalog_version,
+                classification=None,
+                approval_id=None,
+                outcome="failed",
+                error_code=type(EntityNotFoundError("")).__name__,
+                duration_ms=0,
+            )
             raise EntityNotFoundError(f"Operation {public_operation_id} is not available")
         if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
             raise RequestValidationError("Idempotency-Key must be 1 to 200 printable characters")
