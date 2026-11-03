@@ -42,7 +42,7 @@ from ..domain.models import (
 )
 from ..operations.cancellation import CancellationRegistry
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
-from ..policy.argument_limits import violation
+from ..policy.argument_limits import undeclared, violation
 from .approval import ApprovalVerifier
 from .content import (
     DEFAULT_TOOL_RESULT_TYPES,
@@ -123,7 +123,7 @@ class ToolDataPlaneService:
             instance=request.arguments,
             label="Tool input",
         )
-        _enforce_limits(policy, request.arguments)
+        _enforce_limits(policy, request.arguments, operation.definition.get("inputSchema"))
         if operation.classification != "read" and not request.idempotency_key:
             raise RequestValidationError("Write tools require an idempotency key")
 
@@ -207,7 +207,7 @@ class ToolDataPlaneService:
         """Continue an INPUT_REQUIRED operation by re-running the call with the user's answer."""
         _validate_request(request)
         catalog_version, endpoint, operation, policy = self._resolve(request)
-        _enforce_limits(policy, request.arguments)
+        _enforce_limits(policy, request.arguments, operation.definition.get("inputSchema"))
         existing = self._repository.get_operation(operation_id)
         action_digest = _action_digest(
             request,
@@ -798,14 +798,22 @@ def _action_digest(
     )
 
 
-def _enforce_limits(policy: _ToolPolicy, arguments: Mapping[str, object]) -> None:
+def _enforce_limits(
+    policy: _ToolPolicy, arguments: Mapping[str, object], schema: object = None
+) -> None:
     """Refuse a call whose arguments break the limits the owner set for this operation."""
-    if policy.argument_patterns:
-        problem = violation(
-            policy.argument_patterns, cast(Mapping[str, object], thaw_json(arguments))
+    if not policy.argument_patterns:
+        return
+    values = cast(Mapping[str, object], thaw_json(arguments))
+    extra = undeclared(schema, values)
+    if extra:
+        raise RequestValidationError(
+            f"Argument {', '.join(extra)} is not an argument of this operation. "
+            "An operation the owner has limited takes only the arguments it declares."
         )
-        if problem is not None:
-            raise RequestValidationError(problem)
+    problem = violation(policy.argument_patterns, values)
+    if problem is not None:
+        raise RequestValidationError(problem)
 
 
 def _parse_policy(operation: PublishedPrimitive) -> _ToolPolicy:

@@ -102,6 +102,43 @@ def test_a_limit_the_user_asked_for_is_shown_approved_and_held_on_every_call(
         assert '"limitArguments":[{"allowedValues":["ENG"]' in digest_row.replace(" ", "")
 
 
+def test_a_limit_on_a_place_is_not_got_round_with_path_tricks_or_made_up_arguments(
+    tmp_path: Path,
+) -> None:
+    with chat_harness(tmp_path, manifest=projects_manifest()) as h:
+        place = {"operation": "list_issues", "argument": "project", "pattern": "eng/.*"}
+        _, _, address, token = _connect(
+            h,
+            readOnly=True,
+            limitArguments=[place],
+            userWords="Connect the tracker, read only, only projects under eng/.",
+        )
+
+        assert _call(h, address, token, "list_issues", project="eng/alpha").status_code == 200
+        tricks = (
+            "eng/../ops",
+            "eng/%2e%2e/ops",
+            "eng/%252e%252e/ops",
+            "eng/..;/ops",
+            "eng/./ops",
+            "eng\\..\\ops",
+            "eng/a\x00b",
+            "eng/\uff0e\uff0e/ops",
+            "ops/alpha",
+        )
+        for trick in tricks:
+            refused = _call(h, address, token, "list_issues", project=trick)
+            assert refused.status_code == 400, trick
+            assert "limited by the owner" in refused.json()["message"], trick
+
+        # a name the operation does not declare is no second way to say the limited argument
+        alias = _call(h, address, token, "list_issues", project="eng/alpha", proj="ops")
+        assert alias.status_code == 400
+        assert "proj is not an argument of this operation" in alias.json()["message"]
+
+        assert [args for _, args, _ in h.tools.calls] == [{"project": "eng/alpha"}]
+
+
 def test_a_limit_names_the_operation_or_every_operation_that_takes_the_argument(
     tmp_path: Path,
 ) -> None:

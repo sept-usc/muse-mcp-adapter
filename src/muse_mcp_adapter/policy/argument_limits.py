@@ -10,14 +10,26 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import cast
+from urllib.parse import unquote
 
 MAX_LIMITS_PER_TOOL = 10
 Scalar = str | int | bool
 
 _ALTERNATIVES = re.compile(r"^\(\?:(.*)\)$", re.DOTALL)
 _PIPE = re.compile(r"(?<!\\)\|")
+
+# A pattern is checked against the text a caller wrote, but the service reads that text its own
+# way: it may fold Unicode, decode percent-escapes, treat a backslash as a slash and resolve `..`.
+# A value that only passes the pattern because of what it hides would then reach a place the owner
+# did not allow (`.../azure/../dotnet/` passes `.../azure/.*` and the service fetches
+# `.../dotnet/`).
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_DOT_SEGMENT = re.compile(r"(?:^|[/\\])(?:\.{2,}|\.(?=[;/\\?#]|$))")
+_ENCODED_SEPARATOR = re.compile(r"%(?:2e|2f|5c)", re.IGNORECASE)
+_DECODE_ROUNDS = 3
 
 
 def scalar_text(value: bool | str | int | float) -> str:
@@ -79,6 +91,61 @@ def argument_texts(value: object) -> list[str] | None:
     return None
 
 
+def undeclared(schema: object, arguments: Mapping[str, object]) -> list[str]:
+    """The arguments a call carries that the operation does not declare.
+
+    A service may read an undeclared name as another way to say a limited argument, so an operation
+    the owner has limited takes only what it declares, unless its schema says it takes more.
+    """
+    if not isinstance(schema, Mapping):
+        return []
+    document = cast(Mapping[str, object], schema)
+    properties = document.get("properties")
+    extra = document.get("additionalProperties")
+    if not isinstance(properties, Mapping) or not properties or extra not in (None, False):
+        return []
+    declared = cast(Mapping[object, object], properties)
+    return sorted(name for name in arguments if name not in declared)
+
+
+def _readings(text: str) -> list[str]:
+    """The ways a service may read one value: as written, with Unicode folded, and with each layer
+    of percent-encoding removed."""
+    folded = unicodedata.normalize("NFKC", text)
+    readings = [text] if folded == text else [text, folded]
+    current = folded
+    for _ in range(_DECODE_ROUNDS):
+        decoded = unquote(current)
+        if decoded == current:
+            break
+        readings.append(decoded)
+        current = decoded
+    return readings
+
+
+def smuggling(pattern: str, text: str) -> str | None:
+    """What a value hides from a pattern that allows more than a fixed list, or None.
+
+    A fixed list matches exactly, so it needs no check. For any other pattern a value may not carry
+    control characters. For a pattern that names a place (it contains a slash) a value may also not
+    carry a ``.`` or ``..`` path segment, a backslash or an encoded dot or slash, in any reading.
+    """
+    if literal_values(pattern) is not None:
+        return None
+    readings = _readings(text)
+    if any(_CONTROL.search(reading) for reading in readings):
+        return "control characters"
+    if "/" not in pattern:
+        return None
+    if any("\\" in reading for reading in readings):
+        return "a backslash"
+    if any(_DOT_SEGMENT.search(reading) for reading in readings):
+        return "a . or .. path segment"
+    if any(_ENCODED_SEPARATOR.search(reading) for reading in readings):
+        return "an encoded dot or slash"
+    return None
+
+
 def violation(patterns: Mapping[str, str], arguments: Mapping[str, object]) -> str | None:
     """Why a call breaks the owner's limits, or None when it keeps them."""
     for name, pattern in patterns.items():
@@ -90,4 +157,11 @@ def violation(patterns: Mapping[str, str], arguments: Mapping[str, object]) -> s
             return f"Argument {name} must be a value or a list of values, limited to {limit}."
         if any(re.fullmatch(pattern, text) is None for text in texts):
             return f"Argument {name} is limited by the owner to {limit}."
+        for text in texts:
+            hidden = smuggling(pattern, text)
+            if hidden is not None:
+                return (
+                    f"Argument {name} is limited by the owner to {limit}, and this value carries "
+                    f"{hidden}, which the service could read as another place."
+                )
     return None

@@ -18,6 +18,7 @@ from muse_mcp_adapter.policy.argument_limits import (
     describe_limit,
     literal_values,
     no_looser,
+    undeclared,
     values_pattern,
     violation,
 )
@@ -110,6 +111,72 @@ def test_a_limit_never_widens_unless_it_is_the_same_or_a_part_of_the_old_list() 
     assert not no_looser("[A-Z]+", values_pattern(["ENG"]))  # cannot be proved, so refused
     assert not no_looser(both, "[A-Z]+")
     assert no_looser("[A-Z]+", "[A-Z]+")
+
+
+# --- what a value hides from the pattern ----------------------------------------------------
+
+_PLACE = {"url": r"https://learn\.microsoft\.com/en-us/azure/.*"}
+_AZURE = "https://learn.microsoft.com/en-us/azure/"
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        "../dotnet/x",
+        "functions/../../dotnet/x",
+        "%2e%2e/dotnet/x",
+        "%2E%2E%2Fdotnet/x",
+        "..;/dotnet/x",
+        "..\\dotnet\\x",
+        "%252e%252e/dotnet/x",
+        "\uff0e\uff0e/dotnet/x",  # fullwidth dots, which a service may fold to ..
+        "..%c0%af/dotnet",  # an overlong slash
+        "./x",
+        "...x",
+        "x\u0000y",
+        "x\x1f",
+    ],
+)
+def test_a_value_that_hides_a_path_trick_is_refused_although_it_matches_the_pattern(
+    hidden: str,
+) -> None:
+    value = _AZURE + hidden
+
+    problem = violation(_PLACE, {"url": value})
+
+    assert problem is not None and "limited by the owner" in problem
+
+
+@pytest.mark.parametrize(
+    "fine",
+    ["", "azure-functions/functions-overview", "my%20page", "x?path=../y", "a.b/c.d", "page#top"],
+)
+def test_ordinary_values_under_the_prefix_still_pass(fine: str) -> None:
+    assert violation(_PLACE, {"url": _AZURE + fine}) is None
+
+
+def test_a_fixed_list_is_matched_exactly_so_it_needs_no_such_check() -> None:
+    assert violation({"path": values_pattern(["../shared"])}, {"path": "../shared"}) is None
+    assert violation({"path": values_pattern(["../shared"])}, {"path": "../shared/x"}) is not None
+
+
+def test_a_pattern_that_names_no_place_only_refuses_control_characters() -> None:
+    limits = {"title": r"\[bot\] .*"}
+
+    assert violation(limits, {"title": "[bot] see ../notes and %2e%2e"}) is None
+    assert "carries control characters" in str(violation(limits, {"title": "[bot] a\x00b"}))
+
+
+def test_an_operation_takes_only_the_arguments_it_declares_unless_it_says_otherwise() -> None:
+    closed = {"type": "object", "properties": {"url": {"type": "string"}}}
+
+    assert undeclared(closed, {"url": "x"}) == []
+    assert undeclared(closed, {"url": "x", "uri": "y", "link": "z"}) == ["link", "uri"]
+    assert undeclared({**closed, "additionalProperties": True}, {"uri": "y"}) == []
+    assert undeclared({**closed, "additionalProperties": {"type": "string"}}, {"uri": "y"}) == []
+    assert undeclared({**closed, "additionalProperties": False}, {"uri": "y"}) == ["uri"]
+    assert undeclared({"type": "object"}, {"uri": "y"}) == []  # nothing declared to compare
+    assert undeclared(None, {"uri": "y"}) == []
 
 
 # --- the runtime ----------------------------------------------------------------------------
