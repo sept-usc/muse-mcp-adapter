@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -49,7 +50,28 @@ _LIMIT_FIELDS = ("operation", "argument", "allowedValues", "pattern")
 _SERVER = re.compile(r"^[a-z][a-z0-9-]{2,63}$")
 _CONNECTION = re.compile(r"^conn_[0-9a-f]{12}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.:\-]{1,120}$")
-_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_INVISIBLE = {"Cc", "Cf", "Zl", "Zp"}  # controls, format characters (bidi, zero-width), separators
+
+
+def _readable(value: str) -> str:
+    """Text as the owner will read it: controls other than tab and line breaks become spaces and
+    format characters (a right-to-left override, zero-width marks) disappear, so that what is
+    shown is what is stored."""
+    kept: list[str] = []
+    for character in value:
+        category = unicodedata.category(character)
+        if character in "\t\n\r":
+            kept.append(character)
+        elif category in {"Cc", "Zl", "Zp"}:
+            kept.append(" ")
+        elif category != "Cf":
+            kept.append(character)
+    return "".join(kept)
+
+
+def _hidden(value: str) -> bool:
+    return any(unicodedata.category(character) in _INVISIBLE for character in value)
+
 
 _CONNECT_FIELDS = (
     "server",
@@ -127,6 +149,10 @@ def parse_limits(value: object, field: str = "limitArguments") -> tuple[Argument
         if pattern is not None:
             if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_VALUE_CHARS:
                 raise RequestValidationError("A pattern must be short text")
+            if _hidden(pattern):
+                raise RequestValidationError(
+                    "A pattern must not hold control or invisible characters"
+                )
             problems = regex_problems(pattern)
             if problems:
                 raise RequestValidationError(problems[0])
@@ -148,6 +174,10 @@ def _values(value: object) -> tuple[str | int | bool, ...]:
         if isinstance(item, str):
             if not item or len(item) > MAX_VALUE_CHARS:
                 raise RequestValidationError("An allowed value must be short, non-empty text")
+            if _hidden(item):
+                raise RequestValidationError(
+                    "An allowed value must not hold control or invisible characters"
+                )
         elif not isinstance(item, int):
             raise RequestValidationError("An allowed value is text, a whole number or true/false")
         values.append(item)
@@ -247,7 +277,7 @@ def _text(value: object, field: str, limit: int, *, required: bool) -> str | Non
         return None
     if not isinstance(value, str):
         raise RequestValidationError(f"{field} must be text")
-    cleaned = _CONTROL.sub(" ", value).strip()
+    cleaned = _readable(value).strip()
     if not cleaned:
         if required:
             raise RequestValidationError(f"{field} must not be empty")
@@ -272,7 +302,8 @@ def _endpoint(value: object) -> str | None:
         not isinstance(value, str)
         or len(value) > MAX_ENDPOINT
         or not value.startswith(("https://", "http://"))
-        or any(character.isspace() or ord(character) < 32 for character in value)
+        or any(character.isspace() for character in value)
+        or _hidden(value)
     ):
         raise RequestValidationError("endpoint must be the https address of an MCP server")
     return value

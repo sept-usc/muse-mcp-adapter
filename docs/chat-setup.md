@@ -56,7 +56,7 @@ A service that needs a sign-in shows you its tools only after you have signed in
 
 ## What the review page shows
 
-- **Your words, as Muse relayed them**, in a box marked as unverified. Judge by the list below them, not by the words.
+- **Your words, as Muse relayed them**, in a box marked as unverified. Judge by the list below them, not by the words. Invisible and direction-changing characters (a right-to-left override, zero-width marks) are dropped and control characters become spaces before they are stored, so what you read is what is recorded.
 - **The service**: its name and address, and whether it is in the adapter's own list. An address that Muse supplied and the adapter does not know carries a warning, and the adapter has not contacted it before you press the button.
 - **What would become available**: each operation, whether it only reads, changes data, or may be hard to undo, how the adapter knows, and the server's own description in a collapsed block marked as the server's.
 - **An alignment line**: how many things you asked for, how many would be available, and how many are available that you did not ask for. For a new connection that last number should be 0.
@@ -77,7 +77,7 @@ Muse reads web pages and messages written by other people, so what it says can b
 - **No secret goes through the chat.** No operation has a field for one, and a refusal does not repeat what was sent.
 - **Text written by a service never reaches Muse before you approve.** Muse gets names and labels the adapter worked out. The service's own descriptions appear only on your page, marked as the service's.
 
-Narrowing is allowed without you, because it can only reduce access: *"stop it creating issues"* switches that operation off at once, and *"disconnect Linear"* removes the connection. Anything that gives Muse more is a proposal you approve.
+Changes to a connection's policy are made one at a time, so two requests made at the same moment (two limits, a limit and your approval) cannot overwrite each other. Narrowing is allowed without you, because it can only reduce access: *"stop it creating issues"* switches that operation off at once, and *"disconnect Linear"* removes the connection. Anything that gives Muse more is a proposal you approve.
 
 ## Changing a connection later
 

@@ -13,6 +13,7 @@ import hmac
 import json
 import re
 import secrets
+import threading
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -90,6 +91,9 @@ from .store import Proposal, SetupStore
 DiscoveryFactory = Callable[[ResolvedCredential | None], DiscoveryClient]
 _PLANS = ("none", "env_token", "oauth", "oauth_app")
 _MAX_SECRET = 4096
+_CHANGES_POLICY = frozenset(
+    {"turn_off_operations", "limit_arguments", "expire_access", "remove_connection"}
+)
 _CLIENT_ID = re.compile(r"[\x21-\x7e]{1,500}")  # printable, no spaces
 _SHOWN = {APPLIED: "ready"}
 
@@ -158,6 +162,10 @@ class SetupService:
         self._policy = endpoint_policy
         self._settings = settings or SetupSettings()
         self._version = setup_catalog.catalog_version()
+        # Every change to a server's live policy reads the live catalog, edits it and publishes the
+        # result. Two of those at once would each start from the same catalog and the second to
+        # publish would drop the first one's change while telling its caller it had taken effect.
+        self._policy_lock = threading.RLock()
         self._validators: dict[str, Validator] = {}
         for name, schema in setup_catalog.input_schemas().items():
             plain = cast(dict[str, object], thaw_json(schema))
@@ -193,7 +201,11 @@ class SetupService:
             path = ".".join(str(item) for item in error.absolute_path) or "the request"
             raise RequestValidationError(f"{path}: {error.message}") from error
         self.sweep()
-        body = handler(request.connection_id, arguments)
+        if operation in _CHANGES_POLICY:
+            with self._policy_lock:
+                body = handler(request.connection_id, arguments)
+        else:
+            body = handler(request.connection_id, arguments)
         return self._respond(request, body)
 
     def _respond(self, request: DataPlaneRequest, body: Mapping[str, object]) -> DataPlaneResponse:
@@ -815,6 +827,24 @@ class SetupService:
         chosen: Collection[str],
         reviewed_read: Collection[str],
     ) -> Proposal:
+        with self._policy_lock:
+            return self._decide(
+                proposal,
+                approve=approve,
+                shown_digest=shown_digest,
+                chosen=chosen,
+                reviewed_read=reviewed_read,
+            )
+
+    def _decide(
+        self,
+        proposal: Proposal,
+        *,
+        approve: bool,
+        shown_digest: str,
+        chosen: Collection[str],
+        reviewed_read: Collection[str],
+    ) -> Proposal:
         if proposal.state != IN_REVIEW:
             raise ConflictError("This proposal is not waiting for a decision")
         if not hmac.compare_digest(shown_digest, proposal.digest or ""):
@@ -1156,6 +1186,10 @@ class SetupService:
         if classify_change(exposures_of(old), exposures_of(new)) not in ("narrowing", "none"):
             raise ConflictError("That change would give Muse more, so it needs the owner")
         server_id = str(old.server["id"])
+        if self._repository.get_active_catalog(server_id).catalog_version != old.catalog_version:
+            raise ConflictError(
+                "This connection changed while the change was being made. Ask again."
+            )
         self._repository.save_catalog(new)
         self._control.activate_catalog(server_id, version, actor=ACTOR_AGENT)
         self._store.record_provenance(
