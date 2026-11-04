@@ -54,6 +54,7 @@ from ..domain.models import (
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from ..policy import expiry
 from ..policy.argument_limits import describe_limit, no_looser
+from ..policy.narrowing import classify_change, exposures_of
 from ..transport.security import EndpointSecurityPolicy
 from . import catalog as setup_catalog
 from . import directory, owner
@@ -61,9 +62,7 @@ from .compile import (
     Computed,
     Final,
     apply_limits,
-    classify_change,
     compile_proposal,
-    exposures_of,
     finalize,
     live_policies,
     not_held_to_limits,

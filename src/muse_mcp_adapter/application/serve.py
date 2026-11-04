@@ -20,6 +20,7 @@ import httpx
 from starlette.applications import Starlette
 
 from ..chat_setup.catalog import ensure_setup_server
+from ..chat_setup.models import ACTOR_AGENT
 from ..chat_setup.secrets import ChainedSecrets, SecretBox
 from ..chat_setup.service import DiscoveryFactory, SetupService
 from ..chat_setup.store import SetupStore
@@ -258,7 +259,9 @@ def build_application(
     owner_pages: list[OwnerWeb] = []
     if store is not None:
         secrets_view = ChainedSecrets(env, store.get_secret)
-        control_plane = ControlPlaneService(repository, endpoint_policy=policy)
+        control_plane = ControlPlaneService(
+            repository, endpoint_policy=policy, narrowing_only_actors=(ACTOR_AGENT,)
+        )
         ensure_setup_server(repository, control_plane, clock())
         setup = SetupService(
             repository=repository,

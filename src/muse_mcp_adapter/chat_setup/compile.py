@@ -20,17 +20,12 @@ from ..domain.constants import primitive_key
 from ..domain.errors import InvalidStateError, RequestValidationError
 from ..domain.models import PublishedCatalog
 from ..policy import expiry
-from ..policy.argument_limits import MAX_LIMITS_PER_TOOL, describe_limit, no_looser
+from ..policy.argument_limits import MAX_LIMITS_PER_TOOL, describe_limit
 from .models import ArgumentLimit, SetupRequest
 
 VERSION = 1
 MAX_OFFERED = 2000  # a page of more than this is not a review anyone can do
-CLASS_RANK: Mapping[str, int] = {"read": 0, "write": 1, "sensitive_write": 2}
 _KIND_ORDER = {"tool": 0, "resource": 1, "resource_template": 2, "prompt": 3}
-_IGNORED_WHEN_COMPARING = frozenset(
-    {"classification", "timeoutSeconds", "maxResultBytes", "argumentPatterns", "expiresAt"}
-)
-_LIMITS = ("timeoutSeconds", "maxResultBytes")
 _MAX_UNLIMITED_NOTES = 10
 
 
@@ -164,14 +159,6 @@ class Final:
     marked_read: tuple[str, ...]
     exposed_not_requested: tuple[str, ...]
     digest: str
-
-
-@dataclass(frozen=True, slots=True)
-class Exposure:
-    """One exposed operation as it is published: which definition, under which policy."""
-
-    definition_digest: str
-    policy: Mapping[str, object]
 
 
 def compile_proposal(
@@ -361,75 +348,6 @@ def live_policies(catalog: PublishedCatalog) -> tuple[dict[str, dict[str, object
     return policies, digests
 
 
-def exposures_of(catalog: PublishedCatalog | None) -> dict[str, Exposure]:
-    if catalog is None:
-        return {}
-    return {
-        item.primitive_key: Exposure(
-            item.definition_digest, cast(Mapping[str, object], thaw_json(item.policy))
-        )
-        for item in catalog.primitives
-    }
-
-
-def classify_change(old: Mapping[str, Exposure], new: Mapping[str, Exposure]) -> str:
-    """``none``, ``narrowing`` or ``widening``.
-
-    A change is narrowing only when it exposes nothing that was not already exposed, keeps every
-    definition and every policy no looser than before, and drops or tightens something. Anything
-    else, including a retained operation whose definition changed, is widening and needs the
-    owner.
-    """
-    if old == new:
-        return "none"
-    if not new.keys() <= old.keys():
-        return "widening"
-    for key, exposure in new.items():
-        before = old[key]
-        if exposure.definition_digest != before.definition_digest:
-            return "widening"
-        if not _no_looser(before.policy, exposure.policy):
-            return "widening"
-    return "narrowing"
-
-
-def _no_looser(old: Mapping[str, object], new: Mapping[str, object]) -> bool:
-    if old == new:
-        return True
-    old_rank = CLASS_RANK.get(str(old.get("classification")))
-    new_rank = CLASS_RANK.get(str(new.get("classification")))
-    if old_rank is None or new_rank is None or new_rank < old_rank:
-        return False
-    for limit in _LIMITS:
-        before, after = old.get(limit), new.get(limit)
-        if isinstance(before, int) and not isinstance(before, bool):
-            if not isinstance(after, int) or isinstance(after, bool) or after > before:
-                return False
-        elif before is not None or (after is not None and not isinstance(after, int)):
-            return False
-    return (
-        expiry.no_later(old.get("expiresAt"), new.get("expiresAt"))
-        and _limits_no_looser(old, new)
-        and _without(old) == _without(new)
-    )
-
-
-def _limits_no_looser(old: Mapping[str, object], new: Mapping[str, object]) -> bool:
-    """Every limit there was is still there, unchanged; new ones only tighten."""
-    before, after = old.get("argumentPatterns"), new.get("argumentPatterns")
-    if before is None:
-        return True
-    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
-        return False
-    kept = cast(Mapping[object, object], after)
-    return all(
-        isinstance(pattern, str)
-        and isinstance(kept.get(name), str)
-        and no_looser(pattern, cast(str, kept[name]))
-        for name, pattern in cast(Mapping[object, object], before).items()
-    )
-
-
 def apply_limits(
     entries: dict[str, dict[str, object]],
     index: Mapping[str, Mapping[str, object]],
@@ -602,14 +520,6 @@ def _declared_arguments(primitive: Mapping[str, object]) -> set[str]:
         if isinstance(properties, Mapping)
         else set()
     )
-
-
-def _without(policy: Mapping[str, object]) -> dict[str, object]:
-    return {
-        key: value
-        for key, value in policy.items()
-        if key not in _IGNORED_WHEN_COMPARING and key != "readOnlyReviewed"
-    }
 
 
 def _resolve(

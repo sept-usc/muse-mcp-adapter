@@ -11,14 +11,13 @@ from openapi_spec_validator import validate
 from muse_mcp_adapter.application.openapi import compile_openapi
 from muse_mcp_adapter.chat_setup.compile import (
     Computed,
-    Exposure,
-    classify_change,
     compile_proposal,
     finalize,
 )
 from muse_mcp_adapter.chat_setup.models import SetupRequest
 from muse_mcp_adapter.control_plane.compile_catalog import compile_catalog
 from muse_mcp_adapter.policy import expiry
+from muse_mcp_adapter.policy.narrowing import Exposure, classify_change
 from muse_mcp_adapter.policy.validate_policy import validate_exposure_policy
 
 NOON = "2026-10-05T12:00:00Z"
@@ -236,3 +235,13 @@ def test_ending_access_sooner_is_narrowing_and_ending_it_later_is_not() -> None:
     assert classify_change(exposure(soon), exposure(later)) == "widening"  # extended
     assert classify_change(exposure(soon), exposure(None)) == "widening"  # made permanent
     assert classify_change(exposure(soon), exposure("garbage")) == "widening"
+
+
+def test_an_instant_is_written_the_way_it_is_read() -> None:
+    from datetime import UTC, datetime, timedelta, timezone
+
+    noon = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    assert expiry.format_instant(noon) == "2026-10-05T12:00:00Z"
+    elsewhere = datetime(2026, 10, 5, 14, 0, tzinfo=timezone(timedelta(hours=2)))
+    assert expiry.format_instant(elsewhere) == "2026-10-05T12:00:00Z"  # the same instant, in UTC
+    assert expiry.parse(expiry.format_instant(elsewhere)) == noon

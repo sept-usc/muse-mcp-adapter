@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hmac
 import html
+import re
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ SESSION_COOKIE = "muse_adapter_owner"
 CSRF_COOKIE = "muse_adapter_owner_csrf"
 PATH = "/review"
 MAX_FORM_BYTES = 128 * 1024
+_CSRF_SHAPE = re.compile(r"[A-Za-z0-9_-]{24,64}")  # what secrets.token_urlsafe(24) makes
 
 _LABEL = {
     "read": ("Reads only", "r"),
@@ -71,6 +73,7 @@ class _Context:
     token: str
     proposal: Proposal
     form: dict[str, list[str]]
+    csrf: str
 
 
 class OwnerWeb:
@@ -103,28 +106,31 @@ class OwnerWeb:
         closed = _closed(proposal, detail=unlocked)
         if closed is not None and (unlocked or proposal.state != FAILED):
             return self._message(*closed)
+        csrf = _csrf_of(request)
         if not unlocked:
             stopped = "This request stopped. Enter your owner code to see why."
-            return self._unlock_page(proposal, token, intro=stopped if closed else None)
-        return await self._state_page(proposal, token)
+            return self._unlock_page(proposal, token, csrf, intro=stopped if closed else None)
+        return await self._state_page(proposal, token, csrf)
 
     async def _state_page(
-        self, proposal: Proposal, token: str, error: str | None = None
+        self, proposal: Proposal, token: str, csrf: str, error: str | None = None
     ) -> Response:
         info = await self._run(lambda: self._service.describe(proposal))
         if proposal.state == WAITING:
-            return self._with_csrf(self._connect_page(proposal, info, token, error))
+            return self._with_csrf(self._connect_page(proposal, info, token, error), csrf)
         if proposal.state == CONNECTING:
-            return self._with_csrf(self._resume_page(proposal, info, token, error))
+            return self._with_csrf(self._resume_page(proposal, info, token, error), csrf)
         if proposal.state == IN_REVIEW and proposal.computed is not None:
             computed = Computed.from_json(proposal.computed)
-            return self._with_csrf(self._review_page(proposal, info, computed, token, error))
+            return self._with_csrf(self._review_page(proposal, info, computed, token, error), csrf)
         if proposal.state == APPLIED:
             revealed = await self._run(lambda: self._service.reveal(proposal))
             operations = await self._run(
                 lambda: self._service.operations(str(proposal.target_server_id))
             )
-            return self._with_csrf(self._done_page(proposal, info, revealed, operations, token))
+            return self._with_csrf(
+                self._done_page(proposal, info, revealed, operations, token), csrf
+            )
         return self._message("One moment", "This is being put in place. Reload in a few seconds.")
 
     # --- actions -------------------------------------------------------------------------
@@ -142,7 +148,11 @@ class OwnerWeb:
             return self._message("Not set up", str(error), 409)
         if secret is None:
             return self._unlock_page(
-                context.proposal, context.token, "That code is not right.", status=403
+                context.proposal,
+                context.token,
+                context.csrf,
+                "That code is not right.",
+                status=403,
             )
         response = redirect(f"{PATH}/{context.token}")
         response.set_cookie(
@@ -232,10 +242,12 @@ class OwnerWeb:
         fresh = await self._reload(context)
         closed = _closed(fresh, detail=True)
         if closed is not None:
-            return self._message(closed[0], f"{closed[1]} {message}", closed[2])
+            # a proposal that failed already carries the reason it failed: say it once
+            said = closed[1] if message in closed[1] else f"{closed[1]} {message}"
+            return self._message(closed[0], said, closed[2])
         if isinstance(error, ReauthorizationRequiredError):
             message = "You are not signed in to the service yet. Sign in, then try again."
-        return await self._state_page(fresh, context.token, message)
+        return await self._state_page(fresh, context.token, context.csrf, message)
 
     async def _reload(self, context: _Context) -> Proposal:
         fresh = await self._run(lambda: self._service.lookup(context.token))
@@ -263,16 +275,19 @@ class OwnerWeb:
             )
         if need_session and not self._service.session_valid(request.cookies.get(SESSION_COOKIE)):
             return redirect(f"{PATH}/{token}")
-        return _Context(token, proposal, form)
+        return _Context(token, proposal, form, _csrf_of(request))
 
     @staticmethod
     async def _run[T](function: Callable[[], T]) -> T:
         return await anyio.to_thread.run_sync(function)
 
-    def _with_csrf(self, page: tuple[str, str, int]) -> Response:
-        """Wrap a form page: a fresh cross-site token in the page and in a cookie."""
+    def _with_csrf(self, page: tuple[str, str, int], csrf: str) -> Response:
+        """Wrap a form page: the cross-site token in the page and in a cookie.
+
+        The token is the one the browser already holds, so a second page opened in another tab does
+        not make the first tab's form stale.
+        """
         title, body, status = page
-        csrf = secrets.token_urlsafe(24)
         response = document(title, body.replace("{{CSRF}}", html.escape(csrf)), status)
         response.set_cookie(
             CSRF_COOKIE,
@@ -299,6 +314,7 @@ class OwnerWeb:
         self,
         proposal: Proposal,
         token: str,
+        csrf: str,
         error: str | None = None,
         *,
         status: int = 200,
@@ -324,7 +340,7 @@ class OwnerWeb:
             "autofocus aria-label='Owner code'></p><button class=go>Continue</button></form>"
             "</main>"
         )
-        return self._with_csrf(("Enter your owner code", body, status))
+        return self._with_csrf(("Enter your owner code", body, status), csrf)
 
     # --- page bodies ---------------------------------------------------------------------
 
@@ -686,6 +702,12 @@ def _closed(proposal: Proposal, *, detail: bool) -> tuple[str, str, int] | None:
         reason = (proposal.error if detail else None) or "It could not be completed."
         return "Stopped", reason, 409
     return None
+
+
+def _csrf_of(request: Request) -> str:
+    """The cross-site token this browser already holds, or a new one if it holds none."""
+    held = request.cookies.get(CSRF_COOKIE, "")
+    return held if _CSRF_SHAPE.fullmatch(held) else secrets.token_urlsafe(24)
 
 
 def _first(form: Mapping[str, list[str]], name: str) -> str:

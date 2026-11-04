@@ -21,7 +21,9 @@ from typing import Any
 
 from starlette.testclient import TestClient
 
+from muse_mcp_adapter.application import serve
 from muse_mcp_adapter.application.serve import build_application, load_serve_config
+from muse_mcp_adapter.chat_setup.service import SetupService
 from muse_mcp_adapter.cli import main
 from muse_mcp_adapter.discovery.client import ManifestDiscoveryClient
 from muse_mcp_adapter.domain.models import McpContentBlock, McpToolResult, ResolvedCredential
@@ -156,6 +158,13 @@ class ChatHarness:
     setup_token: str
     setup_slug: str
     owner_code: str
+    built: list[SetupService]
+
+    @property
+    def service(self) -> SetupService:
+        """The real service behind the pages, for steps no page or call reaches."""
+        assert self.built, "chat setup is off in this harness, so there is no setup service"
+        return self.built[0]
 
     def rows(self, statement: str) -> list[tuple[Any, ...]]:
         """Read the database the way an administrator with the file could."""
@@ -246,17 +255,29 @@ def chat_harness(
     discovery = FakeDiscovery(manifest or tracker_manifest())
     if not serve_chat_setup:  # enabled at the command line, then the service restarted without it
         config_path.write_text(json.dumps({"publicUrl": PUBLIC_URL, "chatSetup": False}))
+    built: list[SetupService] = []
+
+    class _Captured(SetupService):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            built.append(self)
+
     with SqliteControlPlaneRepository(database) as repository:
         repository.initialize()
-        app = build_application(
-            repository,
-            load_serve_config(config_path),
-            {},
-            database=database,
-            mcp_client=tools,  # type: ignore[arg-type]
-            clock=clock,
-            discovery=discovery,
-        )
+        original = serve.SetupService
+        serve.SetupService = _Captured
+        try:
+            app = build_application(
+                repository,
+                load_serve_config(config_path),
+                {},
+                database=database,
+                mcp_client=tools,  # type: ignore[arg-type]
+                clock=clock,
+                discovery=discovery,
+            )
+        finally:
+            serve.SetupService = original
         with (
             TestClient(app, base_url=PUBLIC_URL) as agent,
             TestClient(app, base_url=PUBLIC_URL) as browser,
@@ -273,6 +294,7 @@ def chat_harness(
                 setup_token=str(enabled["token"]),
                 setup_slug=slug.group(1),
                 owner_code=str(enabled["ownerCode"]),
+                built=built,
             )
 
 

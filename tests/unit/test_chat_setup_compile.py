@@ -11,14 +11,13 @@ from muse_mcp_adapter.application.policy_template import name_suggests_read
 from muse_mcp_adapter.chat_setup import directory
 from muse_mcp_adapter.chat_setup.compile import (
     Computed,
-    Exposure,
-    classify_change,
     compile_proposal,
     finalize,
 )
 from muse_mcp_adapter.chat_setup.models import SetupRequest
 from muse_mcp_adapter.domain.errors import RequestValidationError
 from muse_mcp_adapter.policy.argument_limits import values_pattern
+from muse_mcp_adapter.policy.narrowing import Exposure, classify_change
 
 
 def _tool(name: str, *, read_only: bool | None = None, destructive: bool = False) -> dict[str, Any]:
