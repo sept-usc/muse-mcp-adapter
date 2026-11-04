@@ -84,6 +84,7 @@ _CONNECT_FIELDS = (
     "includeReads",
     "alsoAllow",
     "exclude",
+    "reasons",
     "timeoutSeconds",
     "maxResultBytes",
     "expiresInHours",
@@ -95,6 +96,7 @@ REVISE_FIELDS = (
     "includeReads",
     "alsoAllow",
     "exclude",
+    "reasons",
     "timeoutSeconds",
     "maxResultBytes",
     "expiresInHours",
@@ -215,6 +217,7 @@ class SetupRequest:
     connection_id: str | None = None
     read_only: bool = False
     include_reads: bool = False  # every read operation, plus whatever else is asked for
+    reasons: tuple[tuple[str, str], ...] = ()  # (operation name, why Muse wants it), sorted
     also_allow: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
     timeout_seconds: int | None = None
@@ -232,6 +235,7 @@ class SetupRequest:
             "connectionId": self.connection_id,
             "readOnly": self.read_only,
             "includeReads": self.include_reads,
+            "reasons": dict(self.reasons),
             "alsoAllow": list(self.also_allow),
             "exclude": list(self.exclude),
             "timeoutSeconds": self.timeout_seconds,
@@ -274,6 +278,7 @@ class SetupRequest:
             connection_id=connection_id,
             read_only=_boolean(value.get("readOnly"), "readOnly"),
             include_reads=_boolean(value.get("includeReads"), "includeReads"),
+            reasons=_reasons(value.get("reasons")),
             also_allow=_names(value.get("alsoAllow"), "alsoAllow"),
             exclude=_names(value.get("exclude"), "exclude"),
             timeout_seconds=_integer(value.get("timeoutSeconds"), "timeoutSeconds", 1, 300),
@@ -341,6 +346,28 @@ def _integer(value: object, field: str, low: int, high: int) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise RequestValidationError(f"{field} must be a whole number from {low} to {high}")
     return value
+
+
+MAX_REASONS = 50
+MAX_REASON = 200
+
+
+def _reasons(value: object) -> tuple[tuple[str, str], ...]:
+    """Why Muse wants each operation, a few words each. Shown to the owner as Muse's, unchecked."""
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise RequestValidationError("reasons must map an operation name to a short reason")
+    items = cast(Mapping[object, object], value)
+    if len(items) > MAX_REASONS:
+        raise RequestValidationError(f"reasons holds more than {MAX_REASONS} operations")
+    found: dict[str, str] = {}
+    for name, why in items.items():
+        if not isinstance(name, str) or not _NAME.fullmatch(name):
+            raise RequestValidationError("reasons holds a name that is not in the expected form")
+        text = _text(why, f"the reason for {name}", MAX_REASON, required=True)
+        found[name] = cast(str, text)
+    return tuple(sorted(found.items()))
 
 
 def _names(value: object, field: str) -> tuple[str, ...]:

@@ -183,7 +183,11 @@ class ChatHarness:
         )
 
     def propose(self, **fields: object) -> dict[str, Any]:
-        body: dict[str, object] = {"server": "learn", "userWords": "connect it, read only"}
+        body: dict[str, object] = {
+            "server": "learn",
+            "userWords": "connect it, read only",
+            "readOnly": True,
+        }
         body.update(fields)
         response = self.ask("propose_connection", body)
         assert response.status_code == 200, response.text

@@ -46,6 +46,8 @@ class Candidate:
     reviewable: bool  # a change by default; the owner may mark it read-only after checking
     changed: bool  # the server changed it since it was published
     limits: tuple[tuple[str, str], ...] = ()  # (argument, in words) the owner limits it to
+    reason: str = ""  # why Muse wants it, in Muse's words: shown unverified
+    live: bool = False  # already allowed on the live connection
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -62,6 +64,8 @@ class Candidate:
             "reviewable": self.reviewable,
             "changed": self.changed,
             "limits": [list(pair) for pair in self.limits],
+            "reason": self.reason,
+            "live": self.live,
         }
 
     @classmethod
@@ -84,6 +88,8 @@ class Candidate:
                 for pair in (_sequence(item) for item in _sequence(value.get("limits") or []))
                 if len(pair) == 2
             ),
+            reason=value.get("reason") if isinstance(value.get("reason"), str) else "",  # type: ignore[arg-type]
+            live=value.get("live") is True,
         )
 
 
@@ -233,6 +239,8 @@ def compile_proposal(
                 entry["maxResultBytes"] = request.max_result_bytes
         policies[key] = entry
     limit_notes = apply_limits(policies, index, request.limits)
+    reasons = dict(request.reasons)
+    _, missing_reasons = _resolve(sorted(reasons), index)
 
     candidates = tuple(
         _candidate(
@@ -242,6 +250,8 @@ def compile_proposal(
             requested=key in requested_keys,
             selected=key in chosen,
             changed=key in changed_keys,
+            reason=reasons.get(str(index[key].get("name")), "") if key in chosen else "",
+            live=key in live,
         )
         for key in sorted(index, key=lambda item: _order(index[item]))
     )
@@ -261,7 +271,12 @@ def compile_proposal(
     return Computed(
         candidates=candidates,
         policies=policies,
-        unresolved=tuple(missing_allow + missing_exclude + limit_notes),
+        unresolved=tuple(
+            missing_allow
+            + missing_exclude
+            + [f"reason for {m}" for m in missing_reasons]
+            + limit_notes
+        ),
         gone=tuple(sorted(key for key in live if key not in index)),
         unenforced=tuple(unenforced),
         base_version=base_version,
@@ -552,6 +567,8 @@ def _candidate(
     requested: bool,
     selected: bool,
     changed: bool,
+    reason: str,
+    live: bool,
 ) -> Candidate:
     name = str(primitive.get("name"))
     classification = str(policy.get("classification"))
@@ -578,6 +595,8 @@ def _candidate(
         reviewable=is_tool and classification == "write" and not hinted,
         changed=changed,
         limits=_limits_of(policy),
+        reason=reason,
+        live=live,
     )
 
 

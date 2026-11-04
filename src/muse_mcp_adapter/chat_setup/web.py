@@ -37,6 +37,7 @@ from .models import (
     FAILED,
     IN_REVIEW,
     KIND_CHANGE,
+    KIND_CONNECT,
     WAITING,
 )
 from .service import ProposalInfo, Revealed, SetupService
@@ -511,8 +512,13 @@ class OwnerWeb:
                 f"{len(extra)}.{note}</div>"
             )
         access = _access_box(computed)
-        rows = "".join(_row(item, checked=True) for item in selected) or (
-            "<tr><td colspan=3 class=muted>Nothing would become available.</td></tr>"
+        rows = _selected_rows(selected, change=proposal.kind == KIND_CHANGE)
+        undrafted = (
+            "<div class='box warn'>Muse has not drafted anything yet, so nothing is selected "
+            "and there is nothing to approve. Ask Muse to look at the service and propose what "
+            "it needs, then reload this page. Or decline.</div>"
+            if proposal.kind == KIND_CONNECT and not selected
+            else ""
         )
         suggestion_rows = "".join(_row(item, checked=False) for item in suggested)
         suggestions = (
@@ -538,14 +544,14 @@ class OwnerWeb:
         base = f"{PATH}/{html.escape(token)}"
         body = (
             f"{self._bar()}<main><h1>Review: {html.escape(info.name)}</h1>{problem}"
-            f"{self._summary(proposal, info)}{alignment}{access}"
+            f"{self._summary(proposal, info)}{alignment}{undrafted}{access}"
             "<form method=post action='" + base + "/decide'>"
             "<input type=hidden name=csrf value='{{CSRF}}'>"
             f"<input type=hidden name=digest value='{html.escape(computed.digest)}'>"
             "<h2>What would become available to Muse</h2>"
             "<p class=muted>Untick anything you do not want. Only what stays ticked is "
             "available.</p>"
-            f"<table>{rows}</table>{suggestions}{rest}"
+            f"{rows}{suggestions}{rest}"
             f"<h2>What the adapter does not enforce</h2><div class='box warn'><ul>{''.join(notes)}"
             f"</ul></div>{sections}"
             "<h2>Approve</h2><p class=muted>Approving adds access, so type your owner "
@@ -660,6 +666,46 @@ def _limited_to(operation: Mapping[str, object]) -> str:
     return f" <span class=muted>(only {shown})</span>"
 
 
+_READS_OPEN = 8  # a short list of reads is shown open, a long one folded
+
+
+def _selected_rows(selected: list[Candidate], *, change: bool) -> str:
+    """The summary first: what changes data, or what is new, then the rest folded away."""
+    if not selected:
+        return (
+            "<table><tr><td colspan=3 class=muted>Nothing would become available.</td></tr></table>"
+        )
+
+    def table(items: list[Candidate]) -> str:
+        return "<table>" + "".join(_row(item, checked=True) for item in items) + "</table>"
+
+    if change:
+        new = [item for item in selected if not item.live]
+        kept = [item for item in selected if item.live]
+        head = f"<h3>New in this request ({len(new)})</h3>{table(new)}" if new else ""
+        tail = (
+            f"<details><summary>Already allowed and staying ({len(kept)})</summary>"
+            f"{table(kept)}</details>"
+            if kept
+            else ""
+        )
+        return head + tail
+    writes = [item for item in selected if item.classification != "read"]
+    reads = [item for item in selected if item.classification == "read"]
+    head = (
+        f"<h3>Changes data ({len(writes)}): read these closely</h3>{table(writes)}"
+        if writes
+        else ""
+    )
+    opened = " open" if len(reads) <= _READS_OPEN else ""
+    tail = (
+        f"<details{opened}><summary>Only reads ({len(reads)})</summary>{table(reads)}</details>"
+        if reads
+        else ""
+    )
+    return head + tail
+
+
 def _row(item: Candidate, *, checked: bool) -> str:
     label, shade = _LABEL.get(item.classification, (item.classification, ""))
     box = "checked" if checked else ""
@@ -682,6 +728,11 @@ def _row(item: Candidate, *, checked: bool) -> str:
         if item.limits
         else ""
     )
+    why = (
+        f"<div class=muted>Muse's reason (unverified): {html.escape(item.reason)}</div>"
+        if item.reason
+        else ""
+    )
     detail = (
         "<details><summary class=muted>The server's own description (not verified)</summary>"
         f"<div class=muted>{html.escape(item.description)}</div></details>"
@@ -693,7 +744,7 @@ def _row(item: Candidate, *, checked: bool) -> str:
         f"aria-label='{html.escape(item.name, quote=True)}'></td>"
         f"<td><b>{html.escape(item.name)}</b> <span class=tag>"
         f"{html.escape(_KIND.get(item.kind, item.kind))}</span>"
-        f"<div class=muted>{note}</div>{limited}{detail}</td>"
+        f"<div class=muted>{note}</div>{why}{limited}{detail}</td>"
         f"<td><span class='tag {shade}'>{html.escape(label)}</span><br>{review}</td></tr>"
     )
 

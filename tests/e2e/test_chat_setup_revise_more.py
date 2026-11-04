@@ -54,7 +54,7 @@ def test_only_the_requesting_connection_may_list_or_revise(tmp_path: Path) -> No
             server_id="adapter-setup", label="other", credential_kind="none", actor="test"
         )
         for operation, extra in (
-            ("list_server_tools", {}),
+            ("get_service_details", {}),
             ("revise_proposal", {"includeReads": True}),
         ):
             reply = h.agent.post(
@@ -75,7 +75,7 @@ def test_resources_and_prompts_are_not_listed_as_tools(tmp_path: Path) -> None:
     with chat_harness(tmp_path, manifest=manifest) as h:
         proposal = _open(h, includeReads=True)
         h.review(proposal["reviewLink"], plan="none")
-        body = h.ask("list_server_tools", {"proposalId": proposal["proposalId"]}).json()[
+        body = h.ask("get_service_details", {"proposalId": proposal["proposalId"]}).json()[
             "structuredContent"
         ]
         listed = {item["name"] for item in body["tools"]}
@@ -87,7 +87,7 @@ def test_a_very_long_list_is_cut_and_the_cut_is_said(tmp_path: Path) -> None:
     with chat_harness(tmp_path, manifest=_many(305)) as h:
         proposal = _open(h)
         h.review(proposal["reviewLink"], plan="none")
-        body = h.ask("list_server_tools", {"proposalId": proposal["proposalId"]}).json()[
+        body = h.ask("get_service_details", {"proposalId": proposal["proposalId"]}).json()[
             "structuredContent"
         ]
         assert len(body["tools"]) == 300
@@ -138,7 +138,7 @@ def test_a_closed_proposal_cannot_be_listed_or_revised(tmp_path: Path, closing: 
         else:
             h.clock.advance(3 * 24 * 3600)
         for operation, extra in (
-            ("list_server_tools", {}),
+            ("get_service_details", {}),
             ("revise_proposal", {"includeReads": False}),
         ):
             reply = h.ask(operation, {"proposalId": proposal["proposalId"], **extra})
@@ -223,7 +223,7 @@ def test_revising_a_change_proposal_recompiles_against_the_live_policy(tmp_path:
             "create_isue" in item for item in status["notMatched"]
         )
 
-        listed = h.ask("list_server_tools", {"proposalId": proposal["proposalId"]}).json()[
+        listed = h.ask("get_service_details", {"proposalId": proposal["proposalId"]}).json()[
             "structuredContent"
         ]
         assert any(

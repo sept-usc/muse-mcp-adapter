@@ -269,7 +269,7 @@ def test_the_setup_catalog_is_republished_when_the_code_changes(tmp_path: Path) 
             "find_server",
             "propose_connection",
             "propose_change",
-            "list_server_tools",
+            "get_service_details",
             "revise_proposal",
             "get_proposal_status",
             "list_connections",

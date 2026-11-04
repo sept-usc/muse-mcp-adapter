@@ -58,15 +58,20 @@ Ask Muse in plain words, for example: *"Connect Linear. Read only, and let it cr
 
 A service that needs a sign-in shows you its tools only after you have signed in, so sign-in comes before review.
 
-## Muse does not guess tool names
+## Muse drafts the policy from what the service really offers
 
-Muse cannot know a server's real tool names when it first proposes: the adapter only sees them after you have connected. So Muse proposes in plain terms (`includeReads` for "read and write", `readOnly` for read only, and exact names in `alsoAllow` only when it knows them), and corrects the proposal once the real list is known:
+You do not pick from a list of tools. You say what you want, and Muse drafts the smallest policy that does it, from the service's real details:
 
-1. When `get_proposal_status` says `in_review`, it also lists what is selected and anything that did not match.
-2. `list_server_tools` returns the server's real operations: exact name, whether each only reads or changes data, and whether the proposal has selected it. Names that do not look like plain identifiers are not repeated to Muse. Descriptions are never sent: they come from the server.
-3. `revise_proposal` replaces the request's allow list, exclude list and limits, using those exact names. It changes nothing by itself: the review page's digest changes, so the page you had open is refused, you reload it, read the new list and approve.
+1. **Muse opens a proposal** with only the service and your words. It cannot know the tool names yet, and it is told not to guess them.
+2. **You connect.** You open the link, type your owner password, and give the service token on the page. The adapter fetches everything the service offers and freezes it as an immutable snapshot with a digest. That snapshot is the service's truth.
+3. **Muse reads it** with `get_service_details`: every tool with its argument names, types and allowed values, plus the resources, templates and prompts, and what is selected now. The service's descriptions and addresses are included, cleaned, shortened and labelled as the service's own words. A name that is not a plain identifier is never repeated, and a very long list is cut and the cut is counted.
+4. **Muse drafts** with `revise_proposal`: exact names in `alsoAllow`, a short reason for each in `reasons`, limits in `limitArguments` using the real argument names, and the end time. It asks for no more than the task needs.
+5. **You review a summary.** Anything that changes data comes first, each with Muse's reason (shown as Muse's and unchecked), then the reads folded below. Nothing is drafted until Muse has read the service: a proposal with nothing selected cannot be approved. Each revision changes the page's digest, so you reload before approving.
+6. **You approve with your owner password**, typed every time.
 
-The compiler still only accepts exact names and reports anything it could not match, so a wrong guess from Muse can never widen access. Neither operation works before you have connected the service or after you have approved.
+**Widening as the task needs it.** Access starts small. When a task needs something that is not allowed, Muse calls `get_service_details` with the `connectionId` to see what exists but is not allowed, then `propose_change` with only that operation and a reason. You see only what is new, in its own section, with what already stays folded below, and approve it with your password.
+
+The compiler never reads the descriptions or your words. It checks the exact names Muse sends against the frozen snapshot, reports anything it cannot match (including a reason given for an operation that does not exist), and turns the rest into policy. So a wrong or misled draft from Muse can never widen anything beyond what you approve.
 
 ## What the review page shows
 

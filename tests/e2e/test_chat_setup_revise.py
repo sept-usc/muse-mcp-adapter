@@ -33,7 +33,7 @@ def _names(keys: object) -> set[str]:
 def test_listing_tools_before_the_user_connects_is_refused(tmp_path: Path) -> None:
     with chat_harness(tmp_path, manifest=projects_manifest()) as h:
         proposal = _open(h)
-        for operation in ("list_server_tools", "revise_proposal"):
+        for operation in ("get_service_details", "revise_proposal"):
             reply = h.ask(
                 operation,
                 {
@@ -64,9 +64,9 @@ def test_muse_corrects_a_proposal_whose_names_did_not_match(tmp_path: Path) -> N
         status = h.ask("get_proposal_status", {"proposalId": pid}).json()["structuredContent"]
         assert status["state"] == "in_review"
         assert any("raise_ticket" in item for item in status["notMatched"])
-        assert "list_server_tools" in status["nextStep"]
+        assert "get_service_details" in status["nextStep"]
 
-        listed = h.ask("list_server_tools", {"proposalId": pid}).json()["structuredContent"]
+        listed = h.ask("get_service_details", {"proposalId": pid}).json()["structuredContent"]
         tools = {item["name"]: item for item in listed["tools"]}
         assert {"list_issues", "get_issue", "create_issue", "search_notes"} <= set(tools)
         assert tools["create_issue"]["does"] == "changes data"
@@ -123,7 +123,7 @@ def test_an_empty_revision_and_an_unknown_proposal_are_refused(tmp_path: Path) -
         proposal = _open(h)
         h.review(proposal["reviewLink"], plan="none")
         assert h.ask("revise_proposal", {"proposalId": proposal["proposalId"]}).status_code == 400
-        unknown = h.ask("list_server_tools", {"proposalId": "prop_000000000000"})
+        unknown = h.ask("get_service_details", {"proposalId": "prop_000000000000"})
         assert unknown.status_code == 404
 
 
@@ -167,7 +167,7 @@ def test_names_that_could_carry_instructions_are_not_repeated_to_muse(tmp_path: 
     with chat_harness(tmp_path, manifest=manifest) as h:
         proposal = _open(h, includeReads=True)
         h.review(proposal["reviewLink"], plan="none")
-        listed = h.ask("list_server_tools", {"proposalId": proposal["proposalId"]})
+        listed = h.ask("get_service_details", {"proposalId": proposal["proposalId"]})
         body = listed.json()["structuredContent"]
         assert "ignore previous" not in listed.text
         assert body["notShown"] == 1
