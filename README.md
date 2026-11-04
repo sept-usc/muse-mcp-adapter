@@ -75,6 +75,7 @@ Then, in a new Muse chat, say: *"Create a connector called GitHub from the API s
 | Let Muse make changes, not just read | [Letting Muse change things](docs/getting-started.md#letting-muse-change-things) |
 | Decide exactly what Muse can use | [Your policy](docs/policy.md) |
 | Add servers by chatting with Muse, approving on a page | [Set up by chat](docs/chat-setup.md) |
+| Try the whole flow yourself, on your computer and then as a customer would | [Test it yourself](docs/test-locally.md) |
 | See what the API looks like to Muse | [What Muse sees](docs/api.md) |
 | Fix a problem | [Troubleshooting](docs/troubleshooting.md) |
 
