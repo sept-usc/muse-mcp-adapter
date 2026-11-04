@@ -311,6 +311,7 @@ class SetupService:
             raise ConflictError("The setup connection cannot be changed from here")
         if not (
             request.read_only
+            or request.include_reads
             or request.also_allow
             or request.timeout_seconds
             or request.max_result_bytes

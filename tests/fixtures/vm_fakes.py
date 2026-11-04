@@ -210,6 +210,7 @@ class ContainerTarget(Target):
             text=True,
             env=env,
             timeout=timeout,
+            input=input.decode() if isinstance(input, bytes) else input,
         )
         result = Result(done.returncode, done.stdout, done.stderr)
         if check and not result.ok:
