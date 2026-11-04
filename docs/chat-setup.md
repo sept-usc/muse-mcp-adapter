@@ -41,6 +41,10 @@ This switches on the review pages, restarts the adapter, and prints two things, 
 
 Run `muse-vm chat-setup --rotate-owner-code` for a new owner code (the old one stops working and open review sessions end). Running the command again changes nothing else and prints no secret.
 
+**Prefer a password you can remember?** Run `muse-vm chat-setup --set-owner-password`. It asks twice without echoing, sends the password over the secure channel on standard input (never as an argument, so it is not in a process list or shell history), and keeps only a salted hash. It replaces the generated code. A password must be at least 10 characters and is compared exactly as typed; a generated code ignores case, spaces and dashes. There is one owner password for the whole adapter, not one per connection.
+
+**Approving takes the password every time.** Opening a review page signs you in for 30 minutes so you can read it, but a signed-in browser never approves anything. Pressing **Approve** asks for the owner password again, on the page, whether the request is a first connection or a widening of one you already have. Wrong passwords are counted per proposal and five of them lock that link for a while. Declining needs no password, and neither does anything that only makes access smaller. So a page left open, or a browser session that someone or something else can drive, cannot add access without the password.
+
 ## Use it
 
 Ask Muse in plain words, for example: *"Connect Linear. Read only, and let it create issues."* Muse looks the service up, then gives you a link. What happens next:
@@ -49,7 +53,7 @@ Ask Muse in plain words, for example: *"Connect Linear. Read only, and let it cr
 | --- | --- | --- |
 | 1 | Open the link on your own phone or computer, and type your owner code | Not in Muse's browser. The code is checked by your adapter and never reaches Muse |
 | 2 | Sign in to the service on its own page, or paste its token on the adapter's page | A service that needs no sign-in skips this. The token is stored encrypted and never shown to Muse |
-| 3 | Read the list of what would become available, untick anything you do not want, then **Approve** | Nothing is exposed before this |
+| 3 | Read the list of what would become available, untick anything you do not want, type your owner password, then **Approve** | Nothing is exposed before this, and the password is asked for every time |
 | 4 | In Muse click **Connect** and paste the connector token the page showed you | The page shows it once; it also offers a connection code |
 
 A service that needs a sign-in shows you its tools only after you have signed in, so sign-in comes before review.

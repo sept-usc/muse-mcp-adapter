@@ -788,8 +788,8 @@ class SetupService:
         scope = f"proposal:{proposal.proposal_id}"
         return self._store.count_attempts(scope, since) >= self._settings.attempt_limit
 
-    def unlock(self, proposal: Proposal, code: str) -> str | None:
-        """Check the owner's code. Returns a session secret, or None for a wrong code."""
+    def _code_is_right(self, proposal: Proposal, code: str, *, event: str) -> bool:
+        """Check the owner's code. Wrong ones are counted per proposal and lock it after a few."""
         if self.locked(proposal):
             raise AuthorizationError("Too many wrong codes. This link is locked for a while.")
         stored = self._store.owner_code()
@@ -800,19 +800,25 @@ class SetupService:
             self._store.add_attempt(scope, self._clock())
             self._audit(
                 ACTOR_VISITOR,
-                "setup.unlock.failed",
+                f"setup.{event}.failed",
                 proposal.target_server_id,
                 {"proposalId": proposal.proposal_id},
             )
             if self.locked(proposal):
                 self._audit(
                     ACTOR_VISITOR,
-                    "setup.unlock.locked",
+                    f"setup.{event}.locked",
                     proposal.target_server_id,
                     {"proposalId": proposal.proposal_id, "attempts": self._settings.attempt_limit},
                 )
-            return None
+            return False
         self._store.clear_attempts(scope)
+        return True
+
+    def unlock(self, proposal: Proposal, code: str) -> str | None:
+        """Check the owner's code. Returns a session secret, or None for a wrong code."""
+        if not self._code_is_right(proposal, code, event="unlock"):
+            return None
         secret = secrets.token_urlsafe(24)
         self._store.add_session(
             _hash(secret), self._clock(), self._after(self._settings.session_ttl_seconds)
@@ -960,6 +966,7 @@ class SetupService:
         shown_digest: str,
         chosen: Collection[str],
         reviewed_read: Collection[str],
+        code: str | None = None,
     ) -> Proposal:
         with self._policy_lock:
             return self._decide(
@@ -968,6 +975,7 @@ class SetupService:
                 shown_digest=shown_digest,
                 chosen=chosen,
                 reviewed_read=reviewed_read,
+                code=code,
             )
 
     def _decide(
@@ -978,6 +986,7 @@ class SetupService:
         shown_digest: str,
         chosen: Collection[str],
         reviewed_read: Collection[str],
+        code: str | None,
     ) -> Proposal:
         if proposal.state != IN_REVIEW:
             raise ConflictError("This proposal is not waiting for a decision")
@@ -985,6 +994,13 @@ class SetupService:
             raise ConflictError("What you were shown has changed. Reload the page and look again.")
         if not approve:
             return self._decline(proposal)
+        # Approving is the one thing that adds access, so it takes the owner's password every time,
+        # typed now. A page left unlocked, or a session cookie in a browser someone else can drive,
+        # never approves anything on its own.
+        if not code or not code.strip():
+            raise AuthorizationError("Type your owner password to approve.")
+        if not self._code_is_right(proposal, code, event="approve"):
+            raise AuthorizationError("That owner password is not right. Nothing was approved.")
         computed = Computed.from_json(cast(Mapping[str, object], proposal.computed))
         hours = computed.expires_in_hours
         expires_at = self._after(hours * 3600) if hours else None  # counted from now, the approval

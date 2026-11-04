@@ -71,6 +71,7 @@ def test_the_owners_own_app_is_used_to_sign_in_and_its_secret_stays_private(
             digest=digest_of(page),
             chosen=["tool:find_issue"],
             read=["tool:find_issue"],
+            code=w.owner_code,
         )
         assert approved.status_code == 302
         done = w.browser.get(link).text

@@ -33,5 +33,40 @@ def hash_code(code: str, salt: str) -> str:
     ).hex()
 
 
+PASSWORD_MARK = "pw1:"  # a salt that starts with this belongs to a password the owner chose
+MIN_PASSWORD = 10
+MAX_PASSWORD = 200
+
+
+def check_password(password: str) -> str:
+    """A password the owner chose: long enough, and compared exactly as typed."""
+    if len(password) < MIN_PASSWORD:
+        raise ValueError(f"Use at least {MIN_PASSWORD} characters.")
+    if len(password) > MAX_PASSWORD:
+        raise ValueError(f"Use at most {MAX_PASSWORD} characters.")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in password):
+        raise ValueError("Use printable characters only.")
+    return password
+
+
+def new_password_salt() -> str:
+    return PASSWORD_MARK + new_salt()
+
+
+def hash_password(password: str, salt: str) -> str:
+    return hashlib.scrypt(
+        password.encode(),
+        salt=bytes.fromhex(salt.removeprefix(PASSWORD_MARK)),
+        n=2**15,
+        r=8,
+        p=1,
+        dklen=32,
+        maxmem=64 * 1024 * 1024,
+    ).hex()
+
+
 def matches(code: str, salt: str, expected: str) -> bool:
+    """A password is compared exactly; a generated code ignores case, spaces and dashes."""
+    if salt.startswith(PASSWORD_MARK):
+        return hmac.compare_digest(hash_password(code, salt), expected)
     return hmac.compare_digest(hash_code(code, salt), expected)

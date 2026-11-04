@@ -87,6 +87,7 @@ def test_the_owner_can_take_out_what_was_proposed_and_add_what_was_not(tmp_path:
                 digest=digest_of(page),
                 chosen=["tool:list_issues", "tool:get_issue", "tool:search_notes"],
                 read=["tool:search_notes"],
+                code=h.owner_code,
             ).status_code
             == 302
         )
@@ -127,6 +128,7 @@ def test_a_token_typed_on_the_page_is_encrypted_used_and_never_shown_to_the_agen
                 action="approve",
                 digest=digest_of(page),
                 chosen=["tool:list_issues"],
+                code=h.owner_code,
             ).status_code
             == 302
         )

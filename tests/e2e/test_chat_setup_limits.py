@@ -224,7 +224,11 @@ def test_an_operation_the_owner_adds_on_the_page_keeps_a_limit_that_covers_every
         # the owner ticks create_issue, which nobody asked for
         extra = [*ticked(page), "tool:create_issue"]
         decided = h.post(
-            f"{_path(link)}/decide", action="approve", digest=digest_of(page), chosen=extra
+            f"{_path(link)}/decide",
+            action="approve",
+            digest=digest_of(page),
+            chosen=extra,
+            code=h.owner_code,
         )
         assert decided.status_code == 302
         address, token = connector_from(h.get(link).text)

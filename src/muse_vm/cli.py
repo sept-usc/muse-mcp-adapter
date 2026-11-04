@@ -147,6 +147,22 @@ def _show_chat_setup(result: dict[str, Any]) -> None:
     say("you open it on your own device, sign in or paste a token there, review the list, approve.")
 
 
+def _ask_owner_password() -> str:
+    """Ask twice without echoing. It is sent over the secure channel on stdin, never as an
+    argument, so it is not in a process list or a shell history."""
+    import getpass
+
+    while True:
+        first = getpass.getpass("Choose an owner password (at least 10 characters): ")
+        if len(first) < 10:
+            say("Use at least 10 characters.")
+            continue
+        if getpass.getpass("Type it again: ") != first:
+            say("They did not match. Try again.")
+            continue
+        return first
+
+
 def cmd_chat_setup(args: argparse.Namespace) -> None:
     """Turn on setting up servers by chatting with Muse, with your approval on a page."""
     _, provider = _context(args)
@@ -155,7 +171,18 @@ def cmd_chat_setup(args: argparse.Namespace) -> None:
         say("Turning chat setup on and restarting the adapter…")
         provider.restart_adapter(t)
     words = ["--rotate-owner-code"] if args.rotate_owner_code else []
-    result = Admin(t, actor=args.actor).json("chat-setup-enable", *words)
+    admin = Admin(t, actor=args.actor)
+    if args.set_owner_password:
+        password = _ask_owner_password()
+        admin.json("chat-setup-set-password", stdin=password + "\n")
+        words = []  # the password replaces the generated code
+    result = admin.json("chat-setup-enable", *words)
+    if args.set_owner_password:
+        result.pop("ownerCode", None)
+        result["ownerCodeNote"] = (
+            "Your owner password is set. You type it on your adapter's own review pages to "
+            "approve anything that adds access, never into Muse."
+        )
     _show_chat_setup(result)
 
 
@@ -956,6 +983,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--rotate-owner-code", action="store_true", help="make a new owner code (the old one stops)"
+    )
+    sp.add_argument(
+        "--set-owner-password",
+        action="store_true",
+        help="choose your own owner password instead of a generated code (asked for, not echoed)",
     )
     sp.set_defaults(func=cmd_chat_setup)
     sp = common(commands.add_parser("logs", help="container logs"))

@@ -120,6 +120,7 @@ def test_an_approval_covers_exactly_what_the_page_showed(tmp_path: Path) -> None
             action="approve",
             digest=digest_of(page),
             chosen=["tool:list_issues", "tool:rm_rf_everything"],
+            code=h.owner_code,
         )
         assert beyond.status_code == 200 and "does not offer" in beyond.text
         assert h.status(proposal["proposalId"])["state"] == "in_review"

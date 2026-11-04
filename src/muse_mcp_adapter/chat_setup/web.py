@@ -224,6 +224,7 @@ class OwnerWeb:
                     shown_digest=_first(form, "digest"),
                     chosen=form.get("chosen", []),
                     reviewed_read=form.get("read", []),
+                    code=_first(form, "code"),
                 )
             )
         except Exception as error:  # a page must say what stopped, never fail with a trace
@@ -547,6 +548,10 @@ class OwnerWeb:
             f"<table>{rows}</table>{suggestions}{rest}"
             f"<h2>What the adapter does not enforce</h2><div class='box warn'><ul>{''.join(notes)}"
             f"</ul></div>{sections}"
+            "<h2>Approve</h2><p class=muted>Approving adds access, so type your owner "
+            "password (or code) again, here, every time. Declining needs none.</p>"
+            "<p><input type=password name=code autocomplete=off aria-label='Owner code' "
+            "placeholder='Owner code'></p>"
             "<p><button class=go name=action value=approve>Approve</button> "
             "<button name=action value=decline>Decline</button></p></form></main>"
         )

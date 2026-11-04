@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import secrets
+import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import cast
@@ -23,6 +24,7 @@ from .store import Proposal, SetupStore
 
 COMMANDS = (
     "chat-setup-enable",
+    "chat-setup-set-password",
     "proposals",
     "proposal-link",
     "proposal-decline",
@@ -42,6 +44,10 @@ def add_parsers(commands: _Subparsers[argparse.ArgumentParser]) -> None:
     )
     enable.add_argument(
         "--rotate-owner-code", action="store_true", help="Make a new owner code (the old one stops)"
+    )
+    commands.add_parser(
+        "chat-setup-set-password",
+        help="Choose the owner password: read from standard input, never from the command line",
     )
     listing = commands.add_parser("proposals", help="List what Muse has asked for")
     listing.add_argument("--all", action="store_true", help="Include finished proposals")
@@ -75,6 +81,8 @@ def run(
     store = SetupStore(repository, open_secret_box(args.database))
     if args.command == "chat-setup-enable":
         return _enable(args, repository, config, policy, store)
+    if args.command == "chat-setup-set-password":
+        return _set_password(args, repository, store)
     if args.command == "proposals":
         states = None if args.all else ("waiting_for_owner", "connecting", "in_review")
         return [_summary(item) for item in store.list_proposals(states=states)]
@@ -114,6 +122,33 @@ def run(
     if args.command == "explain-change":
         return _record(store.get_proposal(args.proposal_id))
     raise AssertionError(f"Unhandled command {args.command}")
+
+
+def _set_password(
+    args: argparse.Namespace, repository: SqliteControlPlaneRepository, store: SetupStore
+) -> dict[str, object]:
+    """Replace the owner code with a password the owner chose. It arrives on standard input, so it
+    is never in a process list or a shell history, and only its salted hash is kept."""
+    password = sys.stdin.readline().rstrip("\r\n")
+    try:
+        owner.check_password(password)
+    except ValueError as error:
+        raise InvalidStateError(str(error)) from error
+    now = _now()
+    salt = owner.new_password_salt()
+    store.set_owner_code(owner.hash_password(password, salt), salt, now)
+    repository.record_admin_audit(
+        occurred_at=now,
+        actor=args.actor,
+        action="setup.owner_password.set",
+        server_id=None,
+        data={},
+    )
+    store.drop_sessions()
+    return {
+        "ownerPasswordSet": True,
+        "note": "The owner password is set. Every approval on a review page asks for it.",
+    }
 
 
 def _enable(

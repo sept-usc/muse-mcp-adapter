@@ -226,13 +226,17 @@ class ChatHarness:
         assert reviewed.status_code == 200, reviewed.text
         return reviewed.text
 
-    def approve(self, link: str, page: str, *, drop: tuple[str, ...] = ()) -> Any:
+    def approve(
+        self, link: str, page: str, *, drop: tuple[str, ...] = (), code: str | None = None
+    ) -> Any:
+        """Press Approve, typing the owner code as the page asks every time."""
         keys = [key for key in ticked(page) if key not in drop]
         return self.post(
             f"{_path(link)}/decide",
             action="approve",
             digest=digest_of(page),
             chosen=keys,
+            code=self.owner_code if code is None else code,
         )
 
 

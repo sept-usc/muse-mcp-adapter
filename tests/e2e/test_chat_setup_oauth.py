@@ -50,7 +50,8 @@ def test_a_service_that_signs_in_by_oauth_is_connected_from_one_sentence(tmp_pat
             action="approve",
             digest=digest_of(page),
             chosen=["tool:find_issue"],
-            read=["tool:find_issue"],  # the owner checked it only reads
+            read=["tool:find_issue"],
+            code=w.owner_code,  # the owner checked it only reads
         )
         assert approved.status_code == 302
 
