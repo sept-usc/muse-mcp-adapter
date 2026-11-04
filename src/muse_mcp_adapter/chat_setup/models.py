@@ -81,6 +81,18 @@ _CONNECT_FIELDS = (
     "endpoint",
     "userWords",
     "readOnly",
+    "includeReads",
+    "alsoAllow",
+    "exclude",
+    "timeoutSeconds",
+    "maxResultBytes",
+    "expiresInHours",
+    "limitArguments",
+    "notes",
+)
+REVISE_FIELDS = (
+    "readOnly",
+    "includeReads",
     "alsoAllow",
     "exclude",
     "timeoutSeconds",
@@ -202,6 +214,7 @@ class SetupRequest:
     endpoint: str | None = None
     connection_id: str | None = None
     read_only: bool = False
+    include_reads: bool = False  # every read operation, plus whatever else is asked for
     also_allow: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
     timeout_seconds: int | None = None
@@ -218,6 +231,7 @@ class SetupRequest:
             "endpoint": self.endpoint,
             "connectionId": self.connection_id,
             "readOnly": self.read_only,
+            "includeReads": self.include_reads,
             "alsoAllow": list(self.also_allow),
             "exclude": list(self.exclude),
             "timeoutSeconds": self.timeout_seconds,
@@ -259,6 +273,7 @@ class SetupRequest:
             endpoint=endpoint,
             connection_id=connection_id,
             read_only=_boolean(value.get("readOnly"), "readOnly"),
+            include_reads=_boolean(value.get("includeReads"), "includeReads"),
             also_allow=_names(value.get("alsoAllow"), "alsoAllow"),
             exclude=_names(value.get("exclude"), "exclude"),
             timeout_seconds=_integer(value.get("timeoutSeconds"), "timeoutSeconds", 1, 300),

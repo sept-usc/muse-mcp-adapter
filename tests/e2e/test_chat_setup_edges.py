@@ -269,6 +269,8 @@ def test_the_setup_catalog_is_republished_when_the_code_changes(tmp_path: Path) 
             "find_server",
             "propose_connection",
             "propose_change",
+            "list_server_tools",
+            "revise_proposal",
             "get_proposal_status",
             "list_connections",
             "explain_connection",
@@ -295,7 +297,7 @@ def test_what_muse_must_send_to_the_setup_connector_is_plain_json_schema(tmp_pat
     with chat_harness(tmp_path) as h:
         spec: Any = h.agent.get(f"/c/{h.setup_slug}/openapi.json").json()
         operations = {path: item for path, item in spec["paths"].items() if "/operations/" in path}
-        assert len(operations) == 11
+        assert len(operations) == 13
 
         def walk(node: object, where: str) -> None:
             if isinstance(node, dict):

@@ -16,6 +16,7 @@ from .secrets import SecretBox
 
 _APP_PREFIX = "OAUTH_APP:"
 _JSON_FIELDS = {
+    "request": "request_json",
     "computed": "computed_json",
     "decision": "decision_json",
     "applied": "applied_json",

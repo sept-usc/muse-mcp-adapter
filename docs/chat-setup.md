@@ -54,6 +54,16 @@ Ask Muse in plain words, for example: *"Connect Linear. Read only, and let it cr
 
 A service that needs a sign-in shows you its tools only after you have signed in, so sign-in comes before review.
 
+## Muse does not guess tool names
+
+Muse cannot know a server's real tool names when it first proposes: the adapter only sees them after you have connected. So Muse proposes in plain terms (`includeReads` for "read and write", `readOnly` for read only, and exact names in `alsoAllow` only when it knows them), and corrects the proposal once the real list is known:
+
+1. When `get_proposal_status` says `in_review`, it also lists what is selected and anything that did not match.
+2. `list_server_tools` returns the server's real operations: exact name, whether each only reads or changes data, and whether the proposal has selected it. Names that do not look like plain identifiers are not repeated to Muse. Descriptions are never sent: they come from the server.
+3. `revise_proposal` replaces the request's allow list, exclude list and limits, using those exact names. It changes nothing by itself: the review page's digest changes, so the page you had open is refused, you reload it, read the new list and approve.
+
+The compiler still only accepts exact names and reports anything it could not match, so a wrong guess from Muse can never widen access. Neither operation works before you have connected the service or after you have approved.
+
 ## What the review page shows
 
 - **Your words, as Muse relayed them**, in a box marked as unverified. Judge by the list below them, not by the words. Invisible and direction-changing characters (a right-to-left override, zero-width marks) are dropped and control characters become spaces before they are stored, so what you read is what is recorded.

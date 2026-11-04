@@ -193,7 +193,7 @@ def compile_proposal(
     }
 
     requested: list[str] = []
-    if request.read_only:
+    if request.read_only or request.include_reads:
         # a template the adapter cannot fill in fails on every call: not offered unasked
         requested.extend(
             key
