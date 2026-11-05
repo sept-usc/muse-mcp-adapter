@@ -522,7 +522,7 @@ class SetupService:
         state = _SHOWN.get(proposal.state, proposal.state)
         body: dict[str, object] = {"proposalId": proposal.proposal_id, "state": state}
         messages = {
-            WAITING: "Waiting for the user to open the review link and enter their owner code.",
+            WAITING: "Waiting for the user to open the review link and enter their owner password.",
             CONNECTING: "The user has started: they are signing in or entering a token.",
             IN_REVIEW: "The user is reviewing what would become available.",
             APPROVED: "The user approved. It is being put in place.",
@@ -819,10 +819,12 @@ class SetupService:
     def _code_is_right(self, proposal: Proposal, code: str, *, event: str) -> bool:
         """Check the owner's code. Wrong ones are counted per proposal and lock it after a few."""
         if self.locked(proposal):
-            raise AuthorizationError("Too many wrong codes. This link is locked for a while.")
+            raise AuthorizationError("Too many wrong tries. This link is locked for a while.")
         stored = self._store.owner_code()
         if stored is None:
-            raise InvalidStateError("No owner code has been set. Run chat-setup-enable.")
+            raise InvalidStateError(
+                "No owner password or code has been set. Run chat-setup-enable."
+            )
         scope = f"proposal:{proposal.proposal_id}"
         if not owner.matches(code, stored[1], stored[0]):
             self._store.add_attempt(scope, self._clock())

@@ -44,7 +44,7 @@ def test_the_agents_token_opens_nothing_on_the_review_pages(tmp_path: Path) -> N
         bearer = {"Authorization": f"Bearer {h.setup_token}"}
 
         opened = h.agent.get(_path(link), headers=bearer, follow_redirects=False)
-        assert opened.status_code == 200 and "owner code" in opened.text.lower()
+        assert opened.status_code == 200 and "owner password" in opened.text.lower()
         assert "list_issues" not in opened.text
 
         # even with a valid cross-site token, a session is needed to change anything

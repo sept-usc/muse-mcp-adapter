@@ -109,7 +109,7 @@ class OwnerWeb:
             return self._message(*closed)
         csrf = _csrf_of(request)
         if not unlocked:
-            stopped = "This request stopped. Enter your owner code to see why."
+            stopped = "This request stopped. Enter your owner password to see why."
             return self._unlock_page(proposal, token, csrf, intro=stopped if closed else None)
         return await self._state_page(proposal, token, csrf)
 
@@ -152,7 +152,7 @@ class OwnerWeb:
                 context.proposal,
                 context.token,
                 context.csrf,
-                "That code is not right.",
+                "That password is not right.",
                 status=403,
             )
         response = redirect(f"{PATH}/{context.token}")
@@ -325,24 +325,25 @@ class OwnerWeb:
         if self._service.locked(proposal):
             return self._message(
                 "Locked",
-                "Too many wrong codes. This link is locked for a while. Ask for a new request.",
+                "Too many wrong tries. This link is locked for a while. Ask for a new request.",
                 429,
             )
         problem = f"<div class='box bad'>{html.escape(error)}</div>" if error else ""
         if intro:
             problem = f"<div class=box>{html.escape(intro)}</div>{problem}"
         body = (
-            f"{self._bar()}<main><h1>Enter your owner code</h1>"
-            "<p>Muse asked your adapter to set something up. To look at it, type the owner code "
-            "that was shown on your own machine when chat setup was turned on. Only type it "
+            f"{self._bar()}<main><h1>Enter your owner password</h1>"
+            "<p>Muse asked your adapter to set something up. To look at it, type your owner "
+            "password (or, if you have not chosen one, the owner code that was shown on your own "
+            "machine when chat setup was turned on). Only type it "
             f"here, on this address: <b>{html.escape(self._host)}</b>.</p>{problem}"
             f"<form method=post action='{PATH}/{html.escape(token)}/unlock'>"
             "<input type=hidden name=csrf value='{{CSRF}}'>"
             "<p><input type=password name=code autocomplete=off autocapitalize=characters "
-            "autofocus aria-label='Owner code'></p><button class=go>Continue</button></form>"
+            "autofocus aria-label='Owner password'></p><button class=go>Continue</button></form>"
             "</main>"
         )
-        return self._with_csrf(("Enter your owner code", body, status), csrf)
+        return self._with_csrf(("Enter your owner password", body, status), csrf)
 
     # --- page bodies ---------------------------------------------------------------------
 
@@ -556,7 +557,7 @@ class OwnerWeb:
             f"</ul></div>{sections}"
             "<h2>Approve</h2><p class=muted>Approving adds access, so type your owner "
             "password (or code) again, here, every time. Declining needs none.</p>"
-            "<p><input type=password name=code autocomplete=off aria-label='Owner code' "
+            "<p><input type=password name=code autocomplete=off aria-label='Owner password' "
             "placeholder='Owner code'></p>"
             "<p><button class=go name=action value=approve>Approve</button> "
             "<button name=action value=decline>Decline</button></p></form></main>"

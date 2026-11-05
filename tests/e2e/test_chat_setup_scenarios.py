@@ -30,7 +30,7 @@ from tests.fixtures.chat_setup import (
 from tests.fixtures.service_harness import PUBLIC_URL
 
 CSRF_FIELD = re.compile(r"name=csrf value='([^']+)'")
-CODE_PROMPT = "Enter your owner code"
+CODE_PROMPT = "Enter your owner password"
 
 
 def _path(link_or_path: str) -> str:

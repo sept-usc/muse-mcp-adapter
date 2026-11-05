@@ -217,7 +217,7 @@ def test_without_an_owner_code_nothing_can_be_unlocked(tmp_path: Path) -> None:
         _sql(h, "DELETE FROM owner_credential")
         h.get(link)
         response = h.post(f"{_path(link)}/unlock", code=h.owner_code)
-        assert response.status_code == 409 and "No owner code" in response.text
+        assert response.status_code == 409 and "No owner password or code" in response.text
 
 
 def test_steps_out_of_order_after_the_end_do_nothing(tmp_path: Path) -> None:
@@ -244,7 +244,7 @@ def test_a_review_link_is_shown_clear_of_clutter_when_it_is_unknown_or_ended(
             f"WHERE proposal_id = '{proposal['proposalId']}'",
         )
         stopped = h.get(proposal["reviewLink"])  # only the owner is told why
-        assert "owner code" in stopped.text.lower() and "It broke." not in stopped.text
+        assert "owner password" in stopped.text.lower() and "It broke." not in stopped.text
         h.unlock(proposal["reviewLink"])
         failed = h.get(proposal["reviewLink"])
         assert failed.status_code == 409 and "It broke." in failed.text

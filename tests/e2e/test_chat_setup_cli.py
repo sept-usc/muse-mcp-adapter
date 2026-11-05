@@ -44,7 +44,7 @@ def test_a_rotated_owner_code_stops_the_old_one_and_ends_open_sessions(tmp_path:
         assert h.get(link).status_code == 200  # unlocked
 
         new = run_cli(h.database, h.config_path, "chat-setup-enable", "--rotate-owner-code")
-        assert h.get(link).text.count("owner code") >= 1  # the open session ended
+        assert h.get(link).text.count("owner password") >= 1  # the open session ended
         assert h.unlock(link, old).status_code == 403
         assert h.unlock(link, str(new["ownerCode"])).status_code == 302
 

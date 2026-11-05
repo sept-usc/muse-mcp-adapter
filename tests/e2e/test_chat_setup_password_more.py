@@ -145,11 +145,12 @@ def test_setting_a_password_ends_open_sessions_and_is_recorded(
         proposal = _open(h)
         link = proposal["reviewLink"]
         assert h.unlock(link).status_code == 302
-        assert "owner code" not in h.get(link).text  # signed in: the page is shown, not the prompt
+        # signed in: the page is shown, not the prompt
+        assert "owner password" not in h.get(link).text
         monkeypatch.setattr(sys, "stdin", io.StringIO("brand new password\n"))
         result = run_cli(h.database, h.config_path, "chat-setup-set-password")
         assert result["ownerPasswordSet"] is True and "brand new password" not in json.dumps(result)
-        assert "owner code" in h.get(link).text  # the old session is gone: the page asks again
+        assert "owner password" in h.get(link).text  # the old session is gone: the page asks again
         assert any(action == "setup.owner_password.set" for _, action in _audit(h))
         assert run_cli(h.database, h.config_path, "audit-verify")["ok"] is True
 
