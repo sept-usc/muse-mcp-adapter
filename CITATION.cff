@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If this software helps your work, please cite it as below."
+title: "Muse MCP Adapter"
+abstract: "A self-hosted gateway that lets Muse use MCP servers such as GitHub and Linear, with only the access its owner approves."
+type: software
+authors:
+  - name: "SEPT Lab, University of Southern California"
+    website: "https://septlab.com/"
+repository-code: "https://github.com/sept-usc/muse-mcp-adapter"
+url: "https://github.com/sept-usc/muse-mcp-adapter"
+license: MIT
+date-released: "2026-11-04"
+keywords:
+  - muse
+  - mcp
+  - mcp-server
+  - model-context-protocol
+  - ai-agent
+  - agent-security
