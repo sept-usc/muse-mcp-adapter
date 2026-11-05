@@ -54,6 +54,19 @@ Add `-v` to any `muse-vm` command to print every command it runs. If `up` fails 
 | A write shows `UNKNOWN` | The call may or may not have happened | Check the other system, then settle it with the adapter's `reconcile` command ([usage guide](usage.md#1-command-line-tool)). It is never retried automatically |
 | Muse reports success but nothing changed | An identical write within 30 seconds of an earlier one is treated as a retry and replays the first result | The response says `idempotentReplay`. Ask again after a moment, or send an `Idempotency-Key` |
 
+## While adding servers by chat ([set up by chat](chat-setup.md))
+
+| What you see | Why | What to do |
+|---|---|---|
+| The review page says nothing is drafted, and Approve is refused | Muse has not yet read what the service offers and drafted a policy. An empty proposal cannot be approved | Tell Muse you are on the review page so it calls `get_service_details` and `revise_proposal`, then reload the page |
+| "That owner password is not right" | A typo, or you are using the old code after choosing a password | Try again. To choose a new one: `muse-vm chat-setup --set-owner-password`. For a new generated code: `muse-vm chat-setup --rotate-owner-code` |
+| "Too many wrong tries. This link is locked for a while" | Five wrong tries on one proposal | Wait 15 minutes. `proposal-link --proposal-id ID` prints a fresh link, but the lock stays until the time passes |
+| The link stopped working | Muse repeated its request while your page was open and got a new link, which ended the old one | Ask Muse for the current link |
+| "What is live changed while you were reviewing" | Muse made the connection smaller while you read a change | Ask for the change again |
+| Muse still lists operations you switched off or added | Muse keeps the connector description it first read | Ask Muse to refresh the connector |
+| Muse's secure token card does not reach the adapter | Seen on some tries | Create the connector again under a new name |
+| Muse has filled the limit of waiting proposals | A proposal not acted on ends after a day, and there is a limit on how many wait | `proposal-decline --all` on the machine ([the record](chat-setup.md#the-record)) |
+
 ## While it runs
 
 | What you see | Why | What to do |

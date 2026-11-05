@@ -53,10 +53,12 @@ Muse ──(token or OAuth)──▶ Adapter ──(policy-checked, your credent
 
 **Setup by chat** (off by default; [how it works](chat-setup.md))
 - The setup connector can only look up, open a proposal, explain, and make access smaller. It has no operation that publishes, activates, links, stores a secret or widens access, and no field that accepts a secret.
-- A proposal changes nothing. It takes effect only when the owner approves it on a review page, with the owner code typed in a browser session. The setup connector's token opens nothing there.
+- A proposal changes nothing. It takes effect only when the owner approves it on a review page, and approving asks for the owner password every time: a signed-in browser alone approves nothing. The setup connector's token opens nothing there.
 - The approval is bound to a digest of what the page showed and covers only what the server offered. A change that makes access smaller applies at once; anything else is a proposal.
 - An address the adapter does not list is not contacted before the owner presses the button. Text written by an unapproved server never reaches Muse; it appears only on the review page, escaped and marked as the server's.
-- The owner code is stored as a salted scrypt hash; five wrong codes lock a link for 15 minutes; forms carry a cross-site token; pages refuse framing. Tokens typed on a page are stored encrypted, with the key that already protects provider tokens.
+- What the service offers is read once, with the owner's credential, and frozen as an immutable snapshot with a digest. The agent drafts the policy from that snapshot, and a deterministic compiler checks only exact names against it, so a wrong or misled draft cannot reach beyond what the service really offers and the owner approves. Descriptions and addresses from the service are cleaned, shortened and marked as the service's own words.
+- Access starts small. Widening is a proposal with one operation and a reason, approved with the owner password like any other; making access smaller needs no approval.
+- The owner password (or generated code) is stored as a salted scrypt hash; five wrong ones lock a link for 15 minutes; forms carry a cross-site token; pages refuse framing. Tokens typed on a page are stored encrypted, with the key that already protects provider tokens.
 - Every step is on a hash chain in the administrative audit, and each catalog version records the proposal and words it came from.
 
 **Availability**

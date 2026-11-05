@@ -3,7 +3,8 @@
 | Task | Command |
 |---|---|
 | Health, containers, connected servers | `muse-vm status`, `muse-vm selfcheck`, `muse-vm servers` |
-| Add another MCP server | `muse-vm add-server <name>` (see `muse-vm presets`); it gets its own connector and token |
+| Add another MCP server | Ask Muse, if [chat setup](chat-setup.md) is on, or `muse-vm add-server <name>` (see `muse-vm presets`); each gets its own connector and token |
+| Choose or reset the owner password for review pages | `muse-vm chat-setup --set-owner-password`, or `--rotate-owner-code` for a new generated code |
 | Change what Muse can use | `muse-vm expose SERVER --allow TOOL` / `--deny TOOL` |
 | Logs | `muse-vm logs` (adapter), `muse-vm logs tailscale` |
 | New version | `pipx upgrade muse-mcp-adapter` (or `git pull` in your checkout, and review what changed), then `muse-vm upgrade`: the address, connections and data stay |

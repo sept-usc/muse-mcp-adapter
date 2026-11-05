@@ -124,7 +124,7 @@ This is what a customer does. It creates billable resources (a small VM on Googl
 
 `doctor` says what would stop a deployment before anything is created. `setup` asks where to run the adapter (a new Google Cloud VM, or a Linux machine of yours with `--ssh user@host`), opens up to two Tailscale links for you to approve, builds and starts the adapter, and checks it from outside and inside. It takes 5 to 10 minutes and is safe to run again. [Getting started](getting-started.md) explains each step. `--chat-setup` also turns on adding servers by chat, so it skips the question about which servers to connect.
 
-At the end it prints, once each: **a sentence to give Muse with a token**, and **your owner code**. Keep both. The owner code goes only on your adapter's own review pages, never into Muse.
+At the end it prints, once each: **a sentence to give Muse with a token**, and **your owner code**. Keep both. To use a password you choose instead, run `.venv/bin/muse-vm chat-setup --set-owner-password`. The owner code or password goes only on your adapter's own review pages, never into Muse.
 
 **Add the one connector by hand.** In a new Muse chat send the sentence, click **Connect**, and paste the token into Muse's own field. This is the only connector you add yourself.
 
@@ -133,7 +133,9 @@ At the end it prints, once each: **a sentence to give Muse with a token**, and *
 | You say | What should happen |
 | --- | --- |
 | *Connect my GitHub, read only, only the repository OWNER/REPO, for the next two hours.* | Muse gives you a link. Nothing is exposed yet |
-| (on your phone or computer) open the link, type the owner code, paste the GitHub token, read the list, **Approve** | The page shows a connector address and token once |
+| (on your phone or computer) open the link, type the owner password, paste the GitHub token | The adapter reads what GitHub offers and freezes it. The page says Muse has not drafted a policy yet, and refuses to approve an empty one |
+| *I am on the review page.* | Muse reads the details and drafts the smallest policy, with a reason for each operation |
+| (reload the page) read the summary, type the owner password again, **Approve** | The page shows a connector address and token once |
 | (in Muse) click **Connect** and paste that token | Muse says the connector works |
 | *List the open issues in OWNER/REPO.* | Real data |
 | *List the open issues in SOMEONE/ELSE.* | Refused: the value is not the one you limited it to |
@@ -164,7 +166,7 @@ sudo docker compose exec adapter muse-mcp-adapter --database /data/adapter.db --
 ## While you test
 
 - **A link stops working.** If Muse repeats a request while your page is open, you may get a new link and the old one stops. Ask Muse for the current link.
-- **A link is locked.** Five wrong owner codes lock a link for 15 minutes. `proposal-link --proposal-id ID` prints a fresh link, but the lock stays until the 15 minutes pass.
+- **A link is locked.** Five wrong owner passwords lock a link for 15 minutes. `proposal-link --proposal-id ID` prints a fresh link, but the lock stays until the 15 minutes pass.
 - **"What is live changed while you were reviewing."** Muse made the connection smaller while you were reading a change. Ask for the change again.
 - **Muse's own limits.** Muse's secure token card has failed to reach the adapter on some tries. A new connector name has worked.
 - **What is not enforced.** The adapter does not yet ask you before each call, and limits reach tools only, not prompts or address templates. The review page lists these under what is not enforced.

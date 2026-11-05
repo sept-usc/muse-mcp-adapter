@@ -4,6 +4,12 @@ Adding a server today means a terminal: register it, sign in, draft a policy, pu
 
 It is off until you turn it on, and nothing changes for an adapter that does not.
 
+<p align="center">
+  <img src="figures/connect-by-chat.svg" alt="The nine steps of connecting a server by chat: you ask Muse, Muse proposes, the adapter returns a review link, you type the owner password and the token on your own page, the adapter freezes what the service offers, Muse drafts the policy, you approve with the owner password, the page shows the connector token once, you connect it in Muse." width="1000">
+</p>
+
+The same flow as text:
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -12,14 +18,17 @@ sequenceDiagram
     participant Setup as Setup connector
     participant Page as Review page
     participant Server as MCP server
-    You->>Muse: connect Linear, read only, let it create issues
-    Muse->>Setup: propose_connection
+    You->>Muse: connect GitHub, read and open PRs, 3 hours
+    Muse->>Setup: propose_connection (the service and your words)
     Setup-->>Muse: a review link, nothing exposed yet
     Muse-->>You: open this link on your own device
-    You->>Page: owner code
-    Page->>Server: sign in on the server's own page
-    Page-->>You: the list of what would become available
-    You->>Page: approve
+    You->>Page: owner password, then the service token
+    Page->>Server: look at what it offers
+    Page-->>Setup: frozen as an immutable snapshot
+    Muse->>Setup: get_service_details
+    Setup-->>Muse: tools, arguments, resources, prompts
+    Muse->>Setup: revise_proposal (exact names, a reason for each)
+    You->>Page: read the summary, owner password, approve
     Page-->>You: connector address and token, shown once
     Muse->>Setup: get_proposal_status
     Setup-->>Muse: ready, create the connector from this address
@@ -37,7 +46,7 @@ Or turn it on while installing: `muse-vm setup --chat-setup` (or `chat_setup = t
 This switches on the review pages, restarts the adapter, and prints two things, each **once**:
 
 1. A sentence to give Muse, and a token. In a new Muse chat send the sentence, click **Connect**, and paste the token into Muse's own secure field. This is the only connector you add by hand.
-2. Your **owner code**. Keep it in a password manager. You type it only on your adapter's own review pages, never into Muse.
+2. Your **owner code**. Keep it in a password manager, or replace it with a password you choose (next paragraphs). You type it only on your adapter's own review pages, never into Muse.
 
 Run `muse-vm chat-setup --rotate-owner-code` for a new owner code (the old one stops working and open review sessions end). Running the command again changes nothing else and prints no secret.
 
@@ -51,10 +60,11 @@ Ask Muse in plain words, for example: *"Connect Linear. Read only, and let it cr
 
 | Step | You do | Notes |
 | --- | --- | --- |
-| 1 | Open the link on your own phone or computer, and type your owner code | Not in Muse's browser. The code is checked by your adapter and never reaches Muse |
-| 2 | Sign in to the service on its own page, or paste its token on the adapter's page | A service that needs no sign-in skips this. The token is stored encrypted and never shown to Muse |
-| 3 | Read the list of what would become available, untick anything you do not want, type your owner password, then **Approve** | Nothing is exposed before this, and the password is asked for every time |
-| 4 | In Muse click **Connect** and paste the connector token the page showed you | The page shows it once; it also offers a connection code |
+| 1 | Open the link on your own phone or computer, and type your owner password | Not in Muse's browser. The password is checked by your adapter and never reaches Muse. It opens the page for 30 minutes of reading and approves nothing |
+| 2 | Sign in to the service on its own page, or paste its token on the adapter's page | A service that needs no sign-in skips this. The token is stored encrypted and never shown to Muse. The adapter then reads what the service offers and freezes it |
+| 3 | Tell Muse you are on the page | Muse reads the frozen details and drafts the smallest policy that does what you asked, with a reason for each operation ([below](#muse-drafts-the-policy-from-what-the-service-really-offers)) |
+| 4 | Reload the page, read the summary, untick anything you do not want, type your owner password, then **Approve** | Nothing is exposed before this, and the password is asked every time |
+| 5 | In Muse click **Connect** and paste the connector token the page showed you | The page shows it once; it also offers a connection code |
 
 A service that needs a sign-in shows you its tools only after you have signed in, so sign-in comes before review.
 
@@ -92,7 +102,7 @@ Muse reads web pages and messages written by other people, so what it says can b
 
 - **The only operations it has** look things up, open a proposal, explain, and make access smaller. There is no operation that publishes, activates, links, stores a secret or widens anything. The connector's catalog is generated from code and pinned like any other.
 - **A proposal changes nothing.** It is a record plus a link. The server is not contacted for an address the adapter does not know until you press the button.
-- **The approval needs your owner code**, typed in a browser session. The setup connector's token opens nothing on the review pages. Five wrong codes lock that link for 15 minutes, and a stale or forged form is refused by a cross-site token.
+- **The approval needs your owner password, every time**, typed on the page. A signed-in browser alone approves nothing, and the setup connector's token opens nothing on the review pages. Five wrong passwords lock that link for a while, and a stale or forged form is refused by a cross-site token.
 - **The rule is kept where access goes live, too.** The component that puts a policy into effect refuses to activate a wider one on the agent's behalf, whoever asks, so the rule does not depend on every caller remembering to check.
 - **Your approval covers exactly what you saw.** It is bound to a digest of the page. If anything differs, it is refused and you are asked to look again.
 - **No secret goes through the chat.** No operation has a field for one, and a refusal does not repeat what was sent.
@@ -178,7 +188,7 @@ docker compose exec adapter muse-mcp-adapter --database /data/adapter.db --confi
 
 ## Limits and honest notes
 
-- **The owner code is a typed secret.** A look-alike page could ask for it. Only type it on your adapter's own address, which every review page shows at the top. Passkeys would remove this weakness and are not built yet.
+- **The owner password (or code) is a typed secret.** A look-alike page could ask for it. Only type it on your adapter's own address, which every review page shows at the top. Passkeys would remove this weakness and are not built yet.
 - **Muse's own prompts are not relied on.** Whether Muse asks before it calls a write is Muse's behaviour; the approval here does not depend on it.
 - **The audit chain detects edits and removals, not an attacker who rebuilds it.** Anyone with root on the machine already holds the adapter's keys; pin the head hash elsewhere.
 - **Muse still has two steps of its own**: creating the connector and entering its token.

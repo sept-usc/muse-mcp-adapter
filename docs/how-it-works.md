@@ -2,7 +2,8 @@
 
 ## What you can use it for
 
-- **Look things up from Muse.** Connect a documentation or knowledge server, such as Microsoft Learn, and Muse can search official documentation and read whole pages while you chat. Ask "How do I raise the function timeout for Azure Functions on the Consumption plan?" and Muse searches, then answers from the real documentation.
+- **Give Muse a repository, not your account.** Connect GitHub with a token limited to one repository, and Muse can read issues and pull requests and, only if you approve it, open them or comment. [A worked example](connect-github-to-muse.md).
+- **Look things up from Muse.** Connect a documentation or knowledge server and Muse can search it and read whole pages while you chat.
 - **Work with your tools through chat.** Connect an issue tracker, a wiki, or a database server, such as Linear or Atlassian, so Muse can read records and, with your confirmation, change them. Every write is marked, confirmed with you first, and runs once.
 - **Share only part of a server.** A server may offer dozens of tools. Publish just the read-only ones, or just the three you need, and the rest do not exist for Muse.
 - **Bring your own MCP servers to Muse.** Any MCP server, including one you wrote, becomes a Muse connector. You do not hand-write an API description or build a separate connector for each tool.
@@ -24,6 +25,8 @@ flowchart LR
     classDef you stroke:#4f8fd6,stroke-width:2px;
     class C you;
 ```
+
+> **Adding servers by chat.** With [chat setup](chat-setup.md) on, steps 2 and 3 below become a conversation: you tell Muse what you want, the adapter freezes what the service really offers as a snapshot, Muse drafts the smallest policy from it, and you approve it on your own page with your owner password. Access starts small and widens one operation at a time.
 
 1. **You run the adapter on a small Linux machine you control.** One guided command, `muse-vm setup`, builds it from the release you installed (or your checkout) and starts it. The machine gets a public HTTPS address through Tailscale Funnel, and nothing on it accepts inbound connections.
 2. **You connect an MCP server.** `muse-vm add-server` registers the server, looks at what it offers, and drafts a policy that exposes only its read-only tools. You decide whether to expose more.
@@ -55,8 +58,10 @@ You run the adapter in your own environment, on your own machine and with your o
 
 | Term | What it means |
 | --- | --- |
-| **Server** | An MCP server you register by its address, such as Microsoft Learn or Linear. |
+| **Server** | An MCP server you register by its address, such as GitHub or Linear. |
 | **Policy** | Your list of what Muse may use. Anything not on it does not exist for Muse. |
 | **Catalog** | The approved, versioned result of your policy. This is what Muse sees, and you can roll back to an earlier version. |
 | **Connection** | One link between Muse and **one** MCP server: its own connector URL, token, policy, and credential. Add a second server and you get a second connection. It is a record inside the adapter, not a separate program, so one adapter process holds as many connections as you create. |
+| **Snapshot** | What a service offers, read once with your credential and frozen with a digest when you connect it by chat. Muse drafts from it, and a draft can only name things that are in it. |
+| **Owner password** | What you type on your own review pages to open them and, every time, to approve. Muse never sees it. |
 | **Connector URL** | The address you give Muse for a connection. Its random part only keeps the address private and routes the request to the right connection. It is not the security: every call still needs the connection's token. |
