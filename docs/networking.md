@@ -11,6 +11,7 @@ This page says what listens where, who can reach it, and what is deliberately cl
 
    you ──SSH (Google Cloud: through IAP)──▶ machine ──docker exec──▶ adapter CLI      (administration)
    you ──browser──▶ Tailscale Funnel ──▶ /connect, /oauth/callback, /c/<slug>/oauth/*  (sign-in pages)
+   you ──browser──▶ Tailscale Funnel ──▶ /review/<link>     (review pages; only with chat setup on)
 ```
 
 The machine makes outbound connections to Tailscale, to Docker Hub and PyPI when it builds, and to the MCP servers. It accepts no inbound connection: Tailscale carries visitors in over the connection the machine opened.
@@ -26,8 +27,9 @@ Only the Funnel address is public. It forwards to the adapter, which serves exac
 | `POST /c/<slug>/operations/<id>` and `GET /c/<slug>/executions/…`, `/artifacts/…` | Muse | Bearer token for that connection |
 | `/c/<slug>/oauth/*`, `/.well-known/…/c/<slug>` | Muse signing in | Connection code on the consent page; PKCE |
 | `GET /connect/<nonce>`, `GET /oauth/callback` | You, signing in at an MCP provider | One-time nonce, browser-bound cookie and state |
+| `/review/<link>` and `/review/<link>/…` | You, reviewing what Muse asked for. Present only when [chat setup](chat-setup.md) is on | An unguessable link (256-bit), then your owner password (or code) in a browser session, the password again to approve, a cross-site token on every form, and a lock after five wrong tries |
 
-Everything else returns 404. There are no administrative routes, and every response carries `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. Request bodies over 1 MiB are refused.
+Everything else returns 404. There are no administrative routes. The one place a change can be approved over the network is the review page of [chat setup](chat-setup.md), which is off by default and needs your owner password (or code) for every approval. Every response carries `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. Request bodies over 1 MiB are refused.
 
 ## Not public (and why)
 

@@ -46,19 +46,26 @@ class Admin:
         self.target, self.actor, self.dev_network = target, actor, dev_network
 
     # ---- plumbing ----------------------------------------------------------------------------
-    def run(self, *args: str, check: bool = True, timeout: float = 180) -> Result:
+    def run(
+        self,
+        *args: str,
+        check: bool = True,
+        timeout: float = 180,
+        stdin: str | None = None,
+    ) -> Result:
         flags = ["--actor", self.actor]
         if self.dev_network:  # only for trying the adapter against servers on a private network
             flags += ["--allow-http", "--allow-private-network"]
         words = [*BASE, *flags, *args]
         return self.target.compose(
             "exec -T adapter " + " ".join(shlex.quote(word) for word in words),
+            input=stdin,
             check=check,
             timeout=timeout,
         )
 
-    def json(self, *args: str, timeout: float = 180) -> Any:
-        result = self.run(*args, timeout=timeout)
+    def json(self, *args: str, timeout: float = 180, stdin: str | None = None) -> Any:
+        result = self.run(*args, timeout=timeout, stdin=stdin)
         try:
             return json.loads(result.stdout)
         except ValueError:

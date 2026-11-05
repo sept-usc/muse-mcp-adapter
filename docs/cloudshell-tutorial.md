@@ -51,6 +51,8 @@ Create a connector called GitHub from the API spec at <the connector address>
 
 Click **Connect**, accept Muse's consent dialog, and paste the token. Then ask Muse to use it.
 
+**Prefer to add servers by chatting with Muse?** Run `muse-vm chat-setup` on your own computer or in this shell. It prints one connector to add by hand and your owner code, and afterwards you ask Muse for servers and approve them on a page of your own. See [set up by chat](chat-setup.md).
+
 ## Clean up
 
 To stop paying for it, pause or remove the VM:

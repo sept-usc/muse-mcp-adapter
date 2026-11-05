@@ -26,6 +26,12 @@ Global options go before the command: `--database <path>` (default `adapter.db`)
 | `server-enable` / `server-disable` | Resume or stop all traffic for a server. |
 | `backup --to DIR [--keep N]` | Copy the database (a consistent copy, taken while the service runs), key file, token store, and artifacts to a new folder under `DIR`, with a manifest of hashes. The folder is owner-only and holds secrets. `--keep N` removes all but the newest N backups. |
 | `restore --from BACKUP [--force]` | Put a backup back. Stop the service first. Every hash is checked before anything is replaced, and existing data is moved to `pre-restore-<time>` instead of being deleted. Without `--force` it refuses to touch existing data. |
+| `chat-setup-enable [--rotate-owner-code]` | Turn on [setup by chat](chat-setup.md): publish the built-in setup connector, create its connection and the owner code (each shown once). Safe to repeat. |
+| `chat-setup-set-password` | Choose the owner password, read from standard input (10 to 200 characters). It replaces the generated code and ends open review sessions. `muse-vm chat-setup --set-owner-password` runs it for you. |
+| `proposals [--all]` / `proposal-link --proposal-id ID` | List what Muse has asked for / print a fresh review link for a waiting proposal (the old one stops). |
+| `proposal-decline --proposal-id ID` / `--all` | Close proposals nobody has acted on yet, from this machine: no browser and no owner password. Use it when Muse has filled the limit of waiting proposals. Proposals already being reviewed are left to the owner. |
+| `explain-call --request-id ID` / `explain-change --proposal-id ID` | Trace a call back to the catalog, proposal, words and approval behind it / show one proposal's record. |
+| `audit-verify [--head HASH]` | Check the hash chain over the administrative audit; fails where it is broken. With a head hash you noted earlier, also fails if the chain no longer contains it (rows were cut off the end). |
 | `serve` | Run the Muse-facing HTTP service. |
 
 For local testing against a plain-HTTP or loopback server, add `--allow-http` and/or `--allow-private-network` before the command. They are off by default and meant for development only.
@@ -45,6 +51,8 @@ Common fields:
 | `maxResultBytes` | Tools: maximum result size (required, up to 16 MiB). |
 | `readOnlyReviewed` | Set to `true` to classify a tool as `read` when the server did not mark it `readOnlyHint: true`. |
 | `allowedResultContentTypes` | Optionally narrow a tool's accepted result content types. |
+| `argumentPatterns` | Tools: limit what an argument may be, for example `{"project": "(?:ENG|OPS)"}`. See the rules below. |
+| `expiresAt` | Any entry: a UTC time ending in `Z` after which the operation is refused and left out of the connector description. An unreadable value counts as already ended. |
 
 Resource and template policies add a `resource` block; prompts add a `prompt` block:
 
@@ -83,6 +91,7 @@ Rules enforced when you publish:
 - The generated draft policy marks a tool as `sensitive_write` when it declares `destructiveHint: true` or its name contains a destructive word (delete, remove, drop, merge, revoke, reset, and similar). Review the draft before publishing it.
 - `file:`, `data:`, and similar schemes are never allowed for resources. `http(s)` resources must list `allowedUriHosts`.
 - Template arguments can be constrained with `argumentPatterns` (regular expressions that must match the whole value).
+- Tool arguments can be constrained the same way, with `argumentPatterns` on the tool's policy entry, for example `"argumentPatterns": {"project": "(?:ENG|OPS)"}`. Every call must carry each named argument with a value that matches in full (every item, for a list), or it is refused before the server is contacted. The argument must exist in the tool's input schema, there are at most 10 per tool, and the owner's limits appear in the connector's description of the operation.
 - Oversized or backtracking-prone regular expressions in schemas and patterns are rejected.
 
 ## 3. Running the service
@@ -106,6 +115,7 @@ Rules enforced when you publish:
 | `approvalMode` | `muse` (default): Muse confirms writes with you. `signed` is reserved: the HTTP interface cannot yet carry approval evidence, so in this mode every write is refused. Leave it at `muse`. |
 | `integrityKeyEnv` | Optional key that signs stored catalogs so tampering is detected. Use the same config for every command that publishes. |
 | `secretsDir` | Optional directory of secret files, one file per name (for example a Docker or Compose secrets mount). A secret that is not in the environment is read from `<secretsDir>/<NAME>` when it is needed, so it stays out of the process environment and can be added without a restart. `MUSE_ADAPTER_SECRETS_DIR` sets the same thing. |
+| `chatSetup` | `true` turns on [setup by chat](chat-setup.md): the built-in setup connector's operations and the `/review/…` pages. Default off. `muse-vm chat-setup` sets it. |
 | `oauthClients` | For an OAuth provider without dynamic client registration: `{"<serverId>": {"clientId": "...", "clientSecretEnv": "..."}}`. |
 | `allowPrivateNetworks`, `allowInsecureHttp` | Development only: allow loopback/private MCP servers and plain HTTP. |
 

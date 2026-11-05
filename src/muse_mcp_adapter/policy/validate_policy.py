@@ -4,6 +4,8 @@ from typing import cast
 from urllib.parse import urlsplit
 
 from ..domain.constants import MuseClassification, PrimitiveType, primitive_key
+from .argument_limits import MAX_LIMITS_PER_TOOL
+from .expiry import parse as parse_instant
 
 _OPERATION_ID = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 _URI_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
@@ -115,6 +117,12 @@ def validate_exposure_policy(
                 "readOnlyReviewed after review"
             )
 
+    if policy.get("expiresAt") is not None and parse_instant(policy.get("expiresAt")) is None:
+        issues.append(f"expiresAt for {key} must be an ISO date-time in UTC ending in Z")
+
+    if primitive.get("type") == PrimitiveType.TOOL and policy.get("argumentPatterns") is not None:
+        issues.extend(_tool_limit_issues(primitive, policy.get("argumentPatterns"), key))
+
     if primitive.get("type") in (PrimitiveType.RESOURCE, PrimitiveType.RESOURCE_TEMPLATE):
         resource = _string_mapping(policy.get("resource"))
         if resource is None:
@@ -205,6 +213,24 @@ def _uri_scheme_issues(uri: str, allowed_schemes: list[str] | None, key: str) ->
     return issues
 
 
+def _tool_limit_issues(primitive: Mapping[str, object], value: object, key: str) -> list[str]:
+    """Limits on a tool's arguments: valid patterns, few, and only on arguments it declares."""
+    issues = _argument_pattern_issues(value, key)
+    mapping = _string_mapping(value)
+    if mapping is None:
+        return issues
+    if len(mapping) > MAX_LIMITS_PER_TOOL:
+        issues.append(
+            f"argumentPatterns for {key} limits more than {MAX_LIMITS_PER_TOOL} arguments"
+        )
+    schema = _string_mapping(primitive.get("inputSchema")) or {}
+    declared = _string_mapping(schema.get("properties")) or {}
+    for name in mapping:
+        if name not in declared:
+            issues.append(f"argumentPatterns.{name} for {key} names an argument the tool lacks")
+    return issues
+
+
 def _argument_pattern_issues(value: object, key: str) -> list[str]:
     if value is None:
         return []
@@ -218,6 +244,11 @@ def _argument_pattern_issues(value: object, key: str) -> list[str]:
             continue
         issues.extend(_regex_issues(pattern, f"argumentPatterns.{name} for {key}"))
     return issues
+
+
+def regex_problems(pattern: str) -> list[str]:
+    """Why a limit pattern is refused (too long, risks catastrophic backtracking, invalid)."""
+    return _regex_issues(pattern, "The pattern")
 
 
 def _regex_issues(pattern: str, label: str) -> list[str]:

@@ -9,11 +9,12 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Self, cast
 
-from ..catalog.canonical import freeze_json, thaw_json
+from ..catalog.canonical import canonical_json, freeze_json, thaw_json
 from ..catalog.serde import catalog_from_dict, catalog_to_dict
 from ..domain.errors import ConflictError, EntityNotFoundError, InvalidStateError
 from ..domain.models import (
     ArtifactRecord,
+    AuditChainReport,
     CatalogActivation,
     ConnectionRecord,
     DiscoverySnapshot,
@@ -242,6 +243,66 @@ CREATE TABLE IF NOT EXISTS artifacts (
     storage_path TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS owner_credential (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    code_hash TEXT NOT NULL,
+    code_salt TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS owner_sessions (
+    session_hash TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS owner_attempts (
+    scope TEXT NOT NULL,
+    attempted_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS owner_attempts_by_scope ON owner_attempts(scope, attempted_at);
+
+CREATE TABLE IF NOT EXISTS owner_secrets (
+    name TEXT PRIMARY KEY,
+    ciphertext TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS setup_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    requester_connection_id TEXT NOT NULL REFERENCES connections(connection_id),
+    kind TEXT NOT NULL CHECK (kind IN ('connect', 'change')),
+    state TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    user_words TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    target_server_id TEXT,
+    target_connection_id TEXT,
+    snapshot_id INTEGER,
+    computed_json TEXT,
+    digest TEXT,
+    decision_json TEXT,
+    applied_json TEXT,
+    reveal_ciphertext TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS setup_proposals_by_state ON setup_proposals(state);
+
+CREATE TABLE IF NOT EXISTS catalog_provenance (
+    server_id TEXT NOT NULL,
+    catalog_version TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    proposal_id TEXT,
+    proposal_digest TEXT,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (server_id, catalog_version)
+);
 """
 
 
@@ -303,6 +364,8 @@ class SqliteControlPlaneRepository:
                 ("connections", "link_code_salt"),
                 ("connections", "link_code_expires_at"),
                 ("login_nonces", "continue_to"),
+                ("admin_audit", "prev_hash"),
+                ("admin_audit", "entry_hash"),
             ):
                 present = {
                     str(row["name"])
@@ -399,6 +462,14 @@ class SqliteControlPlaneRepository:
             capabilities=snapshot.capabilities,
             primitives=snapshot.primitives,
         )
+
+    def get_discovery(self, snapshot_id: int) -> DiscoverySnapshot:
+        row = self._connection.execute(
+            "SELECT * FROM discovery_snapshots WHERE snapshot_id = ?", (snapshot_id,)
+        ).fetchone()
+        if row is None:
+            raise EntityNotFoundError(f"Discovery snapshot {snapshot_id} does not exist")
+        return _snapshot_from_row(row)
 
     def get_latest_discovery(self, server_id: str) -> DiscoverySnapshot:
         row = self._connection.execute(
@@ -783,12 +854,81 @@ class SqliteControlPlaneRepository:
         server_id: str | None,
         data: Mapping[str, object],
     ) -> None:
+        """Append one administrative event, chained to the one before it.
+
+        Each row stores the hash of the previous row and a hash over its own content, so a row
+        that is edited, removed or slipped in later breaks the chain, and
+        ``verify_admin_audit_chain`` says where.
+        """
+        stored = _json(data)
+        payload = _audit_payload(occurred_at, actor, action, server_id, json.loads(stored))
         with self._connection:
+            if not self._connection.in_transaction:
+                # Two processes (the service and a command) must not extend the chain at once.
+                self._connection.execute("BEGIN IMMEDIATE")
+            last = self._connection.execute(
+                "SELECT entry_hash FROM admin_audit WHERE entry_hash IS NOT NULL "
+                "ORDER BY event_id DESC LIMIT 1"
+            ).fetchone()
+            previous = cast(str, last["entry_hash"]) if last is not None else ""
             self._connection.execute(
-                "INSERT INTO admin_audit (occurred_at, actor, action, server_id, data_json) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (occurred_at, actor, action, server_id, _json(data)),
+                "INSERT INTO admin_audit "
+                "(occurred_at, actor, action, server_id, data_json, prev_hash, entry_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    occurred_at,
+                    actor,
+                    action,
+                    server_id,
+                    stored,
+                    previous,
+                    _chain_hash(previous, payload),
+                ),
             )
+
+    def verify_admin_audit_chain(self, pinned_head: str | None = None) -> AuditChainReport:
+        """Check every chained row against the one before it and against its own content.
+
+        Rows written before the chain existed carry no hash and are counted, not checked. A row
+        without a hash after the chain has started is itself a break. Given a head hash noted
+        down earlier, the report also says how many rows came after it, or ``None`` if no row
+        has that hash, which is what a chain cut short or rebuilt looks like.
+        """
+        rows = self._connection.execute("SELECT * FROM admin_audit ORDER BY event_id").fetchall()
+        expected = ""
+        chained = 0
+        unchained = 0
+        pinned_at: int | None = None
+
+        def broken(event_id: int, problem: str) -> AuditChainReport:
+            return AuditChainReport(False, chained, unchained, expected or None, event_id, problem)
+
+        for row in rows:
+            event_id = cast(int, row["event_id"])
+            entry_hash = cast(str | None, row["entry_hash"])
+            if entry_hash is None:
+                if chained:
+                    return broken(event_id, "A row without a hash follows the start of the chain")
+                unchained += 1
+                continue
+            stored_previous = cast(str | None, row["prev_hash"]) or ""
+            if stored_previous != expected:
+                return broken(event_id, "The row before this one was removed or replaced")
+            payload = _audit_payload(
+                cast(str, row["occurred_at"]),
+                cast(str, row["actor"]),
+                cast(str, row["action"]),
+                cast(str | None, row["server_id"]),
+                json.loads(cast(str, row["data_json"])),
+            )
+            if _chain_hash(stored_previous, payload) != entry_hash:
+                return broken(event_id, "This row was changed after it was written")
+            expected = entry_hash
+            chained += 1
+            if pinned_head is not None and entry_hash == pinned_head:
+                pinned_at = chained
+        after = chained - pinned_at if pinned_at is not None else None
+        return AuditChainReport(True, chained, unchained, expected or None, None, None, after)
 
     def list_admin_audit(self, server_id: str | None = None) -> tuple[Mapping[str, object], ...]:
         query = "SELECT * FROM admin_audit"
@@ -851,6 +991,12 @@ class SqliteControlPlaneRepository:
 
     def list_runtime_audit(self) -> tuple[Mapping[str, object], ...]:
         rows = self._connection.execute("SELECT * FROM runtime_audit ORDER BY event_id").fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def runtime_audit_for_request(self, request_id: str) -> tuple[Mapping[str, object], ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM runtime_audit WHERE request_id = ? ORDER BY event_id", (request_id,)
+        ).fetchall()
         return tuple(dict(row) for row in rows)
 
     def run[T](self, operation: Callable[[sqlite3.Connection], T]) -> T:
@@ -1125,6 +1271,22 @@ def _operation_from_row(row: sqlite3.Row) -> OperationRecord:
 
 def _json(value: object) -> str:
     return json.dumps(thaw_json(value), separators=(",", ":"))
+
+
+def _audit_payload(
+    occurred_at: str, actor: str, action: str, server_id: str | None, data: object
+) -> dict[str, object]:
+    return {
+        "occurredAt": occurred_at,
+        "actor": actor,
+        "action": action,
+        "serverId": server_id,
+        "data": data,
+    }
+
+
+def _chain_hash(previous: str, payload: Mapping[str, object]) -> str:
+    return hashlib.sha256((previous + "\n" + canonical_json(payload)).encode()).hexdigest()
 
 
 def _load_mapping(value: str) -> Mapping[str, object]:

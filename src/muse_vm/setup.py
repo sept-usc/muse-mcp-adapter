@@ -344,10 +344,27 @@ def run(
             raise SystemExit(code)
 
     servers = plan.servers
-    if not servers and io.interactive:
+    if not servers and io.interactive and not plan.chat_setup:
         servers = _choose_servers(io)
         plan.servers = servers
     failed = [s for s in servers if not _connect(s, name, run_command, io)]
+
+    if (
+        not plan.chat_setup
+        and io.interactive
+        and not failed
+        and io.confirm(
+            "Add more servers later by chatting with Muse? You approve each one on a page of "
+            "your adapter, and nothing is exposed before you do.",
+            default=False,
+        )
+    ):
+        plan.chat_setup = True
+    chat_failed = False
+    if plan.chat_setup:
+        io.say("")
+        io.say("Turning on setup by chat…")
+        chat_failed = run_command(["chat-setup", "--name", name]) != 0
 
     if save_to is not None and (
         not config_existed
@@ -361,8 +378,8 @@ def run(
     io.say("")
     io.say(
         "Done."
-        if not failed
-        else "The adapter is installed and running, but not everything connected."
+        if not (failed or chat_failed)
+        else "The adapter is installed and running, but not everything is set up."
     )
     if dep and dep.base_url:
         io.say(f"  The adapter is running at {dep.base_url}")
@@ -375,5 +392,12 @@ def run(
     io.say(
         "  and paste the token. More servers: muse-vm add-server <name>. Everything: muse-vm --help"
     )
-    if failed:
+    if chat_failed:
+        io.say(f"  Chat setup did not turn on. Try again with: muse-vm chat-setup --name {name}")
+    elif not plan.chat_setup:
+        io.say(
+            "  Or add servers by chatting with Muse, with your approval on a page: "
+            "muse-vm chat-setup"
+        )
+    if failed or chat_failed:
         raise SystemExit(1)

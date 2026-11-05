@@ -23,6 +23,7 @@ import tarfile
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+from typing import cast
 
 from . import __version__
 from .targets import Target
@@ -111,24 +112,32 @@ def compose_env(
     return env
 
 
-def serve_config(hostname: str, *, rate_limit: int = 60) -> str:
+def serve_config(hostname: str, *, rate_limit: int = 60, chat_setup: bool = False) -> str:
     """The adapter's own configuration: it names where secrets are, and holds none."""
-    return (
-        json.dumps(
-            {
-                "publicUrl": f"https://{hostname}",
-                "listen": {"host": "0.0.0.0", "port": 8080},
-                "limits": {
-                    "rateLimit": rate_limit,
-                    "rateWindowSeconds": 60,
-                    "perServerConcurrency": 8,
-                },
-                "secretsDir": "/run/secrets",
-            },
-            indent=2,
-        )
-        + "\n"
-    )
+    settings: dict[str, object] = {
+        "publicUrl": f"https://{hostname}",
+        "listen": {"host": "0.0.0.0", "port": 8080},
+        "limits": {
+            "rateLimit": rate_limit,
+            "rateWindowSeconds": 60,
+            "perServerConcurrency": 8,
+        },
+        "secretsDir": "/run/secrets",
+    }
+    if chat_setup:
+        settings["chatSetup"] = True
+    return json.dumps(settings, indent=2) + "\n"
+
+
+def chat_setup_enabled(serve_json: str | None) -> bool:
+    """Whether a service configuration has chat-driven setup switched on."""
+    if not serve_json:
+        return False
+    try:
+        loaded: object = json.loads(serve_json)
+    except ValueError:
+        return False
+    return isinstance(loaded, dict) and cast(dict[str, object], loaded).get("chatSetup") is True
 
 
 # ---- installing on a target -----------------------------------------------------------------
@@ -350,10 +359,27 @@ def forget_auth_key(target: Target) -> bool:
 
 def set_hostname(target: Target, hostname: str) -> bool:
     """Record the public hostname once Tailscale has assigned it. True if it changed."""
-    wanted = serve_config(hostname)
-    if target.get("config/serve.json") == wanted:
+    current = target.get("config/serve.json")
+    wanted = serve_config(hostname, chat_setup=chat_setup_enabled(current))
+    if current == wanted:
         return False
     target.put("config/serve.json", wanted, 0o644)
+    return True
+
+
+def set_chat_setup(target: Target, enabled: bool) -> bool:
+    """Switch chat-driven setup on or off in the adapter's configuration. True if it changed."""
+    current = target.get("config/serve.json")
+    if current is None:
+        raise SystemExit("The adapter has no configuration yet: finish `muse-vm setup` first.")
+    if chat_setup_enabled(current) == enabled:
+        return False
+    settings = cast(dict[str, object], json.loads(current))
+    if enabled:
+        settings["chatSetup"] = True
+    else:
+        settings.pop("chatSetup", None)
+    target.put("config/serve.json", json.dumps(settings, indent=2) + "\n", 0o644)
     return True
 
 

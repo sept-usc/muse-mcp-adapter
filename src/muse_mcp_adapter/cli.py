@@ -19,6 +19,7 @@ from .application.serve import (
     open_repository,
 )
 from .catalog.serde import catalog_to_dict
+from .chat_setup import commands as chat_setup
 from .connections import ConnectionCredentialResolver, ConnectionService
 from .data_plane.tool_service import ToolDataPlaneService
 from .discovery.client import ManifestDiscoveryClient
@@ -131,6 +132,8 @@ def _execute(
     args: argparse.Namespace, repository: SqliteControlPlaneRepository, config: ServeConfig
 ) -> object:
     policy = _policy(args, config)
+    if args.command in chat_setup.COMMANDS:
+        return chat_setup.run(args, repository, config, policy)
     service = ControlPlaneService(repository, endpoint_policy=policy)
     actor = args.actor
 
@@ -488,6 +491,8 @@ def _parser() -> argparse.ArgumentParser:
 
     login = commands.add_parser("login", help="Get a sign-in link for an OAuth connection")
     login.add_argument("--connection-id", required=True)
+
+    chat_setup.add_parsers(commands)
 
     reconcile = commands.add_parser(
         "reconcile", help="Settle a write whose outcome is unknown after checking the system"

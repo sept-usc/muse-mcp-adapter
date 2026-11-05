@@ -6,6 +6,7 @@ What it adds is a layer you own, between Muse and each MCP server, that a connec
 
 | What it adds | What it does |
 | --- | --- |
+| **A policy drafted for you, approved by you** | By chat, the adapter freezes what a service really offers as an immutable snapshot, Muse drafts the smallest policy from it with a reason for each operation, and a deterministic compiler accepts only exact names that are in the snapshot. You approve a summary with your owner password, every time. Access then widens one operation at a time, and only you can widen it. Making access smaller (switching an operation off, a tighter limit, an earlier end) needs no approval. See [set up by chat](chat-setup.md). |
 | **A frozen, versioned contract** | Publishing compiles an immutable catalog: the exact operations, descriptions, schemas, classifications and limits Muse may use. A server's description is pinned when you publish, so the server cannot change what Muse is told. A later change at the server does not reach Muse until you publish it, and `rollback` returns to the previous version. |
 | **Drift you can see** | `drift` compares the live server with the active catalog and reports each difference by kind (a tool added, removed, or changed in its input schema, output schema, annotations, required scopes, result content or lifecycle) with a severity. |
 | **A policy you own** | For each operation you decide: is it exposed at all, is it a read, a write or a sensitive write, its timeout, the largest result accepted, the result types accepted, and the downstream scopes required. Anything you did not list does not exist for Muse. Destructive tools (`destructiveHint`, or a word such as delete or merge in the name) are drafted as sensitive writes. For resources and templates you also limit URI schemes, hosts, MIME types and argument patterns. |
@@ -21,7 +22,7 @@ Every row is covered by the project's automated tests; the [validation guide](va
 
 These limits are real, and the page should change when they do.
 
-- **Policy works per operation.** It cannot yet decide by the value of an argument (for example "only project X"), by who is asking, or by how many records a call touches. Resources and templates have argument-level limits; tools do not.
+- **Policy works per operation, and per argument value.** It can hold an operation to listed values or a pattern (for example "only project X"), but it cannot yet decide by who is asking, or by how many records a call touches.
 - **Drift reports what changed, not whether it is safe.** It does not judge backward compatibility, estimate impact, or replay tests against a changed server.
 - **Settling an unknown write is manual.** You check the other system, then run `reconcile` with the adapter. There is no automatic read-after-write check and no way to settle it from chat.
 - **Read-only labels are trusted by default.** `add-server` exposes the tools a server itself marks read-only, and prints what it exposed. A server that mislabels a write would be exposed. `--no-reads` reviews every tool first.

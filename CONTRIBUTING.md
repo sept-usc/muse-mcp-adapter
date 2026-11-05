@@ -36,7 +36,7 @@ Timing measurements are not part of the gate, because they depend on how busy th
 1. Branch from `main` and keep the change focused: one concern per pull request.
 2. Add or update tests with the change. A bug fix starts with a test that fails without it.
 3. Update the documentation a user would read (the README, `docs/`) in the same pull request.
-4. Draw diagrams in [Mermaid](https://mermaid.js.org/) (a fenced `mermaid` block), not as images.
+4. Draw diagrams in [Mermaid](https://mermaid.js.org/) (a fenced `mermaid` block), not as images, so they can be reviewed as text. The animated figures in `docs/figures/` are the exception: they are hand-written SVG, every label in them is wording from the documentation, and each needs a text equivalent (alt text, and the Mermaid version where one exists). Check a change to one by opening the SVG in a browser.
 5. Write commit messages as `type(scope): what and why`, for example `fix(vm): retry dropped ssh connections`.
 6. Never put real credentials, account names, hostnames or addresses in code, tests, docs, commit messages or pull request text. Use obvious placeholders such as `203.0.113.7` and `example.com`.
 

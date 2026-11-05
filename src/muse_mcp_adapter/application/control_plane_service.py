@@ -1,11 +1,11 @@
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from ..control_plane.compile_catalog import compile_catalog
 from ..discovery.client import DiscoveryClient
-from ..domain.errors import InvalidStateError
+from ..domain.errors import AuthorizationError, EntityNotFoundError, InvalidStateError
 from ..domain.models import (
     CatalogActivation,
     DiscoverySnapshot,
@@ -15,6 +15,7 @@ from ..domain.models import (
 )
 from ..drift.detect_drift import detect_drift
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from ..policy.narrowing import classify_change, exposures_of
 from ..providers import load_provider_pack, validate_provider_registration
 from ..transport.security import EndpointSecurityPolicy
 
@@ -27,10 +28,14 @@ class ControlPlaneService:
         repository: SqliteControlPlaneRepository,
         clock: Callable[[], str] | None = None,
         endpoint_policy: EndpointSecurityPolicy | None = None,
+        narrowing_only_actors: Collection[str] = (),
     ) -> None:
         self._repository = repository
         self._clock = clock or _utc_now
         self._endpoint_policy = endpoint_policy or EndpointSecurityPolicy()
+        # Actors that may make access smaller and never larger. The rule is kept here, where a
+        # catalog goes live, so it holds for every caller and not only those that remember it.
+        self._narrowing_only = frozenset(narrowing_only_actors)
 
     def register_server(
         self,
@@ -163,6 +168,8 @@ class ControlPlaneService:
         *,
         actor: str = "local-administrator",
     ) -> CatalogActivation:
+        if actor in self._narrowing_only:
+            self._require_no_wider(actor, server_id, catalog_version)
         activated_at = self._clock()
         activation = self._repository.activate_catalog(server_id, catalog_version, activated_at)
         self._audit(
@@ -177,6 +184,10 @@ class ControlPlaneService:
     def rollback_catalog(
         self, server_id: str, *, actor: str = "local-administrator"
     ) -> CatalogActivation:
+        if actor in self._narrowing_only:
+            raise AuthorizationError(
+                f"{actor} may only make access smaller; a rollback can widen it"
+            )
         activated_at = self._clock()
         activation = self._repository.rollback_catalog(server_id, activated_at)
         self._audit(
@@ -187,6 +198,20 @@ class ControlPlaneService:
             occurred_at=activated_at,
         )
         return activation
+
+    def _require_no_wider(self, actor: str, server_id: str, catalog_version: str) -> None:
+        try:
+            live = self._repository.get_active_catalog(server_id)
+        except EntityNotFoundError:
+            live = None
+        candidate = self._repository.get_catalog(server_id, catalog_version)
+        if classify_change(exposures_of(live), exposures_of(candidate)) not in (
+            "none",
+            "narrowing",
+        ):
+            raise AuthorizationError(
+                f"{actor} may only make access smaller; catalog {catalog_version} would give more"
+            )
 
     def set_server_enabled(
         self,

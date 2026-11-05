@@ -6,6 +6,8 @@ The control plane belongs to one customer-owned adapter deployment. It configure
 
 The control plane is not in the normal Muse request path. Its output is an immutable published catalog that the data plane can load and execute.
 
+A second way in is [setup by chat](chat-setup.md), off by default. It drives the same steps through a built-in setup connector and the owner's review pages, and ends in the same published catalog.
+
 ```text
 Customer administrator
   -> register MCP server
@@ -122,6 +124,23 @@ Records configuration changes and publication decisions: who registered a server
 
 This is distinct from data-plane execution auditing.
 
+### Setup by chat
+
+An optional front door to the steps above (`chat_setup` package, enabled with `chatSetup`). The agent never publishes anything. It can only look things up, open a proposal, read a frozen description of the service, revise its own proposal, and make access smaller; the owner approves everything else on a review page.
+
+| Part | Responsibility |
+| --- | --- |
+| Setup connector (`catalog.py`, `service.py`) | A built-in connector whose operations are generated from code and pinned like any other catalog. Holds the proposal state machine: waiting for the owner, connecting, in review, approved, applied, or declined, expired, failed. |
+| Directory (`directory.py`) | About 34 well-known services with their official addresses and how each signs in, so the agent needs no address for them. |
+| Review pages (`web.py`, `owner.py`) | The owner's pages: sign-in with the owner password, the token or provider sign-in, the summary to approve. Approval asks for the owner password every time. |
+| Snapshot (`service.py`, `details.py`) | When the owner connects, discovery runs once with the owner's credential and is stored as an immutable snapshot with a digest. `details.py` builds what the agent may read from it: tool argument names, types and allowed values, resources, templates and prompts, with the service's own text cleaned, shortened and labelled. |
+| Compiler (`compile.py`) | Pure and deterministic. It checks the exact names the agent sends against the snapshot, reports what it cannot match, and produces the policy. It never reads descriptions or the owner's words to decide anything. |
+| Narrowing rule (`policy/narrowing.py`) | Enforced where a catalog goes live: an agent actor may only publish a policy no wider than the live one. |
+| Secrets (`secrets.py`) | Tokens typed on a page are sealed with the key that already protects provider tokens. |
+| Commands (`commands.py`) | Turning it on, rotating the owner code, choosing the owner password, listing, declining and linking proposals. |
+
+Every step is recorded in the administrative audit on a hash chain, so a call can be traced back to the words the owner approved.
+
 ## Provider packs
 
 Provider packs are local, versioned files shipped with the repository or installed by the customer. They supply tested defaults, documentation, policy suggestions, known limitations, discovery fixtures, and conformance tests.
@@ -130,7 +149,7 @@ There is no hosted provider-pack marketplace or registry service.
 
 ## Minimal first implementation
 
-The first control plane can be a CLI and local administrative API backed by versioned files and a small database. It does not require a management UI.
+The first control plane can be a CLI and local administrative API backed by versioned files and a small database. It does not require a management UI. The only pages it serves are the review pages of [setup by chat](chat-setup.md), which are off by default.
 
 Required sequence:
 

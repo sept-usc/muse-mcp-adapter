@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from starlette.applications import Starlette
 
+from ..chat_setup.models import SetupExecutor
 from ..connections import ConnectionService
 from ..credentials.resolver import CredentialResolver
 from ..data_plane.approval import ApprovalVerifier
@@ -41,6 +42,8 @@ def build_http_application(
     rate_window_seconds: float = 60,
     per_server_concurrency: int = 8,
     idempotency_window_seconds: int = 30,
+    setup: SetupExecutor | None = None,
+    extra_web: Sequence[WebAuthorization] = (),
 ) -> Starlette:
     """Build the supported request path so its controls cannot be left disconnected."""
     repository.initialize()
@@ -77,6 +80,7 @@ def build_http_application(
         artifact_store=artifacts,
         idempotency_window_seconds=idempotency_window_seconds,
         reauthorization_link=oauth_flow.login_link if oauth_flow is not None else None,
+        setup=setup,
     )
     web: list[WebAuthorization] = [
         MuseAuthorizationServer(
@@ -89,4 +93,5 @@ def build_http_application(
     ]
     if oauth_flow is not None:
         web.append(oauth_flow)
+    web.extend(extra_web)
     return create_http_app(runtime=runtime, web_authorization=web)

@@ -2,6 +2,8 @@
 
 The guided setup from the [README](../README.md#get-started), explained step by step. It takes about 5 to 10 minutes.
 
+**Two ways to add servers.** Run `muse-vm setup --chat-setup` and you add servers afterwards by asking Muse, approving on a page of your own ([set up by chat](chat-setup.md), and a [worked GitHub example](connect-github-to-muse.md)). Run plain `muse-vm setup` and you pick servers in the terminal, as described below. Both end with the same published, enforced catalog.
+
 ## Overview
 
 `muse-vm setup` is a guided run. It checks that everything is in place, asks where the adapter should run, creates it, opens the Tailscale link you need to click, lets you pick the MCP servers Muse should use, and prints what to give Muse. It asks only for what it cannot work out itself, and it takes about 5 to 10 minutes, most of it building.
@@ -87,6 +89,8 @@ bash install.sh --local
 It needs a Debian or Ubuntu VM, a user with passwordless `sudo` (or root), and outbound HTTPS. The installer puts `muse-vm` in your home directory (fetching a suitable Python itself if the VM's is too old), then runs the same guided setup against this machine: only what is missing is installed, and an existing Docker is never restarted. The Tailscale links are printed in the terminal, so open them in your own browser. The same script is what the Google Cloud Shell button uses.
 
 ### Step 3 · Connect Muse and try it
+
+**If you turned on chat setup**, the end of `setup` printed a sentence and a token for the one connector to add by hand. Send the sentence in a new Muse chat, click **Connect**, paste the token, then ask Muse for the servers you want. [Connect GitHub to Muse](connect-github-to-muse.md) walks through one. The rest of this step is for servers you picked in the terminal.
 
 1. Open a **new side chat** in Muse (not your main chat) and send: `Create a connector called GitHub from the API spec at <the connector address>`.
 2. Muse reads the API description and shows a **Connect** card. Click **Connect** and accept Muse's consent dialog.

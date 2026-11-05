@@ -120,6 +120,72 @@ def _show_linked(linked: Linked, *, copy: bool) -> None:
         say("  (that sentence is on your clipboard; it holds no secret)")
 
 
+def _show_chat_setup(result: dict[str, Any]) -> None:
+    say()
+    say("Chat setup is on.")
+    if result.get("token"):
+        say()
+        say("Add this one connector to Muse, by hand, once. In a new Muse chat, send:")
+        say(f"  {str(result['museInstructions']).split(' If Muse')[0].strip()}")
+        say("Then click Connect and paste this token into Muse's own secure field:")
+        say(f"  {result['token']}")
+        say("(the token is shown once; the adapter keeps only a hash of it)")
+    else:
+        say(f"  The setup connector already exists: {result.get('connectorUrl')}")
+        say(f"  {result.get('connectorNote', '')}")
+    say()
+    if result.get("ownerCode"):
+        say("Your owner code (shown once; keep it in your password manager):")
+        say(f"  {result['ownerCode']}")
+        say("You type it only on your adapter's own review pages, never into Muse.")
+    else:
+        say(str(result.get("ownerCodeNote", "")))
+    say()
+    say(
+        "From then on, ask Muse to connect a server and say what it may use. Muse gives you a link;"
+    )
+    say("you open it on your own device, sign in or paste a token there, review the list, approve.")
+
+
+def _ask_owner_password() -> str:
+    """Ask twice without echoing. It is sent over the secure channel on stdin, never as an
+    argument, so it is not in a process list or a shell history."""
+    import getpass
+
+    while True:
+        first = getpass.getpass("Choose an owner password (at least 10 characters): ")
+        if len(first) < 10:
+            say("Use at least 10 characters.")
+            continue
+        if getpass.getpass("Type it again: ") != first:
+            say("They did not match. Try again.")
+            continue
+        return first
+
+
+def cmd_chat_setup(args: argparse.Namespace) -> None:
+    """Turn on setting up servers by chatting with Muse, with your approval on a page."""
+    _, provider = _context(args)
+    t = provider.target()
+    if bundle.set_chat_setup(t, True):
+        say("Turning chat setup on and restarting the adapter…")
+        provider.restart_adapter(t)
+    words = ["--rotate-owner-code"] if args.rotate_owner_code else []
+    admin = Admin(t, actor=args.actor)
+    if args.set_owner_password:
+        password = _ask_owner_password()
+        admin.json("chat-setup-set-password", stdin=password + "\n")
+        words = []  # the password replaces the generated code
+    result = admin.json("chat-setup-enable", *words)
+    if args.set_owner_password:
+        result.pop("ownerCode", None)
+        result["ownerCodeNote"] = (
+            "Your owner password is set. You type it on your adapter's own review pages to "
+            "approve anything that adds access, never into Muse."
+        )
+    _show_chat_setup(result)
+
+
 # ---- up ---------------------------------------------------------------------------------------
 def cmd_up(args: argparse.Namespace) -> None:
     name = check_name(args.name)
@@ -465,6 +531,8 @@ def _plan_from(args: argparse.Namespace) -> tuple[config.Plan, Path | None]:
         plan.local = bool(args.local)
     if args.yes:
         plan.yes = True
+    if args.chat_setup:
+        plan.chat_setup = True
     if args.server:
         plan.servers = [config.ServerPlan(server=item) for item in args.server]
     return plan, path
@@ -861,6 +929,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--yes", "-y", action="store_true", help="accept that this creates billable resources"
     )
+    sp.add_argument(
+        "--chat-setup",
+        action="store_true",
+        help="also turn on adding servers by chatting with Muse (you approve on a page)",
+    )
     sp.add_argument("--save", action="store_true", help=f"write the choices to ./{config.FILENAME}")
     sp.add_argument("--non-interactive", action="store_true", help="never ask; fail instead")
     sp.add_argument("--no-browser", action="store_true", help="print links instead of opening them")
@@ -902,6 +975,21 @@ def build_parser() -> argparse.ArgumentParser:
     common(commands.add_parser("status", help="health, containers and servers")).set_defaults(
         func=cmd_status
     )
+    sp = common(
+        commands.add_parser(
+            "chat-setup",
+            help="turn on adding servers by chatting with Muse (you approve on a page)",
+        )
+    )
+    sp.add_argument(
+        "--rotate-owner-code", action="store_true", help="make a new owner code (the old one stops)"
+    )
+    sp.add_argument(
+        "--set-owner-password",
+        action="store_true",
+        help="choose your own owner password instead of a generated code (asked for, not echoed)",
+    )
+    sp.set_defaults(func=cmd_chat_setup)
     sp = common(commands.add_parser("logs", help="container logs"))
     sp.add_argument("service", nargs="?", default="adapter")
     sp.add_argument("--tail", default=100)

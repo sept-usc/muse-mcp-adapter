@@ -9,7 +9,7 @@ The detailed logical planes are maintained separately:
 - [Control plane](control-plane.md): configure, discover, review, compile, and publish integrations.
 - [Data plane](data-plane.md): execute published integrations at runtime.
 
-The first implementation runs both planes in one modular gateway service.
+The first implementation runs both planes in one modular gateway service. A third, optional surface, [setup by chat](chat-setup.md), lets Muse propose changes that the owner approves on a page of the same service.
 
 ## 2. Problem and objective
 
@@ -303,6 +303,10 @@ Higher layers may narrow access. Broadening access to an unclassified or sensiti
 11. Publish an immutable catalog.
 12. Monitor future discovery for drift without changing the active contract.
 
+### 13.1 Onboarding by chat
+
+The steps above can also be driven from the Muse conversation ([setup by chat](chat-setup.md), off by default). The agent proposes; it never publishes. When the owner connects the service, discovery runs once with the owner's credential and is frozen as an immutable snapshot with a digest. The agent reads that snapshot and drafts the smallest policy with a reason for each operation, and a deterministic compiler checks only exact names against the snapshot. The owner approves a summary on a page of the adapter, with the owner password every time, and the result is the same immutable catalog. Access starts small and widens one operation at a time; a change that only makes access smaller needs no approval, and the rule is enforced where a catalog goes live, not only where the request arrives.
+
 ## 14. Authentication and identity
 
 There are two independent authentication relationships:
@@ -329,6 +333,8 @@ MCP annotations are evidence, not policy:
 - Material changes to recipients, price, scope, or other approved details require fresh approval.
 
 Runtime policy may narrow access for an identity, connection, or emergency disablement. It may never expand the published catalog.
+
+When onboarding happens by chat, the agent's proposal is never approval. Approval is the owner's, given on a review page of the adapter, bound to a digest of what the page showed, and requires the owner password each time. Muse's own confirmation before a write is separate and is not relied on.
 
 ## 16. Security model
 

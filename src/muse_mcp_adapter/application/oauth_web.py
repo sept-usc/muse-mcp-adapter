@@ -88,6 +88,7 @@ class OAuthWebFlow:
         pending_ttl_seconds: int = 600,
         nonce_ttl_seconds: int = 900,
         clients: Mapping[str, OAuthClientSeed] | None = None,
+        client_lookup: Callable[[str], OAuthClientSeed | None] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._repository = repository
@@ -99,6 +100,7 @@ class OAuthWebFlow:
         self._ttl = pending_ttl_seconds
         self._nonce_ttl = nonce_ttl_seconds
         self._clients = dict(clients or {})
+        self._client_lookup = client_lookup  # by connection: an app the owner registered
         self._transport = transport
         self._pending: dict[str, _Pending] = {}
 
@@ -196,7 +198,9 @@ class OAuthWebFlow:
             connection_id=connection.connection_id,
             server_id=connection.server_id,
         )
-        await self._seed_client(server.server_id, namespace_for(server.endpoint, credential))
+        await self._seed_client(
+            server.server_id, connection.connection_id, namespace_for(server.endpoint, credential)
+        )
 
         async def redirect(url: str) -> None:
             state = parse_qs(urlsplit(url).query).get("state", [None])[0]
@@ -265,10 +269,18 @@ class OAuthWebFlow:
         )
         return await storage.get_tokens() is not None
 
-    async def _seed_client(self, server_id: str, namespace: str) -> None:
+    async def _seed_client(self, server_id: str, connection_id: str, namespace: str) -> None:
+        stored = await self._backend.get(namespace, "client_info")
         seed = self._clients.get(server_id)
-        if seed is None or await self._backend.get(namespace, "client_info") is not None:
+        typed_by_owner = False
+        if seed is None and self._client_lookup is not None:
+            lookup = self._client_lookup
+            seed = await anyio.to_thread.run_sync(lambda: lookup(connection_id))
+            typed_by_owner = seed is not None
+        if seed is None:
             return
+        if stored is not None and not (typed_by_owner and _differs(stored, seed)):
+            return  # a registration that already works is kept; the owner's newer details win
         await self._backend.set(
             namespace,
             "client_info",
@@ -375,6 +387,13 @@ def runtime_auth_factory(
         )(endpoint, credential)
 
     return factory
+
+
+def _differs(stored: object, seed: OAuthClientSeed) -> bool:
+    return (
+        getattr(stored, "client_id", None) != seed.client_id
+        or getattr(stored, "client_secret", None) != seed.client_secret
+    )
 
 
 def _safe_path(value: str | None) -> bool:

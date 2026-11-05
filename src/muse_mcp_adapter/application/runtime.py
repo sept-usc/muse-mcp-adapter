@@ -10,6 +10,7 @@ from typing import cast
 from uuid import uuid4
 
 from ..catalog.canonical import canonical_json
+from ..chat_setup.models import SETUP_SERVER_ID, SetupExecutor
 from ..connections import ConnectionService
 from ..data_plane.read_service import ReadDataPlaneService
 from ..data_plane.tool_service import ToolDataPlaneService
@@ -34,10 +35,20 @@ from ..operations.runtime_controls import (
     RequestConcurrencyLimiter,
 )
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
+from ..policy.expiry import ends_at, has_ended
 from .openapi import compile_openapi
 
 MAX_EVENTS_SHOWN = 400
 _IDEMPOTENCY_KEY = re.compile(r"^[\x21-\x7e]{1,200}$")
+
+
+_AUDITED_NAME_CHARS = 120
+
+
+def _printable(name: str) -> str:
+    """A name a caller chose, made safe to keep: bounded, with anything unprintable replaced."""
+    kept = "".join(character if character.isprintable() else "?" for character in name)
+    return kept[:_AUDITED_NAME_CHARS]
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +85,7 @@ class AdapterRuntime:
         artifact_store: FileArtifactStore | None = None,
         idempotency_window_seconds: int = 30,
         reauthorization_link: Callable[[str], str] | None = None,
+        setup: SetupExecutor | None = None,
     ) -> None:
         self._repository = repository
         self._connections = connections
@@ -89,6 +101,7 @@ class AdapterRuntime:
         self._artifacts = artifact_store
         self._window = idempotency_window_seconds
         self._reauthorization_link = reauthorization_link
+        self._setup = setup
 
     @property
     def public_url(self) -> str:
@@ -136,6 +149,22 @@ class AdapterRuntime:
             None,
         )
         if primitive is None:
+            # The caller proved who it is, so a call for something that is not offered is an
+            # attempt worth keeping: probing for a write operation must leave a trace.
+            self._repository.record_runtime_audit(
+                occurred_at=self._clock(),
+                request_id=request_id or str(uuid4()),
+                server_id=principal.server_id,
+                public_operation_id=_printable(public_operation_id),
+                local_identity_id=principal.identity_id,
+                connection_id=principal.connection_id,
+                catalog_version=catalog.catalog_version,
+                classification=None,
+                approval_id=None,
+                outcome="failed",
+                error_code=type(EntityNotFoundError("")).__name__,
+                duration_ms=0,
+            )
             raise EntityNotFoundError(f"Operation {public_operation_id} is not available")
         if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
             raise RequestValidationError("Idempotency-Key must be 1 to 200 printable characters")
@@ -156,12 +185,18 @@ class AdapterRuntime:
         response: DataPlaneResponse | None = None
         error: BaseException | None = None
         try:
+            self._ensure_access_continues(primitive.policy, public_operation_id)
             with self._concurrency.slot(principal.server_id):
-                response = (
-                    self._tools.execute(request)
-                    if primitive.primitive_type == "tool"
-                    else self._reads.execute(request)
-                )
+                if principal.server_id == SETUP_SERVER_ID:
+                    # The built-in setup server is never reached over a network: its calls go to
+                    # the setup service, which can only look up, propose and narrow.
+                    if self._setup is None:
+                        raise AuthorizationError("Chat setup is turned off on this deployment")
+                    response = self._setup.execute(request)
+                elif primitive.primitive_type == "tool":
+                    response = self._tools.execute(request)
+                else:
+                    response = self._reads.execute(request)
                 self._metrics.increment("requests.completed")
                 return response
         except ReauthorizationRequiredError as raised:
@@ -196,6 +231,7 @@ class AdapterRuntime:
         inputs: Mapping[str, object],
     ) -> DataPlaneResponse:
         operation = self._owned_operation(principal, operation_id)
+        self._ensure_resumable(principal, operation.public_operation_id)
         request = DataPlaneRequest(
             request_id=operation.request_id,
             server_id=principal.server_id,
@@ -231,7 +267,7 @@ class AdapterRuntime:
         if not self._repository.get_server(connection.server_id).enabled:
             raise EntityNotFoundError("Connector was not found")
         catalog = self._repository.get_active_catalog(connection.server_id)
-        return compile_openapi(catalog, public_url=self._public_url, slug=slug)
+        return compile_openapi(catalog, public_url=self._public_url, slug=slug, now=self._clock())
 
     def artifact(self, principal: Principal, artifact_id: str) -> tuple[bytes, str]:
         if self._artifacts is None:
@@ -242,6 +278,21 @@ class AdapterRuntime:
             self._artifacts.read(artifact_id, operation_id=record.operation_id),
             record.media_type,
         )
+
+    def _ensure_access_continues(self, policy: Mapping[str, object], operation_id: str) -> None:
+        """Refuse a call once the time the owner gave for this operation has passed."""
+        if has_ended(policy, self._clock()):
+            raise AuthorizationError(
+                f"The access the owner gave to {operation_id} ended at "
+                f"{ends_at(policy) or 'an unreadable time'}. Ask the owner to renew it."
+            )
+
+    def _ensure_resumable(self, principal: Principal, operation_id: str) -> None:
+        catalog = self._repository.get_active_catalog(principal.server_id)
+        for item in catalog.primitives:
+            if item.public_operation_id == operation_id:
+                self._ensure_access_continues(item.policy, operation_id)
+                return
 
     def _owned_operation(self, principal: Principal, operation_id: str) -> OperationRecord:
         operation = self._repository.get_operation(operation_id)

@@ -177,6 +177,18 @@ def _validate_request_envelope(request: DataPlaneRequest) -> None:
         raise RequestValidationError("Missing request fields: " + ", ".join(missing))
 
 
+def supports_template(template: str) -> bool:
+    """Whether the adapter can fill in this address template: plain ``{name}`` fields only."""
+    try:
+        parsed = list(Formatter().parse(template))
+    except ValueError:
+        return False
+    return all(
+        field is None or (_TEMPLATE_FIELD.fullmatch(field) and not spec and not conversion)
+        for _, field, spec, conversion in parsed
+    )
+
+
 def _resource_uri(operation: PublishedPrimitive, arguments: Mapping[str, object]) -> str:
     if operation.primitive_type == "resource":
         if arguments:

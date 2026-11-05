@@ -1,4 +1,4 @@
-from collections.abc import Generator
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -9,7 +9,9 @@ from tests.fixtures.phase_one import discovery_manifest, phase_one_fixture
 
 
 @contextmanager
-def active_repository(database: Path) -> Generator[SqliteControlPlaneRepository]:
+def active_repository(
+    database: Path, policies: Sequence[Mapping[str, object]] | None = None
+) -> Generator[SqliteControlPlaneRepository]:
     times = iter(
         [
             "2026-10-04T18:00:00Z",
@@ -33,7 +35,7 @@ def active_repository(database: Path) -> Generator[SqliteControlPlaneRepository]
         control.publish_catalog(
             server_id="project-system",
             catalog_version="1.0.0",
-            policies=phase_one_fixture()["policies"],
+            policies=policies if policies is not None else phase_one_fixture()["policies"],
         )
         control.activate_catalog("project-system", "1.0.0")
         yield repository

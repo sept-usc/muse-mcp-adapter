@@ -5,7 +5,30 @@ build-backend = "hatchling.build"
 [project]
 name = "muse-mcp-adapter"
 dynamic = ["version"]
-description = "Customer-owned gateway between Muse Custom Connectors and MCP servers"
+description = "Self-hosted gateway that lets Muse use MCP servers such as GitHub and Linear, with only the access its owner approves"
+readme = "README.md"
+keywords = [
+  "muse",
+  "mcp",
+  "mcp-server",
+  "mcp-gateway",
+  "model-context-protocol",
+  "custom-connector",
+  "openapi",
+  "ai-agent",
+  "agent-security",
+  "self-hosted",
+  "github",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: Security",
+]
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -19,6 +42,12 @@ dependencies = [
   "starlette",
   "uvicorn",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sept-usc/muse-mcp-adapter"
+Documentation = "https://github.com/sept-usc/muse-mcp-adapter/blob/main/docs/README.md"
+Source = "https://github.com/sept-usc/muse-mcp-adapter"
+Issues = "https://github.com/sept-usc/muse-mcp-adapter/issues"
 
 [project.scripts]
 muse-mcp-adapter = "muse_mcp_adapter.cli:main"

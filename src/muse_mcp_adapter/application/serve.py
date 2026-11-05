@@ -19,16 +19,25 @@ from urllib.parse import urlsplit
 import httpx
 from starlette.applications import Starlette
 
-from ..connections import ConnectionCredentialResolver
+from ..chat_setup.catalog import ensure_setup_server
+from ..chat_setup.models import ACTOR_AGENT
+from ..chat_setup.secrets import ChainedSecrets, SecretBox
+from ..chat_setup.service import DiscoveryFactory, SetupService
+from ..chat_setup.store import SetupStore
+from ..chat_setup.web import OwnerWeb
+from ..connections import ConnectionCredentialResolver, ConnectionService
 from ..data_plane.approval import HmacApprovalVerifier
 from ..data_plane.mcp_client import McpReadClient
 from ..data_plane.tool_client import McpToolClient
+from ..discovery.client import DiscoveryClient
 from ..domain.errors import InvalidStateError
+from ..domain.models import ResolvedCredential
 from ..persistence.sqlite_repository import SqliteControlPlaneRepository
 from ..transport.oauth import EncryptedFileOAuthStorageBackend
 from ..transport.sdk_client import McpSdkClient, StreamableHttpSessionFactory
 from ..transport.security import EndpointSecurityPolicy
 from .bootstrap import build_http_application
+from .control_plane_service import ControlPlaneService
 from .oauth_web import OAuthClientSeed, OAuthWebFlow, runtime_auth_factory
 
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -58,6 +67,7 @@ class ServeConfig:
     rate_window_seconds: float = 60.0
     per_server_concurrency: int = 8
     idempotency_window_seconds: int = 30
+    chat_setup: bool = False
     oauth_clients: Mapping[str, OAuthClientSetting] = field(
         default_factory=dict[str, OAuthClientSetting]
     )
@@ -124,6 +134,7 @@ def load_serve_config(path: Path) -> ServeConfig:
         rate_window_seconds=float(_int(limits, "rateWindowSeconds", 60)),
         per_server_concurrency=_int(limits, "perServerConcurrency", 8),
         idempotency_window_seconds=_int(config, "idempotencyWindowSeconds", 30),
+        chat_setup=config.get("chatSetup") is True,
         oauth_clients=clients,
     )
 
@@ -151,6 +162,25 @@ def open_oauth_backend(database: str | Path) -> EncryptedFileOAuthStorageBackend
     return EncryptedFileOAuthStorageBackend(base.with_suffix(".oauth"), key)
 
 
+def open_secret_box(database: str | Path) -> SecretBox:
+    """Encryption for secrets the owner types on a review page, with the adapter's own key."""
+    return SecretBox(_load_or_create_key(Path(database).with_suffix(".key")))
+
+
+def _owner_app_lookup(
+    store: SetupStore | None,
+) -> Callable[[str], OAuthClientSeed | None] | None:
+    """The OAuth app an owner typed on a review page, for the connection that is signing in."""
+    if store is None:
+        return None
+
+    def lookup(connection_id: str) -> OAuthClientSeed | None:
+        found = store.oauth_client(connection_id)
+        return OAuthClientSeed(client_id=found[0], client_secret=found[1]) if found else None
+
+    return lookup
+
+
 def build_oauth_flow(
     repository: SqliteControlPlaneRepository,
     config: ServeConfig,
@@ -159,6 +189,7 @@ def build_oauth_flow(
     database: str | Path,
     clock: Callable[[], str] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    client_lookup: Callable[[str], OAuthClientSeed | None] | None = None,
 ) -> OAuthWebFlow:
     seeds = {
         server_id: OAuthClientSeed(
@@ -176,6 +207,7 @@ def build_oauth_flow(
         endpoint_policy=endpoint_policy(config),
         clock=clock or _utc_now,
         clients=seeds,
+        client_lookup=client_lookup,
         transport=transport,
     )
 
@@ -189,11 +221,22 @@ def build_application(
     mcp_client: McpReadClient | McpToolClient | None = None,
     clock: Callable[[], str] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    discovery: DiscoveryFactory | None = None,
 ) -> Starlette:
     clock = clock or _utc_now
     policy = endpoint_policy(config)
+    store: SetupStore | None = None
+    if config.chat_setup:
+        repository.initialize()
+        store = SetupStore(repository, open_secret_box(database))
     flow = build_oauth_flow(
-        repository, config, env, database=database, clock=clock, transport=transport
+        repository,
+        config,
+        env,
+        database=database,
+        clock=clock,
+        transport=transport,
+        client_lookup=_owner_app_lookup(store),
     )
     client = mcp_client or McpSdkClient(
         StreamableHttpSessionFactory(
@@ -211,9 +254,32 @@ def build_application(
     )
     artifact_root = config.artifact_root or Path(database).parent / "artifacts"
     artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    secrets_view: Mapping[str, str] = env
+    setup: SetupService | None = None
+    owner_pages: list[OwnerWeb] = []
+    if store is not None:
+        secrets_view = ChainedSecrets(env, store.get_secret)
+        control_plane = ControlPlaneService(
+            repository, endpoint_policy=policy, narrowing_only_actors=(ACTOR_AGENT,)
+        )
+        ensure_setup_server(repository, control_plane, clock())
+        setup = SetupService(
+            repository=repository,
+            store=store,
+            control_plane=control_plane,
+            connections=ConnectionService(repository, clock=clock),
+            credentials=ConnectionCredentialResolver(repository, secrets_view),
+            discovery=discovery
+            or _discovery_factory(repository, config, database, policy, transport),
+            login_links=flow,
+            public_url=config.public_url,
+            clock=clock,
+            endpoint_policy=policy,
+        )
+        owner_pages.append(OwnerWeb(service=setup, public_url=config.public_url))
     return build_http_application(
         repository=repository,
-        credential_resolver=ConnectionCredentialResolver(repository, env),
+        credential_resolver=ConnectionCredentialResolver(repository, secrets_view),
         mcp_client=client,
         artifact_root=artifact_root,
         public_url=config.public_url,
@@ -224,7 +290,31 @@ def build_application(
         rate_window_seconds=config.rate_window_seconds,
         per_server_concurrency=config.per_server_concurrency,
         idempotency_window_seconds=config.idempotency_window_seconds,
+        setup=setup,
+        extra_web=owner_pages,
     )
+
+
+def _discovery_factory(
+    repository: SqliteControlPlaneRepository,
+    config: ServeConfig,
+    database: str | Path,
+    policy: EndpointSecurityPolicy,
+    transport: httpx.AsyncBaseTransport | None,
+) -> DiscoveryFactory:
+    def build(credential: ResolvedCredential | None) -> DiscoveryClient:
+        return McpSdkClient(
+            StreamableHttpSessionFactory(
+                endpoint_policy=policy,
+                auth_factory=runtime_auth_factory(
+                    repository, open_oauth_backend(database), public_url=config.public_url
+                ),
+                transport=transport,
+            ),
+            discovery_credential=credential,
+        )
+
+    return build
 
 
 def _load_or_create_key(path: Path) -> bytes:

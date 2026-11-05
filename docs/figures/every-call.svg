@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 350" width="1000" height="350" role="img" aria-labelledby="t d">
+<title id="t">Every call is checked</title>
+<desc id="d">A call passes seven steps: who is calling, is it allowed, is it valid, has it run before, the call to the MCP server with the connection's own credential, a check of the answer, and a record. A call for an operation that is not on the approved list is refused at step two.</desc>
+<style>
+  .bg{fill:#0d1117}
+  .t{font:600 15px -apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#e6edf3}
+  .h{font:700 22px -apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#e6edf3}
+  .s{font:400 12.5px -apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#9198a1}
+  .l{font:500 12.5px -apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#c9d1d9}
+  .m{font:500 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#c9d1d9}
+  .box{fill:#151b23;stroke:#3d444d;stroke-width:1.5}
+  .zone{fill:#10161f;stroke:#4493f8;stroke-width:1.5;stroke-dasharray:6 5}
+  .pol{fill:#12261a;stroke:#3fb950;stroke-width:1.5}
+  .cred{fill:#2a2110;stroke:#d29922;stroke-width:1.5}
+  .aud{fill:#15233a;stroke:#4493f8;stroke-width:1.5}
+  .line{stroke:#3d444d;stroke-width:2;fill:none}
+</style>
+<rect class="bg" width="1000" height="350" rx="14"/>
+<text class="h" x="40" y="44" text-anchor="start">Every call is checked</text>
+<text class="s" x="40" y="66" text-anchor="start">What the adapter does between Muse's request and the answer.</text>
+<path class="line" d="M39 108 H960"/>
+<path d="M99.0 108 V134" stroke="#3d444d" stroke-width="2"/>
+<path d="M235.0 108 V134" stroke="#3d444d" stroke-width="2"/>
+<path d="M371.0 108 V134" stroke="#3d444d" stroke-width="2"/>
+<path d="M507.0 108 V134" stroke="#3d444d" stroke-width="2"/>
+<path d="M643.0 108 V134" stroke="#3d444d" stroke-width="2"/>
+<path d="M779.0 108 V134" stroke="#3d444d" stroke-width="2"/>
+<path d="M915.0 108 V134" stroke="#3d444d" stroke-width="2"/>
+<rect class="box" x="39" y="134" width="120" height="118" rx="10"><animate attributeName="stroke" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.0850;0.0857;0.1429;0.1436;1.0000" values="#3d444d;#3d444d;#58a6ff;#58a6ff;#3d444d;#3d444d"/></rect>
+<text class="s" x="99.0" y="158" text-anchor="middle">1</text>
+<text class="t" style="font-size:13px" x="99.0" y="180" text-anchor="middle">Who is calling?</text>
+<text class="s" style="font-size:11.5px" x="99.0" y="202" text-anchor="middle"><tspan x="99.0" dy="0">The token</tspan><tspan x="99.0" dy="15">identifies one</tspan><tspan x="99.0" dy="15">connection</tspan></text>
+<rect class="box" x="175" y="134" width="120" height="118" rx="10"><animate attributeName="stroke" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.1564;0.1571;0.2143;0.2150;1.0000" values="#3d444d;#3d444d;#58a6ff;#58a6ff;#3d444d;#3d444d"/></rect>
+<text class="s" x="235.0" y="158" text-anchor="middle">2</text>
+<text class="t" style="font-size:13px" x="235.0" y="180" text-anchor="middle">Is it allowed?</text>
+<text class="s" style="font-size:11.5px" x="235.0" y="202" text-anchor="middle"><tspan x="235.0" dy="0">The operation is in</tspan><tspan x="235.0" dy="15">your approved</tspan><tspan x="235.0" dy="15">policy</tspan></text>
+<rect class="box" x="311" y="134" width="120" height="118" rx="10"><animate attributeName="stroke" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.2279;0.2286;0.2857;0.2864;1.0000" values="#3d444d;#3d444d;#58a6ff;#58a6ff;#3d444d;#3d444d"/></rect>
+<text class="s" x="371.0" y="158" text-anchor="middle">3</text>
+<text class="t" style="font-size:13px" x="371.0" y="180" text-anchor="middle">Is it valid?</text>
+<text class="s" style="font-size:11.5px" x="371.0" y="202" text-anchor="middle"><tspan x="371.0" dy="0">The request matches</tspan><tspan x="371.0" dy="15">the published</tspan><tspan x="371.0" dy="15">schema</tspan></text>
+<rect class="box" x="447" y="134" width="120" height="118" rx="10"><animate attributeName="stroke" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.2993;0.3000;0.3571;0.3579;1.0000" values="#3d444d;#3d444d;#58a6ff;#58a6ff;#3d444d;#3d444d"/></rect>
+<text class="s" x="507.0" y="158" text-anchor="middle">4</text>
+<text class="t" style="font-size:13px" x="507.0" y="180" text-anchor="middle">Run before?</text>
+<text class="s" style="font-size:11.5px" x="507.0" y="202" text-anchor="middle"><tspan x="507.0" dy="0">A repeated write</tspan><tspan x="507.0" dy="15">is never run</tspan><tspan x="507.0" dy="15">twice</tspan></text>
+<rect class="cred" x="583" y="134" width="120" height="118" rx="10"><animate attributeName="stroke" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.3707;0.3714;0.4286;0.4293;1.0000" values="#d29922;#d29922;#58a6ff;#58a6ff;#d29922;#d29922"/></rect>
+<text class="s" x="643.0" y="158" text-anchor="middle">5</text>
+<text class="t" style="font-size:13px" x="643.0" y="180" text-anchor="middle">Call the server</text>
+<text class="s" style="font-size:11.5px" x="643.0" y="202" text-anchor="middle"><tspan x="643.0" dy="0">over MCP, with</tspan><tspan x="643.0" dy="15">this connection's</tspan><tspan x="643.0" dy="15">credential</tspan></text>
+<rect class="box" x="719" y="134" width="120" height="118" rx="10"><animate attributeName="stroke" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.4421;0.4429;0.5000;0.5007;1.0000" values="#3d444d;#3d444d;#58a6ff;#58a6ff;#3d444d;#3d444d"/></rect>
+<text class="s" x="779.0" y="158" text-anchor="middle">6</text>
+<text class="t" style="font-size:13px" x="779.0" y="180" text-anchor="middle">Check the answer</text>
+<text class="s" style="font-size:11.5px" x="779.0" y="202" text-anchor="middle"><tspan x="779.0" dy="0">type, size, schema.</tspan><tspan x="779.0" dy="15">Content is</tspan><tspan x="779.0" dy="15">only data</tspan></text>
+<rect class="box" x="855" y="134" width="120" height="118" rx="10"><animate attributeName="stroke" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.5136;0.5143;0.5714;0.5721;1.0000" values="#3d444d;#3d444d;#58a6ff;#58a6ff;#3d444d;#3d444d"/></rect>
+<text class="s" x="915.0" y="158" text-anchor="middle">7</text>
+<text class="t" style="font-size:13px" x="915.0" y="180" text-anchor="middle">Record</text>
+<text class="s" style="font-size:11.5px" x="915.0" y="202" text-anchor="middle"><tspan x="915.0" dy="0">audit entry and</tspan><tspan x="915.0" dy="15">operation</tspan><tspan x="915.0" dy="15">state</tspan></text>
+<text class="s" x="40" y="292" text-anchor="start">A call from Muse enters on the left.</text>
+<text class="s" x="960" y="292" text-anchor="end">The answer, or a clear reason it was refused, goes back to Muse.</text>
+<circle r="7" fill="#3fb950" opacity="0"><animateMotion dur="14.0s" repeatCount="indefinite" calcMode="linear" keyPoints="0.0000;0.0000;0.0712;0.2179;0.3646;0.5113;0.6580;0.8047;0.9515;1.0000;1.0000;1.0000" keyTimes="0.0000;0.0400;0.0857;0.1571;0.2286;0.3000;0.3714;0.4429;0.5143;0.5714;0.6500;1.0000" path="M33 108 H960"/><animate attributeName="opacity" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.0400;0.0857;0.1571;0.2286;0.3000;0.3714;0.4429;0.5143;0.5714;0.6500;1.0000" values="0;1;1;1;1;1;1;1;1;1;0;0"/></circle>
+<circle r="7" fill="#f85149" opacity="0"><animateMotion dur="14.0s" repeatCount="indefinite" calcMode="linear" keyPoints="0.0000;0.0000;0.0000;0.1879;0.1879;0.1879;0.1879" keyTimes="0.0000;0.6857;0.6871;0.7714;0.8571;0.8857;1.0000" path="M33 108 H960"/><animate attributeName="opacity" dur="14.0s" repeatCount="indefinite" keyTimes="0.0000;0.6857;0.6871;0.7714;0.8571;0.8857;1.0000" values="0;0;1;1;1;0;0"/></circle>
+<g opacity="0"><text class="m" x="235.0" y="94" text-anchor="middle" style="fill:#f85149">not on your list: refused</text><animate attributeName="opacity" dur="14.0s" repeatCount="indefinite" keyTimes="0;0.7714;0.7786;0.8571;0.8857;1" values="0;0;1;1;0;0"/></g>
+</svg>
