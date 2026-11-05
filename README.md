@@ -1,9 +1,6 @@
 # Muse MCP Adapter: connect MCP servers to Muse, on your terms
 
-**From [SEPT Lab](https://septlab.com/) (Security, Privacy, and Trust), University of Southern California.**
-
 <p>
-<a href="https://septlab.com/"><img alt="Lab: SEPT Lab at USC" src="https://img.shields.io/badge/lab-SEPT%20Lab%20%40%20USC-990000"></a>
 <a href="docs/README.md"><img alt="Documentation: every page" src="https://img.shields.io/badge/docs-every%20page-4F6BED"></a>
 <a href="docs/connect-github-to-muse.md"><img alt="Guide: connect GitHub to Muse" src="https://img.shields.io/badge/guide-GitHub%20to%20Muse-4F6BED"></a>
 <a href="docs/chat-setup.md"><img alt="Set up by chat" src="https://img.shields.io/badge/setup-by%20chat-4F6BED"></a>
