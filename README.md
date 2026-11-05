@@ -1,6 +1,14 @@
 # Muse MCP Adapter: connect MCP servers to Muse, on your terms
 
-[![CI](https://github.com/sept-usc/muse-mcp-adapter/actions/workflows/ci.yml/badge.svg)](https://github.com/sept-usc/muse-mcp-adapter/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p>
+<a href="docs/README.md"><img alt="Documentation: every page" src="https://img.shields.io/badge/docs-every%20page-4F6BED"></a>
+<a href="docs/connect-github-to-muse.md"><img alt="Guide: connect GitHub to Muse" src="https://img.shields.io/badge/guide-GitHub%20to%20Muse-4F6BED"></a>
+<a href="docs/chat-setup.md"><img alt="Set up by chat" src="https://img.shields.io/badge/setup-by%20chat-4F6BED"></a>
+<a href="docs/security.md"><img alt="Security: how it is controlled" src="https://img.shields.io/badge/security-how%20it%20is%20controlled-1B1F2A"></a>
+<a href="docs/design.md"><img alt="Design: architecture" src="https://img.shields.io/badge/design-architecture-1B1F2A"></a>
+<a href="https://modelcontextprotocol.io"><img alt="Protocol: Model Context Protocol (MCP)" src="https://img.shields.io/badge/protocol-MCP-1B1F2A"></a>
+<a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1B1F2A"></a>
+</p>
 
 **A self-hosted gateway that lets Muse use your [MCP](https://modelcontextprotocol.io) (Model Context Protocol) servers, such as GitHub, Linear or Atlassian, as a Custom Connector, with only the access you approved.** Tell Muse what you want in a sentence. It drafts the smallest policy that does the job, you approve it on a page of your own with your owner password, and access widens one operation at a time as real tasks need it. Your credentials never reach Muse, and a write runs once or says it may not have.
 
