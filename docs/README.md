@@ -49,9 +49,8 @@ The adapter lets Muse use your MCP (Model Context Protocol) servers, such as Git
 | [System design](design.md) | Purpose, decisions, architecture, security model |
 | [Control plane](control-plane.md) | Register, discover, review, compile, publish, and setup by chat |
 | [Data plane](data-plane.md) | How a published catalog is executed at runtime |
-| [Validation guide](validation.md) | How parity with a direct MCP connection is tested |
+| [Validation guide](validation.md) | How parity with a direct MCP connection is tested, and the reports the suites write locally |
 | [Validation server](validation-server.md) | The purpose-built MCP server used to test every feature |
-| [MCP parity report](../reports/mcp-parity.md) | The generated results |
 
 ## Contributing
 
