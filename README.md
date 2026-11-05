@@ -15,7 +15,7 @@
 
 **A self-hosted gateway that lets Muse use your [MCP](https://modelcontextprotocol.io) (Model Context Protocol) servers, such as GitHub, Linear or Atlassian, as a Custom Connector, with only the access you approved.** Tell Muse what you want in a sentence. It drafts the smallest policy that does the job, you approve it on a page of your own with your owner password, and access widens one operation at a time as real tasks need it. Your credentials never reach Muse, and a write runs once or says it may not have.
 
-[Get started](#get-started) · [Connect GitHub to Muse](docs/connect-github-to-muse.md) · [How it works](docs/how-it-works.md) · [FAQ](#faq) · [All documentation](docs/README.md) · [Citation](#citation) · [Research links](#research-and-presentation)
+[Get started](#get-started) · [Connect GitHub to Muse](docs/connect-github-to-muse.md) · [How it works](docs/how-it-works.md) · [FAQ](#faq) · [All documentation](docs/README.md) · [Research links](#research-and-presentation)
 
 <p align="center">
   <img src="docs/figures/architecture.svg" alt="Architecture: Muse calls the Muse MCP Adapter over REST with one token per connector. The adapter, which runs on a machine you own, checks each call against the policy you approved, keeps your credentials to itself, applies limits and keeps an audit log, and talks MCP to servers such as GitHub, Linear or your own. A call that is not on your list is refused." width="920">
@@ -150,21 +150,6 @@ The [documentation index](docs/README.md) lists every page. The main ones:
 
 **What the policy covers:** what passes through the adapter. A tool the adapter does not publish cannot be called through it, but the policy does not limit what Muse can do with its other tools, such as its own browser; limit those in Muse.
 
-## Citation
-
-If this software helps your work, please cite it. GitHub's **Cite this repository** button reads [`CITATION.cff`](CITATION.cff).
-
-```bibtex
-@software{sept_lab_muse_mcp_adapter_2026,
-  author    = {{SEPT Lab, University of Southern California}},
-  title     = {Muse {MCP} Adapter},
-  year      = {2026},
-  publisher = {GitHub},
-  url       = {https://github.com/sept-usc/muse-mcp-adapter},
-  license   = {MIT}
-}
-```
-
 ## License
 
 Released under the [MIT License](LICENSE). Copyright (c) 2026 SEPT Lab, University of Southern California.
@@ -181,7 +166,6 @@ The adapter is built at [SEPT Lab](https://septlab.com/) (Security, Privacy, and
 | --- | --- |
 | [SEPT Lab](https://septlab.com/) | The lab's research, publications and people |
 | [sept-usc on GitHub](https://github.com/sept-usc) | The lab's open-source artifacts |
-| [FLASH](https://github.com/sept-usc/FLASH) | Another lab artifact: GPU checkpoint/restore for confidential LLM inference (ACM SIGOPS ATC 2026) |
 | [verifiable.pro](https://verifiable.pro/) | Research explanations about verifiable AI |
 
 The logo marks belong to their owners; see [brand asset sources](docs/brand/README.md).
